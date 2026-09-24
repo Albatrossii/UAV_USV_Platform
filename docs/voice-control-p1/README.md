@@ -20,4 +20,4 @@ V20新增最小受理墓碑，只保存userId、endpoint、requestId、音频指
 
 真实服务就绪后：设置D1_TEST_USERNAME/D1_TEST_PASSWORD，再执行python docs/voice-control-p1/verify-d1-http.py --audio <本机授权音频> --mime audio/mpeg --output <本机结果JSON>。Java重启后可增加--request-id <原UUID> --expect-code VOICE_REQUEST_OUTCOME_UNKNOWN验证墓碑。脚本不输出Cookie、密码、原音频和完整文字；仅HTTP及同键重放/重启保护冒烟，不代替浏览器D01–D12。
 
-E1 已建立逐项覆盖基线：31/46 条已有真实或自动化证据，10 条部分覆盖，2 条能力尚未实现，3 条尚未执行；该结果不表示 E1 完成。详见 [E1 覆盖基线](P1-E1-覆盖基线-20260924.md) 与 [E1 验收清单](P1-ASR-验收清单-v1.2.csv)。
+E1 已建立逐项覆盖基线：34/46 条已有真实或自动化证据，7 条部分覆盖，2 条能力尚未实现，3 条尚未执行；该结果不表示 E1 完成。详见 [E1 覆盖基线](P1-E1-覆盖基线-20260924.md) 与 [E1 验收清单](P1-ASR-验收清单-v1.2.csv)。

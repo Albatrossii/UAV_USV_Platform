@@ -1,0 +1,39 @@
+{
+  "testedAt": "2026-09-24T15:44:14+08:00",
+  "branch": "mxy/p1-llm-20260924",
+  "java": {
+    "command": "mvn -Dtest=AsrAcceptanceStoreTests,AsrServiceTests,AudioMultipartTests,LocalAsrProviderTests,AsrHttpTests,AsrEmbeddedTests test",
+    "tests": 55,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "result": "BUILD SUCCESS"
+  },
+  "python": {
+    "interpreter": "asr-service/.venv Python 3.13",
+    "module": "test_asr_server.py",
+    "tests": 19,
+    "failures": 0,
+    "errors": 0,
+    "result": "OK",
+    "exactBoundaries": [
+      "60000ms accepted",
+      "60010ms ASR_AUDIO_TOO_LONG",
+      "oversize rejected before inference",
+      "wrong locale rejected"
+    ]
+  },
+  "contracts": {
+    "fixtures": 54,
+    "result": "PASS"
+  },
+  "coverage": {
+    "total": 46,
+    "passReal": 17,
+    "passAutomated": 17,
+    "partial": 7,
+    "notImplemented": 2,
+    "notRun": 3
+  },
+  "secretsOrAudioStored": false
+}

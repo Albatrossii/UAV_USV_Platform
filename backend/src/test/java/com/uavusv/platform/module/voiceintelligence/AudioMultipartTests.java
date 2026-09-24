@@ -76,6 +76,16 @@ class AudioMultipartTests {
     }
 
     @Test
+    void totalMultipartOverSixMiBRejected() {
+        assertEquals(
+                413,
+                assertThrows(
+                                AsrFailure.class,
+                                () -> parse(new byte[AudioMultipart.MAX_BODY + 1]))
+                        .status);
+    }
+
+    @Test
     void otherFormatRejected() {
         assertEquals(
                 415,
@@ -100,9 +110,22 @@ class AudioMultipartTests {
     }
 
     @Test
+    void unsupportedLocaleRejected() {
+        String b =
+                new String(body(ID, "audio/mpeg", new byte[1]), StandardCharsets.ISO_8859_1)
+                        .replace("\r\nzh-CN\r\n", "\r\nen-US\r\n");
+        assertEquals(
+                400,
+                assertThrows(
+                                AsrFailure.class,
+                                () -> parse(b.getBytes(StandardCharsets.ISO_8859_1)))
+                        .status);
+    }
+
+    @Test
     void unknownAndDuplicateFieldsRejected() {
         String b = new String(body(ID, "audio/mpeg", new byte[1]), StandardCharsets.ISO_8859_1);
-        for (String name : List.of("locale", "unknown")) {
+        for (String name : List.of("locale", "audio", "unknown")) {
             String extra =
                     "--b\r\nContent-Disposition: form-data; name=\"" + name + "\"\r\n\r\nx\r\n";
             assertThrows(
