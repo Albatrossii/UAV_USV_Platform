@@ -119,6 +119,33 @@ class IntentServiceTests {
     }
 
     @Test
+    void localLlmCandidateStillUsesJavaSafetyAndContractEnvelope() {
+        settings.setIntentProvider("local-llm");
+        LocalLlmIntentProvider llm = mock(LocalLlmIntentProvider.class);
+        when(llm.classify("请让编队立即执行"))
+                .thenReturn(new IntentClassification("CANDIDATE", null, null, "START"));
+        service = new IntentService(access, settings, runtimes, json, llm, java.time.Clock.systemUTC());
+
+        String requestId = java.util.UUID.randomUUID().toString();
+        var outcome = service.interpret(7, requestId, request(requestId, "请让编队立即执行", null));
+        var data = (ObjectNode) outcome.body().get("data");
+        assertEquals("CANDIDATE", data.path("status").asText());
+        assertEquals("START", data.path("action").asText());
+        assertEquals("local-llm", data.path("provider").asText());
+        assertEquals(settings.getLlmModel(), data.path("model").asText());
+        verify(llm).classify("请让编队立即执行");
+
+        String negatedId = java.util.UUID.randomUUID().toString();
+        var negated =
+                service.interpret(
+                        7, negatedId, request(negatedId, "不要停止任务", null));
+        assertEquals(
+                "NOT_ACTIONABLE",
+                ((ObjectNode) negated.body().get("data")).path("status").asText());
+        verifyNoMoreInteractions(llm);
+    }
+
+    @Test
     void unknownFieldsAndHeaderBodyMismatchAreRejected() {
         ObjectNode unknown = request("暂停任务", null);
         unknown.put("vendor", "forbidden");

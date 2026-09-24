@@ -39,6 +39,9 @@ public final class AsrResponses {
             case "VOICE_REQUEST_IN_PROGRESS" -> "原请求仍在处理中";
             case "VOICE_REQUEST_OUTCOME_UNKNOWN" -> "原请求结果无法安全恢复，请重新录制后提交";
             case "VOICE_TRANSCRIPTION_TIMEOUT" -> "识别等待超时，请联系管理员检查服务";
+            case "VOICE_INTERPRETATION_TIMEOUT" -> "意图解析超时，请稍后重试";
+            case "VOICE_PROVIDER_UNAVAILABLE" -> "本地模型服务暂不可用";
+            case "VOICE_PROVIDER_INVALID_RESPONSE" -> "本地模型返回了无效结果";
             case "VOICE_AUDIO_TOO_LONG" -> "录音超过60秒，请缩短后重录";
             case "VOICE_INTELLIGENCE_DISABLED" -> "本地语音识别尚未启用";
             case "VOICE_CONTEXT_CHANGED" -> "运行上下文已变化，请刷新后重新解析";

@@ -1,6 +1,6 @@
 # P1 当前接口实施入口：D1 ASR + D2 意图候选
 
-D1 本地语音识别已验收结束。当前进入 D2，启用 `POST /api/voice/intelligence/interpretations`，详细范围和测试见 [P1-D2 意图解析接口与测试设计 v1.0](P1-D2-意图解析接口与测试设计-v1.0.md)。历史供应商无关草案见 [v1.1 历史契约](interface-contract-v1.1-history.md)。
+D1 本地语音识别与 D2 规则解析已验收结束。D3 在不改变公共接口的前提下，将 `POST /api/voice/intelligence/interpretations` 的内部解析器切换为本地 LLM；详细范围和测试见 [P1-D3 本地 LLM 意图解析接口与测试设计 v1.0](P1-D3-本地LLM意图解析接口与测试设计-v1.0.md)。历史供应商无关草案见 [v1.1 历史契约](interface-contract-v1.1-history.md)。
 
 当前两条公共接口为：
 

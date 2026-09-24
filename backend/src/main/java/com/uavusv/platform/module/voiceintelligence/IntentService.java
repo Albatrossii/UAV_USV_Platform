@@ -20,12 +20,6 @@ import java.util.regex.Pattern;
 @Service
 public class IntentService {
     private static final Set<String> ACTIONS = Set.of("START", "PAUSE", "RESUME", "STOP");
-    private static final Map<String, String> INTENTS =
-            Map.of(
-                    "START", "MISSION_START",
-                    "PAUSE", "MISSION_PAUSE",
-                    "RESUME", "MISSION_RESUME",
-                    "STOP", "MISSION_STOP");
     private static final Map<String, Pattern> PATTERNS =
             Map.of(
                     "START", Pattern.compile("开始|启动|执行任务"),
@@ -74,6 +68,7 @@ public class IntentService {
     private final AsrSettings settings;
     private final RuntimeContextRegistry runtimes;
     private final VoiceJson json;
+    private final LocalLlmIntentProvider llm;
     private final Clock clock;
 
     @org.springframework.beans.factory.annotation.Autowired
@@ -81,8 +76,17 @@ public class IntentService {
             VoiceAccess access,
             AsrSettings settings,
             RuntimeContextRegistry runtimes,
+            VoiceJson json,
+            org.springframework.beans.factory.ObjectProvider<LocalLlmIntentProvider> provider) {
+        this(access, settings, runtimes, json, provider.getIfAvailable(), Clock.systemUTC());
+    }
+
+    IntentService(
+            VoiceAccess access,
+            AsrSettings settings,
+            RuntimeContextRegistry runtimes,
             VoiceJson json) {
-        this(access, settings, runtimes, json, Clock.systemUTC());
+        this(access, settings, runtimes, json, null, Clock.systemUTC());
     }
 
     IntentService(
@@ -91,10 +95,21 @@ public class IntentService {
             RuntimeContextRegistry runtimes,
             VoiceJson json,
             Clock clock) {
+        this(access, settings, runtimes, json, null, clock);
+    }
+
+    IntentService(
+            VoiceAccess access,
+            AsrSettings settings,
+            RuntimeContextRegistry runtimes,
+            VoiceJson json,
+            LocalLlmIntentProvider llm,
+            Clock clock) {
         this.access = access;
         this.settings = settings;
         this.runtimes = runtimes;
         this.json = json;
+        this.llm = llm;
         this.clock = clock;
     }
 
@@ -119,8 +134,15 @@ public class IntentService {
 
         ObjectNode runtime = requireContext(user, body.path("runtimeContext"));
         String text = normalize(body.path("text").asText());
-        Parse parsed = parse(text, body.path("allowedActions"), runtime);
-        ObjectNode data = parsed.data(requestId, text, json);
+        IntentClassification parsed = parse(text, body.path("allowedActions"), runtime);
+        boolean localLlm = "local-llm".equals(settings.getIntentProvider());
+        ObjectNode data =
+                parsed.data(
+                        requestId,
+                        text,
+                        localLlm ? "local-llm" : "local-rules",
+                        localLlm ? settings.getLlmModel() : "rules-v1",
+                        json);
         var outcome =
                 new AsrResponses.Outcome(
                         200, AsrResponses.body("SUCCESS", "操作成功", data), null);
@@ -130,7 +152,7 @@ public class IntentService {
                 new Entry(
                         hash,
                         outcome,
-                        parsed.action,
+                        parsed.action(),
                         hint.isNull() ? null : hint.path("runtimeRef").asText(),
                         hint.isNull() ? null : hint.path("runtimeGeneration").asText(),
                         hint.isNull() ? null : hint.path("contextVersion").asLong(),
@@ -185,37 +207,21 @@ public class IntentService {
         return current;
     }
 
-    private record Parse(String status, String reason, String message, String action) {
-        ObjectNode data(String id, String text, VoiceJson json) {
-            ObjectNode n = json.object();
-            n.put("status", status).put("requestId", id);
-            if (action != null) {
-                n.put("intent", INTENTS.get(action))
-                        .put("action", action)
-                        .putNull("confidence");
-            } else n.put("reason", reason).put("message", message);
-            n.put("normalizedText", text)
-                    .put("provider", "local-rules")
-                    .put("model", "rules-v1");
-            return n;
-        }
-    }
-
-    private Parse parse(String text, JsonNode allowed, ObjectNode runtime) {
+    private IntentClassification parse(String text, JsonNode allowed, ObjectNode runtime) {
         if (UNSUPPORTED.matcher(text).find())
-            return new Parse(
+            return new IntentClassification(
                     "UNSUPPORTED",
                     "UNSUPPORTED_CAPABILITY",
                     "该动作尚未接入算法能力，不能生成执行提案。",
                     null);
         if (TARGETED.matcher(text).find())
-            return new Parse(
+            return new IntentClassification(
                     "UNSUPPORTED",
                     "UNSUPPORTED_TARGETING",
                     "当前仅支持整队任务控制，暂不支持指定单台设备。",
                     null);
         if (NEGATED.matcher(text).find())
-            return new Parse(
+            return new IntentClassification(
                     "NOT_ACTIONABLE",
                     "NEGATED_ACTION",
                     "检测到否定表达，为避免误执行，请重新明确指令。",
@@ -223,18 +229,30 @@ public class IntentService {
         List<String> matched =
                 ACTIONS.stream().filter(a -> PATTERNS.get(a).matcher(text).find()).sorted().toList();
         if (matched.size() > 1)
-            return new Parse(
+            return new IntentClassification(
                     "NEEDS_CLARIFICATION",
                     "AMBIGUOUS_ACTION",
                     "一句话中包含多个动作，请一次只说明一个任务动作。",
                     null);
-        if (matched.isEmpty())
-            return new Parse(
-                    "NEEDS_CLARIFICATION",
-                    "NO_SUPPORTED_ACTION",
-                    "未识别到开始、暂停、继续或停止，请重新表述。",
-                    null);
-        String action = matched.get(0);
+        IntentClassification parsed;
+        if ("local-llm".equals(settings.getIntentProvider())) {
+            if (llm == null) throw new AsrFailure(503, "VOICE_PROVIDER_UNAVAILABLE");
+            parsed = llm.classify(text);
+        } else if ("rules".equals(settings.getIntentProvider())) {
+            parsed =
+                    matched.isEmpty()
+                            ? new IntentClassification(
+                                    "NEEDS_CLARIFICATION",
+                                    "NO_SUPPORTED_ACTION",
+                                    "未识别到开始、暂停、继续或停止，请重新表述。",
+                                    null)
+                            : new IntentClassification(
+                                    "CANDIDATE", null, null, matched.get(0));
+        } else {
+            throw new AsrFailure(503, "VOICE_PROVIDER_UNAVAILABLE");
+        }
+        if (parsed.action() == null) return parsed;
+        String action = parsed.action();
         boolean hinted = false;
         for (JsonNode n : allowed) hinted |= action.equals(n.asText());
         boolean authoritative = runtime == null;
@@ -242,12 +260,12 @@ public class IntentService {
             for (JsonNode n : runtime.path("capabilities"))
                 authoritative |= action.equals(n.asText());
         if (!hinted || !authoritative)
-            return new Parse(
+            return new IntentClassification(
                     "UNSUPPORTED",
                     "UNSUPPORTED_CAPABILITY",
                     "当前运行上下文不支持该动作。",
                     null);
-        return new Parse("CANDIDATE", null, null, action);
+        return parsed;
     }
 
     private void validate(String requestId, JsonNode body) {
