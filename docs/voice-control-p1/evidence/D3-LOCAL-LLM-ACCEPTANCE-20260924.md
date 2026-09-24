@@ -8,6 +8,7 @@
 - 7 个直接模型核心样例全部通过；本机单次分类约 2–3 秒。
 - 真实前端代理 → Java → 本地 LLM HTTP 检查 10/10 通过，证据见 `d3-real-http-20260924.json`。
 - Java 定向回归 52/52 通过：失败 0、错误 0、跳过 0。
+- 真实浏览器链路已通过：`文字 → 本地 LLM 解析 → 候选 → 冻结提案 → 人工确认 → STOP SUCCEEDED`。
 - 前端 `http://127.0.0.1:5175`、Java `http://127.0.0.1:18081`、LLM `http://127.0.0.1:18083` 已启动。
 
 ## 已验证范围
@@ -18,9 +19,20 @@
 
 补充执行了未带分组的 Maven 全量测试命令。该命令会混跑需要专用前置脚本、报告文件、真实 Runner 崩溃窗口及不兼容 H2 迁移环境的测试，结果为 942 项中 4 个失败、17 个错误、110 个跳过；失败集中在 `VoiceJvmCrashWindowTests`、`VoicePrepareDeadlineTests`、`VoiceStopStabilityTests` 和既有 `PlatformContextIntegrationTests`，不涉及本次 D3 类。该命令不能替代项目已经冻结的分组验收流程，也不计为 D3 失败；D3 相关 52 项已单独重跑并全部通过。
 
-## 尚需现场完成
+## 真实浏览器验收
 
-浏览器当前停在登录页。登录后还需记录一次“文字 → 解析候选 → 生成提案 → 人工确认”的页面证据，并确认模型服务停止时 P0 手工控制仍可独立使用。该步骤使用本地既有账号，不把密码写入文档或自动化日志。
+使用隔离数据库中的临时 ADMIN 账号，在算法仿真右侧面板输入“结束当前任务”。页面先显示 `STOP / MISSION_STOP` 候选，并明确候选不会直接执行；点击“生成待确认提案”后仍需人工点击“确认执行”。最终页面显示运行状态 `STOPPED`、算法结果 `SUCCESS`、Unity 展示状态 `NOT_REQUIRED`。
+
+数据库只读关联结果为：
+
+- `interpretationId=b0e2eea8-9b0c-4436-931e-fea16b82b533`
+- `proposalId=b147de21-35ee-41d7-ab56-663fcfc7e387`
+- `executionId=c0a3c2c2-8f3b-4059-94f6-db0435577ffe`
+- `commandId=71775caa-6cca-4aba-8b06-4d748863de5b`
+- `runtimeRef=ae32ff92-0935-4f3a-8461-aa27d507733b`
+- `runtimeGeneration=578795b7-b256-49c5-9455-d214a655fc5a`
+
+安全边界同时得到验证：第一次候选提案超过 30 秒后变为 `EXPIRED`，未生成 execution；P0 手工 STOP 独立创建不带 `interpretationId` 的提案；重建运行上下文后，第二次候选提案在有效期内确认并成功执行。浏览器已退出登录，临时账号已从隔离数据库删除。结构化证据见 `d3-browser-acceptance-20260924.json`。
 
 ## 仓库与外部文件边界
 
