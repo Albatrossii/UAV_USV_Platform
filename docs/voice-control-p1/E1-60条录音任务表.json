@@ -1,0 +1,455 @@
+[
+  {
+    "id": "e1-001",
+    "speakerId": "speaker-a",
+    "group": "quiet",
+    "reference": "启动无人机与无人艇协同搜索任务",
+    "terms": []
+  },
+  {
+    "id": "e1-002",
+    "speakerId": "speaker-b",
+    "group": "quiet",
+    "reference": "暂停当前任务",
+    "terms": []
+  },
+  {
+    "id": "e1-003",
+    "speakerId": "speaker-c",
+    "group": "quiet",
+    "reference": "恢复当前任务",
+    "terms": []
+  },
+  {
+    "id": "e1-004",
+    "speakerId": "speaker-a",
+    "group": "quiet",
+    "reference": "停止当前任务",
+    "terms": []
+  },
+  {
+    "id": "e1-005",
+    "speakerId": "speaker-b",
+    "group": "quiet",
+    "reference": "请开始执行海面巡检",
+    "terms": []
+  },
+  {
+    "id": "e1-006",
+    "speakerId": "speaker-c",
+    "group": "quiet",
+    "reference": "让所有设备保持当前位置",
+    "terms": []
+  },
+  {
+    "id": "e1-007",
+    "speakerId": "speaker-a",
+    "group": "quiet",
+    "reference": "查看当前任务运行状态",
+    "terms": []
+  },
+  {
+    "id": "e1-008",
+    "speakerId": "speaker-b",
+    "group": "quiet",
+    "reference": "报告无人机剩余电量",
+    "terms": []
+  },
+  {
+    "id": "e1-009",
+    "speakerId": "speaker-c",
+    "group": "quiet",
+    "reference": "报告无人艇当前航速",
+    "terms": []
+  },
+  {
+    "id": "e1-010",
+    "speakerId": "speaker-a",
+    "group": "quiet",
+    "reference": "将搜索区域扩大到东侧海域",
+    "terms": []
+  },
+  {
+    "id": "e1-011",
+    "speakerId": "speaker-b",
+    "group": "quiet",
+    "reference": "保持现有编队继续前进",
+    "terms": []
+  },
+  {
+    "id": "e1-012",
+    "speakerId": "speaker-c",
+    "group": "quiet",
+    "reference": "所有设备返回初始位置",
+    "terms": []
+  },
+  {
+    "id": "e1-013",
+    "speakerId": "speaker-a",
+    "group": "quiet",
+    "reference": "请重新规划当前航线",
+    "terms": []
+  },
+  {
+    "id": "e1-014",
+    "speakerId": "speaker-b",
+    "group": "quiet",
+    "reference": "降低无人机飞行速度",
+    "terms": []
+  },
+  {
+    "id": "e1-015",
+    "speakerId": "speaker-c",
+    "group": "quiet",
+    "reference": "提高无人艇巡航速度",
+    "terms": []
+  },
+  {
+    "id": "e1-016",
+    "speakerId": "speaker-a",
+    "group": "quiet",
+    "reference": "开始执行目标跟踪",
+    "terms": []
+  },
+  {
+    "id": "e1-017",
+    "speakerId": "speaker-b",
+    "group": "quiet",
+    "reference": "暂停目标跟踪并等待",
+    "terms": []
+  },
+  {
+    "id": "e1-018",
+    "speakerId": "speaker-c",
+    "group": "quiet",
+    "reference": "继续执行协同编队任务",
+    "terms": []
+  },
+  {
+    "id": "e1-019",
+    "speakerId": "speaker-a",
+    "group": "quiet",
+    "reference": "终止本次仿真运行",
+    "terms": []
+  },
+  {
+    "id": "e1-020",
+    "speakerId": "speaker-b",
+    "group": "quiet",
+    "reference": "检查所有设备连接状态",
+    "terms": []
+  },
+  {
+    "id": "e1-021",
+    "speakerId": "speaker-c",
+    "group": "quiet",
+    "reference": "读取最新一帧仿真结果",
+    "terms": []
+  },
+  {
+    "id": "e1-022",
+    "speakerId": "speaker-a",
+    "group": "quiet",
+    "reference": "显示当前场景中的设备数量",
+    "terms": []
+  },
+  {
+    "id": "e1-023",
+    "speakerId": "speaker-b",
+    "group": "quiet",
+    "reference": "请确认任务是否已经开始",
+    "terms": []
+  },
+  {
+    "id": "e1-024",
+    "speakerId": "speaker-c",
+    "group": "quiet",
+    "reference": "请确认任务是否已经暂停",
+    "terms": []
+  },
+  {
+    "id": "e1-025",
+    "speakerId": "speaker-a",
+    "group": "quiet",
+    "reference": "请确认任务是否已经停止",
+    "terms": []
+  },
+  {
+    "id": "e1-026",
+    "speakerId": "speaker-b",
+    "group": "quiet",
+    "reference": "不要启动新的任务",
+    "terms": []
+  },
+  {
+    "id": "e1-027",
+    "speakerId": "speaker-c",
+    "group": "quiet",
+    "reference": "不要暂停正在运行的任务",
+    "terms": []
+  },
+  {
+    "id": "e1-028",
+    "speakerId": "speaker-a",
+    "group": "quiet",
+    "reference": "不要停止当前任务",
+    "terms": []
+  },
+  {
+    "id": "e1-029",
+    "speakerId": "speaker-b",
+    "group": "quiet",
+    "reference": "先暂停任务然后等待确认",
+    "terms": []
+  },
+  {
+    "id": "e1-030",
+    "speakerId": "speaker-c",
+    "group": "quiet",
+    "reference": "只显示识别文字不要执行动作",
+    "terms": []
+  },
+  {
+    "id": "e1-031",
+    "speakerId": "speaker-a",
+    "group": "quiet",
+    "reference": "这是一段本地语音识别测试",
+    "terms": []
+  },
+  {
+    "id": "e1-032",
+    "speakerId": "speaker-b",
+    "group": "quiet",
+    "reference": "请把我说的话转换成文字",
+    "terms": []
+  },
+  {
+    "id": "e1-033",
+    "speakerId": "speaker-c",
+    "group": "quiet",
+    "reference": "今天进行无人系统联合演示",
+    "terms": []
+  },
+  {
+    "id": "e1-034",
+    "speakerId": "speaker-a",
+    "group": "quiet",
+    "reference": "当前环境没有明显背景噪声",
+    "terms": []
+  },
+  {
+    "id": "e1-035",
+    "speakerId": "speaker-b",
+    "group": "quiet",
+    "reference": "请记录这一段完整中文语音",
+    "terms": []
+  },
+  {
+    "id": "e1-036",
+    "speakerId": "speaker-c",
+    "group": "quiet",
+    "reference": "识别完成后允许人工修改文字",
+    "terms": []
+  },
+  {
+    "id": "e1-037",
+    "speakerId": "speaker-a",
+    "group": "quiet",
+    "reference": "页面刷新后不要自动重复识别",
+    "terms": []
+  },
+  {
+    "id": "e1-038",
+    "speakerId": "speaker-b",
+    "group": "quiet",
+    "reference": "退出登录后清除旧的识别结果",
+    "terms": []
+  },
+  {
+    "id": "e1-039",
+    "speakerId": "speaker-c",
+    "group": "quiet",
+    "reference": "本地模型不应连接云端服务",
+    "terms": []
+  },
+  {
+    "id": "e1-040",
+    "speakerId": "speaker-a",
+    "group": "quiet",
+    "reference": "语音识别不依赖仿真场景就绪",
+    "terms": []
+  },
+  {
+    "id": "e1-041",
+    "speakerId": "speaker-b",
+    "group": "noise",
+    "reference": "在风扇噪声下启动协同搜索",
+    "terms": []
+  },
+  {
+    "id": "e1-042",
+    "speakerId": "speaker-c",
+    "group": "noise",
+    "reference": "在键盘声中暂停当前任务",
+    "terms": []
+  },
+  {
+    "id": "e1-043",
+    "speakerId": "speaker-a",
+    "group": "noise",
+    "reference": "在走廊说话声中恢复当前任务",
+    "terms": []
+  },
+  {
+    "id": "e1-044",
+    "speakerId": "speaker-b",
+    "group": "noise",
+    "reference": "在车辆背景声下停止当前任务",
+    "terms": []
+  },
+  {
+    "id": "e1-045",
+    "speakerId": "speaker-c",
+    "group": "noise",
+    "reference": "有海浪噪声时报告无人艇位置",
+    "terms": []
+  },
+  {
+    "id": "e1-046",
+    "speakerId": "speaker-a",
+    "group": "noise",
+    "reference": "有空调噪声时报告无人机高度",
+    "terms": []
+  },
+  {
+    "id": "e1-047",
+    "speakerId": "speaker-b",
+    "group": "noise",
+    "reference": "在多人交谈背景下保持当前编队",
+    "terms": []
+  },
+  {
+    "id": "e1-048",
+    "speakerId": "speaker-c",
+    "group": "noise",
+    "reference": "在音乐背景下重新规划航线",
+    "terms": []
+  },
+  {
+    "id": "e1-049",
+    "speakerId": "speaker-a",
+    "group": "noise",
+    "reference": "在开门关门声中查看任务状态",
+    "terms": []
+  },
+  {
+    "id": "e1-050",
+    "speakerId": "speaker-b",
+    "group": "noise",
+    "reference": "在持续白噪声下只显示识别文字",
+    "terms": []
+  },
+  {
+    "id": "e1-051",
+    "speakerId": "speaker-c",
+    "group": "terminology",
+    "reference": "使用改进蛙跳算法计算协同航迹",
+    "terms": [
+      "改进蛙跳算法",
+      "协同航迹"
+    ]
+  },
+  {
+    "id": "e1-052",
+    "speakerId": "speaker-a",
+    "group": "terminology",
+    "reference": "检查无人机和无人艇的运行时引用",
+    "terms": [
+      "无人机",
+      "无人艇",
+      "运行时引用"
+    ]
+  },
+  {
+    "id": "e1-053",
+    "speakerId": "speaker-b",
+    "group": "terminology",
+    "reference": "核对运行代次与展示绑定标识",
+    "terms": [
+      "运行代次",
+      "展示绑定"
+    ]
+  },
+  {
+    "id": "e1-054",
+    "speakerId": "speaker-c",
+    "group": "terminology",
+    "reference": "执行粒子群优化并输出全局最优解",
+    "terms": [
+      "粒子群优化",
+      "全局最优解"
+    ]
+  },
+  {
+    "id": "e1-055",
+    "speakerId": "speaker-a",
+    "group": "terminology",
+    "reference": "验证航向角速度与经纬度遥测数据",
+    "terms": [
+      "航向角速度",
+      "经纬度",
+      "遥测"
+    ]
+  },
+  {
+    "id": "e1-056",
+    "speakerId": "speaker-b",
+    "group": "terminology",
+    "reference": "检查编队控制和动态避障是否正常",
+    "terms": [
+      "编队控制",
+      "动态避障"
+    ]
+  },
+  {
+    "id": "e1-057",
+    "speakerId": "speaker-c",
+    "group": "terminology",
+    "reference": "确认场景就绪挑战与帧应用回执",
+    "terms": [
+      "场景就绪",
+      "帧应用回执"
+    ]
+  },
+  {
+    "id": "e1-058",
+    "speakerId": "speaker-a",
+    "group": "terminology",
+    "reference": "验证幂等请求和命令序列连续性",
+    "terms": [
+      "幂等请求",
+      "命令序列"
+    ]
+  },
+  {
+    "id": "e1-059",
+    "speakerId": "speaker-b",
+    "group": "terminology",
+    "reference": "检查WebGL画面与算法状态是否一致",
+    "terms": [
+      "WebGL",
+      "算法状态"
+    ]
+  },
+  {
+    "id": "e1-060",
+    "speakerId": "speaker-c",
+    "group": "terminology",
+    "reference": "记录实时因子峰值内存和九十五分位延迟",
+    "terms": [
+      "实时因子",
+      "峰值内存",
+      "九十五分位"
+    ]
+  }
+]

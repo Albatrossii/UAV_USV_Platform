@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>E1 语料录音工具</title>
+  <style>
+    :root { color-scheme: dark; font-family: system-ui, "Microsoft YaHei", sans-serif; background:#06171b; color:#d8efea; }
+    body { margin:0; display:grid; place-items:center; min-height:100vh; }
+    main { width:min(760px,calc(100% - 32px)); background:#0a252b; border:1px solid #28616b; border-radius:14px; padding:24px; box-sizing:border-box; }
+    h1 { margin-top:0; font-size:22px; } .muted { color:#8fb9b3; } .row { display:flex; gap:12px; flex-wrap:wrap; align-items:center; }
+    select,button { background:#103940; color:#e5fffa; border:1px solid #3b7a83; border-radius:8px; padding:10px 14px; font-size:15px; }
+    button:disabled { opacity:.45; } button.primary { background:#16717b; } button.danger { background:#7d3030; }
+    .prompt { margin:24px 0; padding:24px; min-height:90px; display:grid; place-items:center; text-align:center; font-size:26px; line-height:1.6; border:1px solid #2e6870; border-radius:10px; background:#071e23; }
+    .status { min-height:28px; color:#78e5d1; } progress { width:100%; height:16px; } audio { width:100%; margin:14px 0; }
+    .badge { border:1px solid #47777d; border-radius:999px; padding:4px 10px; font-size:13px; }
+    .warning { color:#f5c56c; } code { color:#8feada; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>E1 中文语料录音</h1>
+  <p class="muted">音频只保存在浏览器内存，并在确认后写入你选择的本机目录；不会上传到 Java、ASR 或网络。</p>
+  <div class="row">
+    <label>录音人
+      <select id="speaker">
+        <option value="speaker-a">speaker-a</option><option value="speaker-b">speaker-b</option><option value="speaker-c">speaker-c</option>
+      </select>
+    </label>
+    <button id="directory">选择私有保存目录</button>
+    <span id="directoryState" class="muted">未选择，保存时将使用浏览器下载</span>
+  </div>
+  <p><progress id="progress" max="20" value="0"></progress></p>
+  <div class="row"><span id="position" class="badge">0 / 20</span><span id="group" class="badge">-</span><code id="filename">-</code></div>
+  <section id="prompt" class="prompt">正在加载任务表…</section>
+  <p id="instruction" class="warning"></p>
+  <div class="row">
+    <button id="previous">上一条</button>
+    <button id="record" class="primary">开始录音</button>
+    <button id="stop" class="danger" disabled>停止录音</button>
+    <button id="save" disabled>保存并下一条</button>
+    <button id="next">下一条</button>
+  </div>
+  <audio id="preview" controls hidden></audio>
+  <p id="status" class="status" role="status"></p>
+  <p class="muted">建议每条 3–12 秒。安静组在安静环境录制；噪声组按句中描述准备可控背景声；术语组按原文完整朗读。说错时重新录制，不要修改参考文本。</p>
+</main>
+<script type="module" src="./recorder.js"></script>
+</body>
+</html>

@@ -59,6 +59,7 @@ def plan():
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--plan-csv", help="write the shareable recording task table")
+    parser.add_argument("--plan-json", help="write the browser recording task data")
     parser.add_argument("--audio-dir", help="private directory containing e1-001..e1-060 audio")
     parser.add_argument("--manifest", help="write the private frozen manifest")
     args = parser.parse_args()
@@ -71,6 +72,10 @@ def main():
             writer.writeheader()
             for row in rows:
                 writer.writerow({**row, "terms": "|".join(row["terms"])})
+    if args.plan_json:
+        destination = pathlib.Path(args.plan_json)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_text(json.dumps(rows, ensure_ascii=False, indent=2), encoding="utf-8")
     if args.audio_dir or args.manifest:
         if not args.audio_dir or not args.manifest:
             raise SystemExit("--audio-dir and --manifest must be supplied together")
@@ -97,8 +102,8 @@ def main():
         }
         pathlib.Path(args.manifest).write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
         print(json.dumps({"datasetId": manifest["datasetId"], "samples": len(samples)}))
-    elif not args.plan_csv:
-        parser.error("provide --plan-csv or the private manifest arguments")
+    elif not args.plan_csv and not args.plan_json:
+        parser.error("provide --plan-csv, --plan-json, or the private manifest arguments")
 
 
 if __name__ == "__main__":
