@@ -121,9 +121,12 @@ describe('D1 isolated ASR UI', () => {
     expect(wrapper.text()).not.toContain('语音请求未完成')
     expect(button(wrapper, '使用原请求恢复').attributes('disabled')).toBeDefined()
   })
-  it('rejects empty files and unsupported types before API', async () => {
+  it('accepts E1 file formats and rejects empty or unsupported files before API', async () => {
     const { wrapper, transcribe } = setup()
-    await upload(wrapper, 'audio/wav')
+    for (const type of ['audio/webm', 'audio/ogg', 'audio/mp4', 'audio/wav', 'audio/mpeg']) await upload(wrapper, type)
+    expect(transcribe).toHaveBeenCalledTimes(5)
+    transcribe.mockClear()
+    await upload(wrapper, 'audio/flac')
     await upload(wrapper, 'audio/mpeg', '')
     expect(transcribe).not.toHaveBeenCalled()
   })

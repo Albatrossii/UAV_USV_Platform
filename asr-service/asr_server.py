@@ -80,11 +80,14 @@ def parse_multipart(content_type, body):
             if len(payload) > MAX_AUDIO:
                 raise AsrError(413, 'ASR_AUDIO_TOO_LARGE', '音频超过5 MiB')
             mime = part.get_content_type()
-            if mime not in ('audio/webm', 'audio/mpeg'):
-                raise AsrError(415, 'ASR_AUDIO_FORMAT_UNSUPPORTED', 'D1仅支持WebM/Opus和MP3')
+            if mime not in ('audio/webm', 'audio/ogg', 'audio/mp4', 'audio/wav', 'audio/mpeg'):
+                raise AsrError(415, 'ASR_AUDIO_FORMAT_UNSUPPORTED', '音频格式不支持')
             codec = part.get_param('codecs')
-            if codec and ((mime == 'audio/webm' and codec.lower() != 'opus')
-                          or (mime == 'audio/mpeg' and codec.lower() != 'mp3')):
+            expected_codec = {
+                'audio/webm': 'opus', 'audio/ogg': 'opus', 'audio/mp4': 'aac',
+                'audio/wav': 'pcm', 'audio/mpeg': 'mp3',
+            }[mime]
+            if codec and codec.lower() != expected_codec:
                 raise AsrError(415, 'ASR_AUDIO_FORMAT_UNSUPPORTED', '音频codec不支持')
             fields[name] = payload
         else:
@@ -110,9 +113,18 @@ def decode_audio(audio, mime, deadline):
                 raise ValueError('stream')
             stream = streams[0]
             fmt, codec = container.format.name, stream.codec_context.name
-            if not ((mime == 'audio/mpeg' and fmt == 'mp3' and codec in ('mp3', 'mp3float'))
-                    or (mime == 'audio/webm' and 'webm' in fmt and codec == 'opus'
-                        and b'webm' in audio[:4096])):
+            valid_format = (
+                (mime == 'audio/mpeg' and fmt == 'mp3' and codec in ('mp3', 'mp3float'))
+                or (mime == 'audio/webm' and 'webm' in fmt and codec == 'opus'
+                    and b'webm' in audio[:4096])
+                or (mime == 'audio/ogg' and 'ogg' in fmt and codec == 'opus'
+                    and audio.startswith(b'OggS'))
+                or (mime == 'audio/mp4' and 'mp4' in fmt and codec == 'aac'
+                    and b'ftyp' in audio[:64])
+                or (mime == 'audio/wav' and fmt == 'wav' and codec.startswith('pcm_')
+                    and audio.startswith(b'RIFF') and audio[8:12] == b'WAVE')
+            )
+            if not valid_format:
                 raise ValueError('format')
             if not 1 <= stream.codec_context.channels <= 2 or not 1 <= stream.codec_context.sample_rate <= 48000:
                 raise ValueError('specification')

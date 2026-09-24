@@ -155,8 +155,8 @@ export async function transcribeVoiceAudio(input: VoiceAudioInput, timeoutMs = V
 
 /** D1 uses the Java endpoint, never a mock fallback or direct Python call. */
 export function transcribeLocalAudio(input: VoiceAudioInput) {
-  if (!['audio/webm', 'audio/mpeg'].includes(audioType(input.audio))) {
-    return Promise.reject(new VoiceIntelligenceError('D1仅支持WebM/Opus和MP3。', 'VOICE_AUDIO_FORMAT_UNSUPPORTED'))
+  if (!supportedAudioTypes.has(audioType(input.audio))) {
+    return Promise.reject(new VoiceIntelligenceError('仅支持WebM/Opus、Ogg/Opus、MP4/AAC、WAV/PCM和MP3。', 'VOICE_AUDIO_FORMAT_UNSUPPORTED'))
   }
   return transcribeVoiceAudio(input, LOCAL_ASR_TIMEOUT_MS)
 }

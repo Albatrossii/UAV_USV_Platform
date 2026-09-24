@@ -86,10 +86,14 @@ class AudioMultipartTests {
     }
 
     @Test
-    void otherFormatRejected() {
+    void e1FiveFormatsAcceptedAndOtherFormatRejected() {
+        for (String mime :
+                List.of("audio/webm", "audio/ogg", "audio/mp4", "audio/wav", "audio/mpeg")) {
+            assertEquals(mime, parse(body(ID, mime, new byte[1])).mime());
+        }
         assertEquals(
                 415,
-                assertThrows(AsrFailure.class, () -> parse(body(ID, "audio/wav", new byte[1])))
+                assertThrows(AsrFailure.class, () -> parse(body(ID, "audio/flac", new byte[1])))
                         .status);
     }
 

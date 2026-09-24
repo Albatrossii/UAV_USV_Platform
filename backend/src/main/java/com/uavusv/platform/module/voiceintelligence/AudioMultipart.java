@@ -77,7 +77,8 @@ public final class AudioMultipart {
         byte[] audio = fields.get("audio");
         if (audio.length == 0) throw new AsrFailure(400, "VOICE_AUDIO_EMPTY");
         if (audio.length > MAX_AUDIO) throw new AsrFailure(413, "VOICE_AUDIO_TOO_LARGE");
-        if (!Set.of("audio/webm", "audio/mpeg").contains(mime))
+        if (!Set.of("audio/webm", "audio/ogg", "audio/mp4", "audio/wav", "audio/mpeg")
+                .contains(mime))
             throw new AsrFailure(415, "VOICE_AUDIO_FORMAT_UNSUPPORTED");
         return new SpeechProvider.Audio(id, locale, mime, audio);
     }
