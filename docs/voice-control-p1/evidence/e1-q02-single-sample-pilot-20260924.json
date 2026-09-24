@@ -1,0 +1,26 @@
+{
+  "evidenceId": "E1-Q02-SINGLE-SAMPLE-PILOT-20260924",
+  "status": "PILOT_NOT_Q02_PASS",
+  "sourceSha256": "08859b511bc43a0e9572b75bece5602f77aaf29c38c6bf4ab5161443cdaf19c0",
+  "models": [
+    {
+      "model": "base",
+      "loadSeconds": 0.51,
+      "inferenceSeconds": 1.235,
+      "durationSeconds": 5.784,
+      "rtf": 0.2135,
+      "textCodePoints": 18,
+      "transcriptSha256": "add05ae88bb3055b48acfbd4260acd5bf724bd7bbc45d80c06554a2d5bffdab5"
+    },
+    {
+      "model": "small",
+      "loadSeconds": 1.813,
+      "inferenceSeconds": 3.609,
+      "durationSeconds": 5.784,
+      "rtf": 0.6239,
+      "textCodePoints": 18,
+      "transcriptSha256": "63036d4051d1b38007fe6578fc88b0e08be8ced7289f3ac8b73e7778776e7890"
+    }
+  ],
+  "privacy": "No audio or transcript is stored."
+}

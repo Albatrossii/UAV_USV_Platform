@@ -44,4 +44,4 @@
 "S03","完全离线推理","模型缓存后阻断外网","真实录音仍成功，无云端或遥测依赖","PASS_REAL","已有真实HTTP/浏览器/模型或现场证据，详见E1覆盖基线","P1-E1-覆盖基线-20260924.md"
 "S04","资源竞争","Unity及Runner同时运行时转写","记录CPU/RAM/心跳，不因ASR饿死算法进程","PASS_REAL","复用D4 Unity证据并补Runner在线时完整进程树资源采样，RTF 0.784且心跳与四动作正常","evidence/e1-s04-runner-asr-resource-20260924.json"
 "Q01","准确率评测","固定真人录音集与人工参考文本","输出CER、术语命中率、噪声分组结果","NOT_RUN","60条文本、3位说话人和40/10/10分组已冻结；实际录音与人工复核待完成","E1-60条录音任务表.csv"
-"Q02","性能评测","base/small各相同音频，冷启动和预热分开","记录p50/p95、RTF、峰值内存及超时率","NOT_RUN","base/small已离线加载且工具就绪；等待同一60条冻结录音","evidence/e1-q02-model-readiness-20260924.json"
+"Q02","性能评测","base/small各相同音频，冷启动和预热分开","记录p50/p95、RTF、峰值内存及超时率","NOT_RUN","base/small已离线加载并完成同一授权录音单条冒烟；单条pilot不代替60条统计","evidence/e1-q02-single-sample-pilot-20260924.json"
