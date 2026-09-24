@@ -1,47 +1,47 @@
-﻿case_id,scenario,input_or_action,expected,status,actual,evidence
-A01,未登录上传,无登录会话 POST,401 UNAUTHORIZED；模型调用为0,NOT_RUN,,
-A02,普通用户上传,非 ADMIN 会话及有效CSRF,403 FORBIDDEN；调用为0,NOT_RUN,,
-A03,CSRF失效,ADMIN使用错误或缺失CSRF,403 CSRF_INVALID,NOT_RUN,,
-A04,运行中撤权,模型处理期间禁用账号或撤销ADMIN,结果返回前复核，403；不泄露文字,NOT_RUN,,
-A05,跨账号同键,两个账号使用同一UUID,幂等空间独立；不能获得对方结果,NOT_RUN,,
-A06,功能关闭,关闭ASR后上传,503 VOICE_INTELLIGENCE_DISABLED；P0手工控制可用,NOT_RUN,,
-C01,三个标识一致,表单及两个头使用相同小写UUID,合法请求可受理,NOT_RUN,,
-C02,标识缺失或不同,分别缺失及改写请求标识,400 VOICE_INVALID_REQUEST；调用为0,NOT_RUN,,
-C03,multipart边界,真实浏览器自动生成boundary,成功读取唯一audio部件,NOT_RUN,,
-C04,空和超大文件,0字节、5MiB+1、总请求6MiB+1,分别400 VOICE_AUDIO_EMPTY、413 VOICE_AUDIO_TOO_LARGE,NOT_RUN,,
-C05,MIME与文件不符,文本伪装audio/webm；codec不支持,415 VOICE_AUDIO_FORMAT_UNSUPPORTED,NOT_RUN,,
-C06,真实五种容器,WebM/Opus、Ogg/Opus、MP4/AAC、WAV/PCM、MP3各真实录音,逐项解码并转写；未通过的格式不得宣称支持,NOT_RUN,,
-C07,时长边界,有效短音频、60000ms、60001ms,前两者允许，后者413 VOICE_AUDIO_TOO_LONG,NOT_RUN,,
-C08,字段与重复部件,未知表单字段、两个audio、非zh-CN,400 VOICE_INVALID_REQUEST,NOT_RUN,,
-C09,输出结构,实际成功响应,SUCCESS包装、durationMs为1–60000整数、无未知字段、no-store,NOT_RUN,,
-C10,静音和无语音,静音、空白噪声录音,422 VOICE_NO_SPEECH；不展示幻觉文字为有效指令,NOT_RUN,,
-C11,输出长度,转写超过500码点,422 VOICE_TRANSCRIPT_TOO_LONG；不静默截断,NOT_RUN,,
-C12,解码资源限制,异常采样率/声道、损坏容器、解码膨胀,受限拒绝；不导致服务耗尽,NOT_RUN,,
-I01,完成后同键重放,相同用户/音频/标识POST两次,相同业务响应与timestamp；模型只调用一次,NOT_RUN,,
-I02,同键不同音频,复用键替换音频字节,409 IDEMPOTENCY_CONFLICT,NOT_RUN,,
-I03,同键并发,同时提交同键相同请求,至多一次推理；另一请求409 VOICE_REQUEST_IN_PROGRESS和Retry-After:2,NOT_RUN,,
-I04,处理中取消恢复,浏览器取消后页面内原请求重发,复用键和Blob；不重复推理,NOT_RUN,,
-I05,刷新恢复边界,识别中刷新或卸载组件,清除音频/文字，不自动重发；明确结果可能已处理,NOT_RUN,,
-I06,结果过期墓碑,可控时钟跨24小时及7天边界,24小时清正文；7天内409 VOICE_REQUEST_EXPIRED；不自动重算,NOT_RUN,,
-I07,处理中后端崩溃,推理发出后终止Java并重启,409 VOICE_REQUEST_OUTCOME_UNKNOWN；禁止自动再调用,NOT_RUN,,
-I08,ASR子进程崩溃,处理中终止独立ASR worker,受控失败/未知终态；不影响算法Runner,NOT_RUN,,
-R01,推理总超时,注入超过120秒处理,504 VOICE_TRANSCRIPTION_TIMEOUT；迟到结果不覆盖,NOT_RUN,,
-R02,上传超时,持续慢上传超过10秒,408 VOICE_UPLOAD_TIMEOUT；音频缓冲释放,NOT_RUN,,
-R03,本机并发限制,多个用户同时请求,全局1次推理；额外请求429及Retry-After,NOT_RUN,,
-R04,单用户速率,一分钟内超过10个新请求,429 VOICE_RATE_LIMITED；不额外推理,NOT_RUN,,
-R05,模型未就绪,启动未完成或模型文件缺失,503 VOICE_PROVIDER_UNAVAILABLE；禁止请求时临时下载,NOT_RUN,,
-R06,权限与缓存,完成后撤权再重放,403而非返回缓存文字,NOT_RUN,,
-R07,服务不可达,断开Java与本地ASR服务,503 VOICE_PROVIDER_UNAVAILABLE；可恢复提示,NOT_RUN,,
-B01,浏览器实录,真人麦克风录制5–15秒中文,真实模型返回可编辑文字；非Mock,NOT_RUN,,
-B02,麦克风拒绝,拒绝麦克风授权,友好提示；无空上传,NOT_RUN,,
-B03,录音自动结束,达到60秒或切换页面,停止采集；卸载清理资源,NOT_RUN,,
-B04,用户切换迟到,A上传后退出，以B登录,A迟到文字不进入B页面,NOT_RUN,,
-B05,无算法实例识别,不启动仿真，仅打开ASR入口,识别可用，不依赖runtime/sceneReady,NOT_RUN,,
-B06,不触发控制,说出开始/停止等词后完成转写,proposal/execution/command新增数量均0,NOT_RUN,,
-B07,保留手工P0,ASR运行时手动四动作及关闭ASR,手工P0按既有规则工作；不将ASR结果自动送入P0,NOT_RUN,,
-S01,音频不落盘,观察请求成功/失败/超时的临时目录与日志,无原始音频持久文件、浏览器存储或普通日志文本,NOT_RUN,,
-S02,加密及清理,检查结果库加密、24小时/7天/30天清理,权限受限且清理入口可执行，有证据,NOT_RUN,,
-S03,完全离线推理,模型缓存后阻断外网,真实录音仍成功，无云端或遥测依赖,NOT_RUN,,
-S04,资源竞争,Unity及Runner同时运行时转写,记录CPU/RAM/心跳，不因ASR饿死算法进程,NOT_RUN,,
-Q01,准确率评测,固定真人录音集与人工参考文本,输出CER、术语命中率、噪声分组结果,NOT_RUN,,
-Q02,性能评测,base/small各相同音频，冷启动和预热分开,记录p50/p95、RTF、峰值内存及超时率,NOT_RUN,,
+"case_id","scenario","input_or_action","expected","status","actual","evidence"
+"A01","未登录上传","无登录会话 POST","401 UNAUTHORIZED；模型调用为0","PASS_AUTOMATED","2026-09-24定向Java回归通过，核心边界已自动验证","P1-E1-覆盖基线-20260924.md"
+"A02","普通用户上传","非 ADMIN 会话及有效CSRF","403 FORBIDDEN；调用为0","PASS_AUTOMATED","2026-09-24定向Java回归通过，核心边界已自动验证","P1-E1-覆盖基线-20260924.md"
+"A03","CSRF失效","ADMIN使用错误或缺失CSRF","403 CSRF_INVALID","PASS_AUTOMATED","2026-09-24定向Java回归通过，核心边界已自动验证","P1-E1-覆盖基线-20260924.md"
+"A04","运行中撤权","模型处理期间禁用账号或撤销ADMIN","结果返回前复核，403；不泄露文字","PASS_AUTOMATED","2026-09-24定向Java回归通过，核心边界已自动验证","P1-E1-覆盖基线-20260924.md"
+"A05","跨账号同键","两个账号使用同一UUID","幂等空间独立；不能获得对方结果","PASS_AUTOMATED","2026-09-24定向Java回归通过，核心边界已自动验证","P1-E1-覆盖基线-20260924.md"
+"A06","功能关闭","关闭ASR后上传","503 VOICE_INTELLIGENCE_DISABLED；P0手工控制可用","PARTIAL","关闭路径自动化通过；缺关闭ASR后的真实浏览器P0四动作","P1-E1-覆盖基线-20260924.md"
+"C01","三个标识一致","表单及两个头使用相同小写UUID","合法请求可受理","PASS_REAL","已有真实HTTP/浏览器/模型或现场证据，详见E1覆盖基线","P1-E1-覆盖基线-20260924.md"
+"C02","标识缺失或不同","分别缺失及改写请求标识","400 VOICE_INVALID_REQUEST；调用为0","PASS_AUTOMATED","2026-09-24定向Java回归通过，核心边界已自动验证","P1-E1-覆盖基线-20260924.md"
+"C03","multipart边界","真实浏览器自动生成boundary","成功读取唯一audio部件","PASS_REAL","已有真实HTTP/浏览器/模型或现场证据，详见E1覆盖基线","P1-E1-覆盖基线-20260924.md"
+"C04","空和超大文件","0字节、5MiB+1、总请求6MiB+1","分别400 VOICE_AUDIO_EMPTY、413 VOICE_AUDIO_TOO_LARGE","PARTIAL","文件边界自动化通过；缺总multipart 6MiB+1真实HTTP","P1-E1-覆盖基线-20260924.md"
+"C05","MIME与文件不符","文本伪装audio/webm；codec不支持","415 VOICE_AUDIO_FORMAT_UNSUPPORTED","PASS_REAL","已有真实HTTP/浏览器/模型或现场证据，详见E1覆盖基线","P1-E1-覆盖基线-20260924.md"
+"C06","真实五种容器","WebM/Opus、Ogg/Opus、MP4/AAC、WAV/PCM、MP3各真实录音","逐项解码并转写；未通过的格式不得宣称支持","PARTIAL","WebM/Opus和MP3通过；其余三格式待测","P1-E1-覆盖基线-20260924.md"
+"C07","时长边界","有效短音频、60000ms、60001ms","前两者允许，后者413 VOICE_AUDIO_TOO_LONG","PARTIAL","58秒软停止通过；60000/60001ms精确边界待测","P1-E1-覆盖基线-20260924.md"
+"C08","字段与重复部件","未知表单字段、两个audio、非zh-CN","400 VOICE_INVALID_REQUEST","PARTIAL","未知字段和重复部件通过；非zh-CN真实HTTP待测","P1-E1-覆盖基线-20260924.md"
+"C09","输出结构","实际成功响应","SUCCESS包装、durationMs为1–60000整数、无未知字段、no-store","PASS_REAL","已有真实HTTP/浏览器/模型或现场证据，详见E1覆盖基线","P1-E1-覆盖基线-20260924.md"
+"C10","静音和无语音","静音、空白噪声录音","422 VOICE_NO_SPEECH；不展示幻觉文字为有效指令","PASS_REAL","已有真实HTTP/浏览器/模型或现场证据，详见E1覆盖基线","P1-E1-覆盖基线-20260924.md"
+"C11","输出长度","转写超过500码点","422 VOICE_TRANSCRIPT_TOO_LONG；不静默截断","PASS_AUTOMATED","2026-09-24定向Java回归通过，核心边界已自动验证","P1-E1-覆盖基线-20260924.md"
+"C12","解码资源限制","异常采样率/声道、损坏容器、解码膨胀","受限拒绝；不导致服务耗尽","PARTIAL","损坏容器通过；异常声道/采样率/解码膨胀待测","P1-E1-覆盖基线-20260924.md"
+"I01","完成后同键重放","相同用户/音频/标识POST两次","相同业务响应与timestamp；模型只调用一次","PASS_REAL","已有真实HTTP/浏览器/模型或现场证据，详见E1覆盖基线","P1-E1-覆盖基线-20260924.md"
+"I02","同键不同音频","复用键替换音频字节","409 IDEMPOTENCY_CONFLICT","PASS_AUTOMATED","2026-09-24定向Java回归通过，核心边界已自动验证","P1-E1-覆盖基线-20260924.md"
+"I03","同键并发","同时提交同键相同请求","至多一次推理；另一请求409 VOICE_REQUEST_IN_PROGRESS和Retry-After:2","PASS_AUTOMATED","2026-09-24定向Java回归通过，核心边界已自动验证","P1-E1-覆盖基线-20260924.md"
+"I04","处理中取消恢复","浏览器取消后页面内原请求重发","复用键和Blob；不重复推理","PASS_REAL","已有真实HTTP/浏览器/模型或现场证据，详见E1覆盖基线","P1-E1-覆盖基线-20260924.md"
+"I05","刷新恢复边界","识别中刷新或卸载组件","清除音频/文字，不自动重发；明确结果可能已处理","PASS_REAL","已有真实HTTP/浏览器/模型或现场证据，详见E1覆盖基线","P1-E1-覆盖基线-20260924.md"
+"I06","结果过期墓碑","可控时钟跨24小时及7天边界","24小时清正文；7天内409 VOICE_REQUEST_EXPIRED；不自动重算","NOT_IMPLEMENTED","24小时加密正文结果及过期语义未实现","P1-E1-覆盖基线-20260924.md"
+"I07","处理中后端崩溃","推理发出后终止Java并重启","409 VOICE_REQUEST_OUTCOME_UNKNOWN；禁止自动再调用","PASS_REAL","已有真实HTTP/浏览器/模型或现场证据，详见E1覆盖基线","P1-E1-覆盖基线-20260924.md"
+"I08","ASR子进程崩溃","处理中终止独立ASR worker","受控失败/未知终态；不影响算法Runner","NOT_RUN","真实ASR worker崩溃隔离未执行","P1-E1-覆盖基线-20260924.md"
+"R01","推理总超时","注入超过120秒处理","504 VOICE_TRANSCRIPTION_TIMEOUT；迟到结果不覆盖","PASS_AUTOMATED","2026-09-24定向Java回归通过，核心边界已自动验证","P1-E1-覆盖基线-20260924.md"
+"R02","上传超时","持续慢上传超过10秒","408 VOICE_UPLOAD_TIMEOUT；音频缓冲释放","PASS_AUTOMATED","2026-09-24定向Java回归通过，核心边界已自动验证","P1-E1-覆盖基线-20260924.md"
+"R03","本机并发限制","多个用户同时请求","全局1次推理；额外请求429及Retry-After","PARTIAL","单任务busy通过；双账号真实并发待测","P1-E1-覆盖基线-20260924.md"
+"R04","单用户速率","一分钟内超过10个新请求","429 VOICE_RATE_LIMITED；不额外推理","PASS_AUTOMATED","2026-09-24定向Java回归通过，核心边界已自动验证","P1-E1-覆盖基线-20260924.md"
+"R05","模型未就绪","启动未完成或模型文件缺失","503 VOICE_PROVIDER_UNAVAILABLE；禁止请求时临时下载","PASS_AUTOMATED","2026-09-24定向Java回归通过，核心边界已自动验证","P1-E1-覆盖基线-20260924.md"
+"R06","权限与缓存","完成后撤权再重放","403而非返回缓存文字","PASS_AUTOMATED","2026-09-24定向Java回归通过，核心边界已自动验证","P1-E1-覆盖基线-20260924.md"
+"R07","服务不可达","断开Java与本地ASR服务","503 VOICE_PROVIDER_UNAVAILABLE；可恢复提示","PASS_REAL","已有真实HTTP/浏览器/模型或现场证据，详见E1覆盖基线","P1-E1-覆盖基线-20260924.md"
+"B01","浏览器实录","真人麦克风录制5–15秒中文","真实模型返回可编辑文字；非Mock","PASS_REAL","已有真实HTTP/浏览器/模型或现场证据，详见E1覆盖基线","P1-E1-覆盖基线-20260924.md"
+"B02","麦克风拒绝","拒绝麦克风授权","友好提示；无空上传","PASS_REAL","已有真实HTTP/浏览器/模型或现场证据，详见E1覆盖基线","P1-E1-覆盖基线-20260924.md"
+"B03","录音自动结束","达到60秒或切换页面","停止采集；卸载清理资源","PARTIAL","58秒自动停止通过；切页资源释放待测","P1-E1-覆盖基线-20260924.md"
+"B04","用户切换迟到","A上传后退出，以B登录","A迟到文字不进入B页面","PASS_REAL","已有真实HTTP/浏览器/模型或现场证据，详见E1覆盖基线","P1-E1-覆盖基线-20260924.md"
+"B05","无算法实例识别","不启动仿真，仅打开ASR入口","识别可用，不依赖runtime/sceneReady","PASS_REAL","已有真实HTTP/浏览器/模型或现场证据，详见E1覆盖基线","P1-E1-覆盖基线-20260924.md"
+"B06","不触发控制","说出开始/停止等词后完成转写","proposal/execution/command新增数量均0","PASS_REAL","已有真实HTTP/浏览器/模型或现场证据，详见E1覆盖基线","P1-E1-覆盖基线-20260924.md"
+"B07","保留手工P0","ASR运行时手动四动作及关闭ASR","手工P0按既有规则工作；不将ASR结果自动送入P0","PARTIAL","P0基线通过；关闭ASR后的同轮四动作待测","P1-E1-覆盖基线-20260924.md"
+"S01","音频不落盘","观察请求成功/失败/超时的临时目录与日志","无原始音频持久文件、浏览器存储或普通日志文本","PASS_REAL","已有真实HTTP/浏览器/模型或现场证据，详见E1覆盖基线","P1-E1-覆盖基线-20260924.md"
+"S02","加密及清理","检查结果库加密、24小时/7天/30天清理","权限受限且清理入口可执行，有证据","NOT_IMPLEMENTED","加密结果库与30天审计清理未实现","P1-E1-覆盖基线-20260924.md"
+"S03","完全离线推理","模型缓存后阻断外网","真实录音仍成功，无云端或遥测依赖","PASS_REAL","已有真实HTTP/浏览器/模型或现场证据，详见E1覆盖基线","P1-E1-覆盖基线-20260924.md"
+"S04","资源竞争","Unity及Runner同时运行时转写","记录CPU/RAM/心跳，不因ASR饿死算法进程","PARTIAL","真实并行链路通过；资源曲线未记录","P1-E1-覆盖基线-20260924.md"
+"Q01","准确率评测","固定真人录音集与人工参考文本","输出CER、术语命中率、噪声分组结果","NOT_RUN","固定60条评测集未准备","P1-E1-覆盖基线-20260924.md"
+"Q02","性能评测","base/small各相同音频，冷启动和预热分开","记录p50/p95、RTF、峰值内存及超时率","NOT_RUN","冻结数据集完整性能统计未执行","P1-E1-覆盖基线-20260924.md"
