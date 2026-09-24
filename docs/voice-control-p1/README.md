@@ -22,4 +22,4 @@ V20新增最小受理墓碑；V21在配置加密密钥后保存 AES-256-GCM 终�
 
 真实服务就绪后：设置D1_TEST_USERNAME/D1_TEST_PASSWORD，再执行python docs/voice-control-p1/verify-d1-http.py --audio <本机授权音频> --mime audio/mpeg --output <本机结果JSON>。Java重启后可增加--request-id <原UUID> --expect-code VOICE_REQUEST_OUTCOME_UNKNOWN验证墓碑。脚本不输出Cookie、密码、原音频和完整文字；仅HTTP及同键重放/重启保护冒烟，不代替浏览器D01–D12。
 
-E1 当前为 44/46 条通过、0 条部分覆盖、2 条统计评测待执行。五格式、异常音频资源边界、跨重启加密恢复、ASR关闭时P0四动作及Runner并行资源证据均已补齐；Q01/Q02 的60条/3说话人冻结数据集尚未准备，因此不宣布E1完成。详见 [E1 覆盖基线](P1-E1-覆盖基线-20260924.md)、[E1 验收清单](P1-ASR-验收清单-v1.2.csv) 与 [Q01/Q02 数据集准备说明](E1-Q01-Q02-数据集准备说明.md)。
+E1 当前 46/46 条均有通过证据，0 条部分覆盖，0 条未执行。五格式、异常音频资源边界、跨重启加密恢复、ASR关闭时P0四动作、Runner并行资源，以及 Q01/Q02 的60条/3说话人冻结集统计均已完成。small 的总 CER 为24.0981%、术语命中率13.0435%，性能为预热p95 3.479秒、RTF 0.6378、0超时；方案尚未冻结质量合格阈值，因此工程覆盖已完成，但不能宣称准确率目标已经获批。详见 [E1 覆盖基线](P1-E1-覆盖基线-20260924.md)、[E1 验收清单](P1-ASR-验收清单-v1.2.csv) 与 [Q01/Q02 评测证据](evidence/e1-q01-q02-corpus-evaluation-20260924.json)。

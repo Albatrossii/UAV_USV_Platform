@@ -43,5 +43,5 @@
 "S02","加密及清理","检查结果库加密、24小时/7天/30天清理","权限受限且清理入口可执行，有证据","PASS_AUTOMATED","V21仅保存AES-256-GCM密文；审计表不含正文；定时清理入口覆盖24小时密文、7天墓碑和30天审计；H2与MySQL 8迁移通过","evidence/e1-encrypted-persistence-20260924.json"
 "S03","完全离线推理","模型缓存后阻断外网","真实录音仍成功，无云端或遥测依赖","PASS_REAL","已有真实HTTP/浏览器/模型或现场证据，详见E1覆盖基线","P1-E1-覆盖基线-20260924.md"
 "S04","资源竞争","Unity及Runner同时运行时转写","记录CPU/RAM/心跳，不因ASR饿死算法进程","PASS_REAL","复用D4 Unity证据并补Runner在线时完整进程树资源采样，RTF 0.784且心跳与四动作正常","evidence/e1-s04-runner-asr-resource-20260924.json"
-"Q01","准确率评测","固定真人录音集与人工参考文本","输出CER、术语命中率、噪声分组结果","NOT_RUN","60条文本、3位说话人和40/10/10分组已冻结；实际录音与人工复核待完成","E1-60条录音任务表.csv"
-"Q02","性能评测","base/small各相同音频，冷启动和预热分开","记录p50/p95、RTF、峰值内存及超时率","NOT_RUN","base/small已离线加载并完成同一授权录音单条冒烟；单条pilot不代替60条统计","evidence/e1-q02-single-sample-pilot-20260924.json"
+"Q01","准确率评测","固定真人录音集与人工参考文本","输出CER、术语命中率、噪声分组结果","PASS_REAL","60条、3位说话人、40/10/10冻结集完成；base CER 39.1053%、术语8.6957%，small CER 24.0981%、术语13.0435%；质量阈值尚未冻结","evidence/e1-q01-q02-corpus-evaluation-20260924.json"
+"Q02","性能评测","base/small各相同音频，冷启动和预热分开","记录p50/p95、RTF、峰值内存及超时率","PASS_REAL","同一60条、CPU INT8、4线程、0超时；base p50/p95 1.014/1.160秒、RTF 0.2083、314.9 MiB；small 3.165/3.479秒、RTF 0.6378、637.5 MiB","evidence/e1-q01-q02-corpus-evaluation-20260924.json"
