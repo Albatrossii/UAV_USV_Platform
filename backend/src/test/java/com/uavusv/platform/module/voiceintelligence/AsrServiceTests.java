@@ -44,6 +44,8 @@ class AsrServiceTests {
         acceptances = mock(AsrAcceptanceStore.class);
         when(acceptances.reserve(anyLong(), anyString(), anyString(), any()))
                 .thenReturn(AsrAcceptanceStore.Reservation.NEW);
+        when(acceptances.restore(anyLong(), anyString(), anyString(), any()))
+                .thenReturn(AsrAcceptanceStore.Stored.unknown());
         clock = new Time();
         service = new AsrService(access, settings, provider, acceptances, clock);
         when(provider.transcribe(any(), anyLong()))
@@ -281,6 +283,30 @@ class AsrServiceTests {
                                         System.nanoTime() + TimeUnit.SECONDS.toNanos(120)));
         assertEquals("VOICE_REQUEST_OUTCOME_UNKNOWN", e.code);
         verify(provider, times(1)).transcribe(any(), anyLong());
+    }
+
+    @Test
+    void restartReturnsPersistedOutcomeWithoutInference() {
+        String id = UUID.randomUUID().toString();
+        var expected = new AsrResponses.Outcome(200, Map.of("code", "SUCCESS"), null);
+        when(acceptances.reserve(eq(1L), eq(id), anyString(), any()))
+                .thenReturn(AsrAcceptanceStore.Reservation.MATCH);
+        when(acceptances.restore(eq(1L), eq(id), anyString(), any()))
+                .thenReturn(new AsrAcceptanceStore.Stored(AsrAcceptanceStore.StoredState.RESTORED, expected));
+        assertSame(expected, call(1, id));
+        verifyNoInteractions(provider);
+    }
+
+    @Test
+    void expiredPersistedOutcomeDoesNotRepeatInference() {
+        String id = UUID.randomUUID().toString();
+        when(acceptances.reserve(eq(1L), eq(id), anyString(), any()))
+                .thenReturn(AsrAcceptanceStore.Reservation.MATCH);
+        when(acceptances.restore(eq(1L), eq(id), anyString(), any()))
+                .thenReturn(new AsrAcceptanceStore.Stored(AsrAcceptanceStore.StoredState.EXPIRED, null));
+        var failure = assertThrows(AsrFailure.class, () -> call(1, id));
+        assertEquals("VOICE_REQUEST_EXPIRED", failure.code);
+        verifyNoInteractions(provider);
     }
 
     @Test

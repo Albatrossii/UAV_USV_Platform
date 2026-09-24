@@ -30,9 +30,9 @@
   "coverage": {
     "total": 46,
     "passReal": 18,
-    "passAutomated": 19,
+    "passAutomated": 21,
     "partial": 5,
-    "notImplemented": 2,
+    "notImplemented": 0,
     "notRun": 2
   },
   "incrementalChecks": {

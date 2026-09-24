@@ -1,0 +1,32 @@
+{
+  "testedAt": "2026-09-24T16:20:52+08:00",
+  "branch": "mxy/p1-llm-20260924",
+  "migration": {
+    "version": 21,
+    "mysql": "MySQL 8.0 random temporary database",
+    "migrationsApplied": 21,
+    "tests": 1,
+    "failures": 0,
+    "temporaryDatabaseRemovedByTest": true
+  },
+  "java": {
+    "targetedTests": 60,
+    "failures": 0,
+    "errors": 0,
+    "result": "BUILD SUCCESS"
+  },
+  "retention": {
+    "result": "AES-256-GCM encrypted outcome with random 12-byte IV and authenticated request identity",
+    "resultHours": 24,
+    "tombstoneDays": 7,
+    "auditDays": 30,
+    "expiredBehavior": "409 VOICE_REQUEST_EXPIRED without repeated inference",
+    "auditContainsTranscript": false
+  },
+  "configuration": {
+    "environmentVariable": "D1_ASR_RESULT_ENCRYPTION_KEY",
+    "valueStoredInRepository": false,
+    "requiredEncoding": "base64 of exactly 32 random bytes"
+  },
+  "secretsAudioOrTranscriptStoredInEvidence": false
+}

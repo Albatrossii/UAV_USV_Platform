@@ -6,6 +6,8 @@ app:
     token: ${D1_ASR_TOKEN:}
     model-revision: ${D1_ASR_MODEL_REVISION:}
     model-alias: whisper-small-cpu-int8-r1
+    # E1 only: base64-encoded 32-byte AES key. Keep outside source control and ordinary logs.
+    result-encryption-key: ${D1_ASR_RESULT_ENCRYPTION_KEY:}
     # D3 defaults to rules. Set local-llm only after the pinned llama.cpp service is ready.
     intent-provider: ${D3_INTENT_PROVIDER:rules}
     llm-base-url: ${D3_LLM_BASE_URL:http://127.0.0.1:18083}

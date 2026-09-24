@@ -8,7 +8,9 @@ D4 整链路集成复测已完成：`真实录音 → 本地 ASR → 人工核�
 
 配置见application-d1-asr.yml，启动见start-d1-java.ps1（默认只检查，需先打包）；需环境变量P0_DB_PASSWORD、P0_ADMIN_PASSWORD、P0_INTEGRATION_TOKEN、P0_PYTHON、P0_RUNNER，以及D1_ASR_TOKEN和D1_ASR_MODEL_REVISION。ASR仅127.0.0.1:18082。网页统一localhost，登录后进入`/?workspace=simulation`，校验现有Cookie及CSRF配置。
 
-V20新增最小受理墓碑，只保存userId、endpoint、requestId、音频指纹和受理/过期时间，不保存音频或文字。内存结果仍按全局1000条、终态30分钟和每分钟清理；墓碑保留7天。Java重启后同键同内容返回409 VOICE_REQUEST_OUTCOME_UNKNOWN，同键不同内容返回409 IDEMPOTENCY_CONFLICT，均禁止再次调用Python；7天到期后才允许作为新请求受理。
+E1 加密结果恢复还要求 `D1_ASR_RESULT_ENCRYPTION_KEY`：值为恰好 32 个随机字节的 Base64。密钥不得写入仓库、普通日志或前端；同一环境跨重启必须保持稳定。更换或丢失密钥会使尚在 24 小时恢复期内的密文不可解，应先暂停提交并按运维流程处理，不能自动重试推理。
+
+V20新增最小受理墓碑；V21在配置加密密钥后保存 AES-256-GCM 终态密文。结果可恢复24小时，之后清除密文并在7天墓碑期返回409 VOICE_REQUEST_EXPIRED；同键不同内容返回409 IDEMPOTENCY_CONFLICT。30天审计只保存请求标识、状态和时间，不保存音频或文字。没有配置V21密钥时保持D1兼容行为：重启后的旧键返回VOICE_REQUEST_OUTCOME_UNKNOWN，仍禁止再次调用Python。
 
 启用ASR时Tomcat上传读超时10秒、maxSwallowSize=0；该连接器设置会作用于该Java进程其他上传入口，D1应使用隔离服务。音频入口采用Servlet非阻塞读取且有10秒总期限，防止multipart落盘；Servlet容器不解析该路径的multipart。其他路径保持原过滤。
 
