@@ -11,6 +11,8 @@ import com.uavusv.platform.module.voicecontrol.VoiceJson;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.time.Clock;
+import java.time.Instant;
 import java.util.Map;
 
 class IntentServiceTests {
@@ -98,6 +100,22 @@ class IntentServiceTests {
         assertEquals("VOICE_INTERPRETATION_INVALID", wrong.code);
         assertThrows(
                 AsrFailure.class, () -> service.requireCandidate(8, ID, "PAUSE", runtime));
+    }
+
+    @Test
+    void expiredCandidateCannotAuthorizeProposal() {
+        Instant acceptedAt = Instant.parse("2026-09-24T00:00:00Z");
+        Clock clock = mock(Clock.class);
+        when(clock.instant())
+                .thenReturn(acceptedAt, acceptedAt, acceptedAt.plusSeconds(1801));
+        service = new IntentService(access, settings, runtimes, json, clock);
+
+        service.interpret(7, ID, request("暂停任务", null));
+        AsrFailure expired =
+                assertThrows(
+                        AsrFailure.class,
+                        () -> service.requireCandidate(7, ID, "PAUSE", runtime("PAUSE")));
+        assertEquals("VOICE_INTERPRETATION_INVALID", expired.code);
     }
 
     @Test

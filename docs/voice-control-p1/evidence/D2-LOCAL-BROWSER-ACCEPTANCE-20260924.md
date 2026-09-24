@@ -123,3 +123,9 @@
 提案记录保留并校验了 `interpretationId`，证明候选来源与冻结计划已关联。执行记录的展示绑定与当前运行代次一致，六台任务设备与冻结计划一致。录音文件、账号密码、内部令牌和本机配置均未写入证据。
 
 机器可读的脱敏证据见 [d2-physical-microphone-chain-20260924.json](d2-physical-microphone-chain-20260924.json)。
+
+## D2 全清单补验
+
+真实 HTTP 脚本随后完成 D2-01 至 D2-17，共记录 21 个 PASS 项；D2-18 使用本文件中的真实浏览器人工确认链路。临时 VIEWER/第二 ADMIN 身份测试结束后已恢复原账号状态，未确认测试提案已取消且数据库中没有对应 execution。
+
+完整映射见 [D2-COVERAGE-20260924.md](D2-COVERAGE-20260924.md)，脱敏原始结果见 [d2-real-http-20260924.json](d2-real-http-20260924.json)。
