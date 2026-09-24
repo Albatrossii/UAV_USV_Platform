@@ -229,6 +229,42 @@ class AsrServiceTests {
     }
 
     @Test
+    void distinctUsersShareOneGlobalInferenceSlot() throws Exception {
+        var entered = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        when(provider.transcribe(any(), anyLong()))
+                .thenAnswer(
+                        invocation -> {
+                            entered.countDown();
+                            assertTrue(release.await(5, TimeUnit.SECONDS));
+                            var request = (SpeechProvider.Audio) invocation.getArgument(0);
+                            return new SpeechProvider.Transcript(
+                                    request.requestId(), "文本", 10, "r1");
+                        });
+
+        var pool = Executors.newSingleThreadExecutor();
+        try {
+            var first = pool.submit(() -> call(101, UUID.randomUUID().toString()));
+            assertTrue(entered.await(2, TimeUnit.SECONDS));
+
+            var busy =
+                    assertThrows(
+                            AsrFailure.class,
+                            () -> call(202, UUID.randomUUID().toString()));
+            assertEquals(429, busy.status);
+            assertEquals("VOICE_RATE_LIMITED", busy.code);
+            assertEquals(2, busy.retryAfter);
+
+            release.countDown();
+            assertEquals(200, first.get().status());
+            verify(provider, times(1)).transcribe(any(), anyLong());
+        } finally {
+            release.countDown();
+            pool.shutdownNow();
+        }
+    }
+
+    @Test
     void restartWithAcceptedKeyReturnsUnknownWithoutInference() {
         String id = UUID.randomUUID().toString();
         call(1, id);

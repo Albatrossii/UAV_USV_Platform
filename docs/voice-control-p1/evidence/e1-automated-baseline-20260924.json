@@ -29,11 +29,25 @@
   },
   "coverage": {
     "total": 46,
-    "passReal": 17,
-    "passAutomated": 17,
-    "partial": 7,
+    "passReal": 18,
+    "passAutomated": 19,
+    "partial": 5,
     "notImplemented": 2,
-    "notRun": 3
+    "notRun": 2
+  },
+  "incrementalChecks": {
+    "javaAsrServiceTests": {
+      "tests": 16,
+      "failures": 0,
+      "result": "BUILD SUCCESS",
+      "newEvidence": "distinct users share one global inference slot; second request returns 429 and Retry-After 2"
+    },
+    "frontendLocalAsrInput": {
+      "tests": 23,
+      "failures": 0,
+      "result": "PASS",
+      "newEvidence": "58-second final tail, unmount media-track cleanup without upload, remount state cleanup"
+    }
   },
   "secretsOrAudioStored": false
 }
