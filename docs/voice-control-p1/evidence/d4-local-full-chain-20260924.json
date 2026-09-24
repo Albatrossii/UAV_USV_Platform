@@ -1,0 +1,48 @@
+{
+  "testedAt": "2026-09-24T12:10:47+08:00",
+  "scope": "D1 ASR plus D3 local LLM plus P0 confirmed execution",
+  "sourceAudio": {
+    "name": "Standard recording 6.mp3",
+    "sha256": "08859b511bc43a0e9572b75bece5602f77aaf29c38c6bf4ab5161443cdaf19c0",
+    "originalResult": "VOICE_AUDIO_FORMAT_UNSUPPORTED",
+    "normalizedCopyTemporary": true,
+    "normalizedSha256": "7f6fe7a73c36e3639a1438fbd8159841f659454c043cbdc7961f05fd9c72bbc0"
+  },
+  "asr": {
+    "requestId": "c59faef3-772a-4235-8b24-0ab94f25ec99",
+    "httpStatus": 200,
+    "durationMs": 5784,
+    "model": "whisper-small-cpu-int8-r1",
+    "textCodePoints": 18,
+    "identicalReplay": true,
+    "reviewedText": "在暂停无人机和无人船的实验进行下一步"
+  },
+  "interpretation": {
+    "interpretationId": "dcf599a0-1e2e-4afb-a187-c5cf0af597b5",
+    "provider": "local-llm",
+    "model": "qwen2.5-1.5b-instruct-q4_k_m",
+    "classification": "CANDIDATE",
+    "action": "PAUSE",
+    "reason": "MISSION_PAUSE",
+    "originalRequestRecoveryObserved": true
+  },
+  "stateGate": {
+    "preparedPauseRejectedByUi": true,
+    "manualStartProposalId": "9d370401-80ce-47f1-bcf9-af03d9b38c1c",
+    "manualStartExecutionId": "96c17f3f-dbbc-41e1-9a09-1eb50e22f2f7",
+    "manualStartState": "SUCCEEDED"
+  },
+  "confirmedPause": {
+    "proposalId": "a88aeca3-8538-4faa-b02f-c4e4290bd60b",
+    "executionId": "6245fff4-de0f-4401-88c0-b9411b361826",
+    "commandId": "93c59d3f-b686-4f51-be89-8f2f697769e4",
+    "runtimeRef": "d61ea955-b23c-41a1-9423-057b914bc3b4",
+    "runtimeGeneration": "a874c162-7c64-4933-96f3-889157b8deed",
+    "executionState": "SUCCEEDED",
+    "outcome": "SUCCESS",
+    "presentationStatus": "NOT_REQUIRED",
+    "visibleRuntimeState": "PAUSED"
+  },
+  "physicalMicrophoneWithLocalLlm": "PENDING_MANUAL",
+  "result": "PASS_WITH_ONE_MANUAL_ITEM"
+}

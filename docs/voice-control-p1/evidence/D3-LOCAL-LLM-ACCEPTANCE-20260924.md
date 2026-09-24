@@ -34,6 +34,8 @@
 
 安全边界同时得到验证：第一次候选提案超过 30 秒后变为 `EXPIRED`，未生成 execution；P0 手工 STOP 独立创建不带 `interpretationId` 的提案；重建运行上下文后，第二次候选提案在有效期内确认并成功执行。浏览器已退出登录，临时账号已从隔离数据库删除。结构化证据见 `d3-browser-acceptance-20260924.json`。
 
+D3-15 另行在 `127.0.0.1:18083` 无监听进程的条件下完成真实浏览器复测。此时新建 P0 运行上下文保持 `PREPARED / 心跳正常`，手工 STOP 仍可创建冻结提案并人工确认；Runner 最终返回 `SUCCEEDED / SUCCESS`。数据库关联为 `proposalId=50f03c67-8a2d-4bf4-9c75-c439513f1f61`、`executionId=58c7ebc4-e77c-4f1c-8c54-8e08bcad34a3`、`commandId=7522e361-1b11-47cc-97c5-bda258a21c14`，且 `interpretationId=null`。因此本地 LLM 故障不会阻断既有 P0 手工控制。
+
 ## 仓库与外部文件边界
 
 仓库只保存 Java 适配器、测试、启动检查脚本和脱敏证据。模型权重、llama.cpp 二进制、API key、数据库密码和本机日志均留在 `.local-tools`，不得提交。

@@ -51,6 +51,18 @@
       "id": "D3-BROWSER-05",
       "result": "PASS",
       "check": "Temporary browser account logged out and removed"
+    },
+    {
+      "id": "D3-BROWSER-06",
+      "result": "PASS",
+      "check": "P0 manual STOP succeeds while the local LLM port is not listening",
+      "llmPortListening": false,
+      "proposalId": "50f03c67-8a2d-4bf4-9c75-c439513f1f61",
+      "executionId": "58c7ebc4-e77c-4f1c-8c54-8e08bcad34a3",
+      "commandId": "7522e361-1b11-47cc-97c5-bda258a21c14",
+      "interpretationId": null,
+      "executionState": "SUCCEEDED",
+      "outcome": "SUCCESS"
     }
   ],
   "result": "PASS"
