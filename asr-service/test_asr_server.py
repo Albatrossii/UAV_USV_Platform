@@ -6,7 +6,9 @@ import unittest
 import json
 import io
 
-from asr_server import AsrError, MAX_AUDIO, MAX_BODY, REVISION, Runtime, Server, decode_audio, file_sha256, parse_multipart
+from asr_server import (AsrError, DECODING_PROFILE_REVISION, DOMAIN_INITIAL_PROMPT, MAX_AUDIO, MAX_BODY,
+                        MODEL_REVISION, PRODUCTION_TRANSCRIBE_OPTIONS, REVISION, Runtime, Server,
+                        decode_audio, file_sha256, parse_multipart)
 
 TOKEN = 'test-only-not-a-deployment-secret-12345678'
 ID = '11111111-1111-4111-8111-111111111111'
@@ -38,6 +40,17 @@ class HashTests(unittest.TestCase):
         self.assertEqual(
             file_sha256(io.BytesIO(b'abc')),
             'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad')
+
+    def test_production_decoding_profile_is_frozen(self):
+        self.assertEqual(PRODUCTION_TRANSCRIBE_OPTIONS, {
+            'language': 'zh',
+            'beam_size': 5,
+            'vad_filter': True,
+            'condition_on_previous_text': False,
+            'initial_prompt': DOMAIN_INITIAL_PROMPT,
+        })
+        self.assertEqual(REVISION, f'{MODEL_REVISION}+{DECODING_PROFILE_REVISION}')
+        self.assertLessEqual(len(REVISION), 128)
 
 
 class HttpTests(unittest.TestCase):

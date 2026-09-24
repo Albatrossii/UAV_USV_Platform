@@ -6,6 +6,7 @@ import math
 import os
 import pathlib
 import statistics
+import sys
 import threading
 import time
 import unicodedata
@@ -13,6 +14,10 @@ import unicodedata
 import psutil
 from faster_whisper import WhisperModel
 from faster_whisper.audio import decode_audio
+
+REPOSITORY = pathlib.Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(REPOSITORY / "asr-service"))
+from asr_server import PRODUCTION_TRANSCRIBE_OPTIONS, REVISION
 
 
 def normalize(text):
@@ -103,7 +108,7 @@ def evaluate(model_name, model_path, samples, threads):
             audio = decode_audio(item["path"], sampling_rate=16000)
             duration = len(audio) / 16000
             inference_started = time.perf_counter()
-            segments, _ = model.transcribe(audio, language="zh", beam_size=5, vad_filter=False)
+            segments, _ = model.transcribe(audio, **PRODUCTION_TRANSCRIBE_OPTIONS)
             hypothesis = "".join(segment.text for segment in segments)
             elapsed = time.perf_counter() - inference_started
             reference, predicted = normalize(item["reference"]), normalize(hypothesis)
@@ -163,6 +168,7 @@ def main():
     report = {
         "datasetId": manifest["datasetId"], "datasetManifestSha256": hashlib.sha256(pathlib.Path(args.manifest).read_bytes()).hexdigest(),
         "normalizationRevision": manifest["normalizationRevision"], "threads": args.threads,
+        "decodingProfile": PRODUCTION_TRANSCRIBE_OPTIONS,
         "models": models, "privacy": "No audio, reference text, or recognized text is copied into this report.",
     }
     pathlib.Path(args.output).write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")

@@ -7,7 +7,7 @@
 - 首轮目标：mxy i5-10500 / 约16GB，Java、Python、浏览器同机。
 - Python：Windows x64 / 3.13.15，独立venv。small / CPU INT8 / 默认4线程；`requirements-lock-win-py313.txt` 为nly已验证环境，mxy需重新安装核验。
 - 服务的模型指纹计算使用分块SHA256，可在mxy现有Python 3.9诊断环境运行；这不表示3.9依赖已锁定。正式部署仍以本目录Python 3.13锁文件为准。
-- 模型：`Systran/faster-whisper-small` revision `536b0662742c02347bc0e980a01041f333bce120`。4个文件SHA256写在 `asr_server.py` 的 `MODEL_FILES`，启动逐一检查；没有模型时不下载，ready保持503。
+- 模型权重：`Systran/faster-whisper-small` revision `536b0662742c02347bc0e980a01041f333bce120`。4个文件SHA256写在 `asr_server.py` 的 `MODEL_FILES`，启动逐一检查；没有模型时不下载，ready保持503。内部响应的 `modelRevision` 还包含冻结解码配置版本，当前为 `536b0662742c02347bc0e980a01041f333bce120+uav-usv-domain-prompt-v1`；Java 的 `D1_ASR_MODEL_REVISION` 必须使用这个完整值。
 - 只监听127.0.0.1；不提供CORS、查询、取消、意图或控制接口。浏览器只访问Java。
 - 模型缓存允许落盘；在线音频只使用内存。无multipart临时文件，日志仅ID/状态/耗时/PID/是否提交worker，不记录音频和文字。
 - ASR超时不会强行取消计算；单槽直到实际worker结束才释放。D1卡死可由mxy人工停止本服务进程；不要终止Runner。
@@ -69,10 +69,11 @@ $candidate | Select-Object ProcessId,ExecutablePath,CommandLine
 - `GET /health/ready`：200/503，`{"ready":true/false}`；busy时仍ready。
 - `POST /internal/asr/transcriptions`：Bearer内部凭据；`X-ASR-Timeout-Ms` 1..120000；必须有Content-Length，不接受chunked上传；multipart requestId/locale/audio，未知或重复字段拒绝。
 - Java内部客户端须发送确定长度请求体（最大6MiB），这不改变浏览器到Java的协议。
-- 成功：requestId/text/durationMs/modelRevision四字段，模型revision固定上述版本。Java负责映射公开别名，例如whisper-small-cpu-int8-r1。
+- 成功：requestId/text/durationMs/modelRevision四字段，revision同时冻结模型权重和领域提示解码配置。Java负责映射公开别名，例如whisper-small-cpu-int8-r1。
 - 失败：requestId（尚未解析则null）/code/message。业务错误遵循最终稿。
 - 已对齐mxy提交425a96c：非法内部参数HTTP503＋ASR_UNAVAILABLE，鉴权401＋ASR_UNAVAILABLE。Java均按调用配置错误映射503；用户表单错误仍由Java返回400，未新增公共错误。
 - busy返回429 ASR_BUSY，Retry-After:2；该值是重试建议，不承诺任务两秒内结束。Java不得自动重试推理POST。
+- 解码使用冻结领域提示 v1，并保留 Whisper 的低置信度温度回退。不同 requestId 的重复录音可能有小幅输出差异；同一幂等键由 Java 返回已缓存结果，不会再次推理。若改变提示词或解码参数，必须更新完整 `modelRevision` 并重新执行 Q01/Q02。
 - 实际时长按完整解码并重采样的采样数向上取整；严格拒绝损坏包，不像离线冒烟脚本自动跳过坏包。E1 接受单音频轨、最多2声道、48kHz的 WebM/Opus、Ogg/Opus、MP4/AAC、WAV/PCM 与 MP3；容器、codec 和 MIME 必须一致。
 - Python只做本机单槽保护，不持久化业务幂等；Java负责同键恢复、登录、权限、CSRF和缓存。
 - 最多8个HTTP处理线程、读头10秒、请求体6MiB、解码960000采样点上限。D1无独立进程内存硬配额；原生解码卡死按人工恢复流程处理，不把线程timeout当成强制终止。

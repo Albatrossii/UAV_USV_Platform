@@ -20,7 +20,9 @@ import time
 MAX_AUDIO = 5 * 1024 * 1024
 MAX_BODY = 6 * 1024 * 1024
 MAX_SAMPLES = 960000
-REVISION = '536b0662742c02347bc0e980a01041f333bce120'
+MODEL_REVISION = '536b0662742c02347bc0e980a01041f333bce120'
+DECODING_PROFILE_REVISION = 'uav-usv-domain-prompt-v1'
+REVISION = f'{MODEL_REVISION}+{DECODING_PROFILE_REVISION}'
 MODEL_SHA256 = '3e305921506d8872816023e4c273e75d2419fb89b24da97b4fe7bce14170d671'
 MODEL_FILES = {
     'model.bin': MODEL_SHA256,
@@ -29,6 +31,18 @@ MODEL_FILES = {
     'vocabulary.txt': '34ce3fe1c5041027b3f8d42912270993f986dbc4bb34cf27f951e34a1e453913',
 }
 UUID = re.compile(r'[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\Z')
+DOMAIN_INITIAL_PROMPT = (
+    '无人机，无人艇，协同搜索，协同航迹，改进蛙跳算法，粒子群优化，全局最优解，'
+    '运行时引用，运行代次，展示绑定，编队控制，动态避障，航向角速度，经纬度，遥测，'
+    '场景就绪，帧应用回执，幂等请求，命令序列，WebGL，实时因子，峰值内存，九十五分位延迟'
+)
+PRODUCTION_TRANSCRIBE_OPTIONS = {
+    'language': 'zh',
+    'beam_size': 5,
+    'vad_filter': True,
+    'condition_on_previous_text': False,
+    'initial_prompt': DOMAIN_INITIAL_PROMPT,
+}
 
 
 def file_sha256(file_object):
@@ -178,8 +192,7 @@ class LocalEngine:
     def transcribe(self, audio, mime, deadline):
         samples, duration = decode_audio(audio, mime, deadline)
         check_deadline(deadline)
-        segments, _ = self.model.transcribe(samples, language='zh', beam_size=5,
-                                            vad_filter=True, condition_on_previous_text=False)
+        segments, _ = self.model.transcribe(samples, **PRODUCTION_TRANSCRIBE_OPTIONS)
         pieces, length = [], 0
         for segment in segments:
             check_deadline(deadline)
@@ -383,6 +396,7 @@ def main():
         try:
             runtime.engine = LocalEngine(model_path, threads)
             print(json.dumps({'event': 'ASR_READY', 'pid': os.getpid(), 'modelRevision': REVISION,
+                              'decodingProfileRevision': DECODING_PROFILE_REVISION,
                               'threads': threads}), flush=True)
         except Exception:
             print(json.dumps({'event': 'ASR_NOT_READY', 'pid': os.getpid()}), flush=True)
