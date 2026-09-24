@@ -4,7 +4,7 @@ D1 本地 ASR、D2 规则解析候选和 D3 本地 LLM 解析均已完成本机�
 
 D2 第一轮由 Java 本地受限规则解析器实现，用于冻结真实 HTTP、安全、幂等、上下文和 P0 提案来源关联；D3 已在不改变公共接口和人工确认门禁的前提下切换为本地 `Qwen2.5-1.5B-Instruct Q4_K_M`。解析只生成候选，不能直接执行动作。算法 Runner、Python ASR 和 Unity 未因 D3 修改。
 
-下一轮只做整链路集成复测：`真实录音 → 本地 ASR → 人工核对文字 → 本地 LLM 候选 → 冻结提案 → 人工确认 → Runner / Unity`。其目标是验证已完成模块的组合，不扩大动作白名单，不允许模型直接执行，也不另设独立页面。文件输入组合链路已经通过，详见 [D4 整链路验收](P1-D4-本地语音到控制整链路验收-v1.0.md)；仅剩“物理麦克风 + local-llm”一次现场复测。
+D4 整链路集成复测已完成：`真实录音 → 本地 ASR → 人工核对文字 → 本地 LLM 候选 → 冻结提案 → 人工确认 → Runner / Unity`。文件输入与真实物理麦克风两条链路均已通过；动作白名单未扩大，模型不能直接执行，也未新增独立页面。详见 [D4 整链路验收](P1-D4-本地语音到控制整链路验收-v1.0.md)。
 
 配置见application-d1-asr.yml，启动见start-d1-java.ps1（默认只检查，需先打包）；需环境变量P0_DB_PASSWORD、P0_ADMIN_PASSWORD、P0_INTEGRATION_TOKEN、P0_PYTHON、P0_RUNNER，以及D1_ASR_TOKEN和D1_ASR_MODEL_REVISION。ASR仅127.0.0.1:18082。网页统一localhost，登录后进入`/?workspace=simulation`，校验现有Cookie及CSRF配置。
 
