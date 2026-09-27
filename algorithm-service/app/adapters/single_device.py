@@ -175,10 +175,13 @@ class SingleDeviceControlAdapter(AlgorithmAdapter):
             frame.metrics["controlOverrideActive"] = False
             frame.metrics["completionBlocker"] = "NONE"
             if self._remaining_force_is_insufficient(frame, returned):
-                frame.terminalStatus = "FAILED"
-                frame.phase = "FAILED"
-                frame.metrics["terminalReason"] = "INSUFFICIENT_ACTIVE_FORCE"
-                frame.metrics["missionFailureReason"] = "INSUFFICIENT_ACTIVE_FORCE"
+                # A withdrawal is a recoverable degraded condition, not an
+                # immediate mission failure. Keep the runner alive so the
+                # operator can rejoin a returned device or choose another
+                # course of action.
+                frame.terminalStatus = None
+                frame.metrics["completionBlocker"] = "INSUFFICIENT_ACTIVE_FORCE"
+                frame.metrics["missionDegradedReason"] = "INSUFFICIENT_ACTIVE_FORCE"
         return frame
 
     def _remaining_force_is_insufficient(
@@ -189,19 +192,26 @@ class SingleDeviceControlAdapter(AlgorithmAdapter):
         """Reject a false success when permanent withdrawals break quorum."""
         active_agents = [agent for agent in frame.agents if agent.code.upper() not in returned]
         if self.code.startswith("GB_SFLA_CS"):
-            configured = frame.metrics.get("requiredCaptureAgents", 5)
+            configured = self.config.get("minimumActiveMissionDeviceCount", 5)
             try:
                 required = int(configured)
             except (TypeError, ValueError):
                 required = 5
             if required <= 0:
-                required = min(5, len(frame.agents))
+                required = 5
+            required = min(required, len(frame.agents))
             frame.metrics["requiredActiveMissionDeviceCount"] = required
+            frame.metrics["activeMissionDeviceDeficit"] = max(
+                0, required - len(active_agents)
+            )
             return len(active_agents) < required
 
         active_types = {agent.type.upper() for agent in active_agents}
         frame.metrics["requiredActiveDeviceTypes"] = ["UAV", "USV"]
-        return not {"UAV", "USV"}.issubset(active_types)
+        missing = sorted({"UAV", "USV"} - active_types)
+        frame.metrics["missingActiveDeviceTypes"] = missing
+        frame.metrics["activeMissionDeviceDeficit"] = len(missing)
+        return bool(missing)
 
     def _move_towards(
         self,

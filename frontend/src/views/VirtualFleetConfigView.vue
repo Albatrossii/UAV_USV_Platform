@@ -461,9 +461,15 @@ const controlledDevices = computed<ControlledDeviceSummary[]>(() => {
 })
 const singleDeviceRuntimeNotice = computed(() => {
   if (!isSingleDeviceAlgorithm.value) return ''
-  const failureReason = String(missionMetrics.value.missionFailureReason ?? '')
-  if (failureReason === 'INSUFFICIENT_ACTIVE_FORCE') {
-    return '返航后剩余兵力不足，任务已判定失败。'
+  const blocker = String(missionMetrics.value.completionBlocker ?? '')
+  if (blocker === 'INSUFFICIENT_ACTIVE_FORCE') {
+    const deficit = Math.max(1, Number(missionMetrics.value.activeMissionDeviceDeficit ?? 1))
+    const missingTypes = Array.isArray(missionMetrics.value.missingActiveDeviceTypes)
+      ? missionMetrics.value.missingActiveDeviceTypes.join(' / ')
+      : ''
+    return missingTypes
+      ? `剩余编组缺少 ${missingTypes}，任务保持运行；请让对应类型设备安全归队。`
+      : `剩余兵力低于最低要求，任务保持运行；请让至少 ${deficit} 台设备安全归队。`
   }
   const returning = Number(missionMetrics.value.returningDeviceCount ?? 0)
   const returned = Number(missionMetrics.value.returnedDeviceCount ?? 0)
@@ -473,7 +479,7 @@ const singleDeviceRuntimeNotice = computed(() => {
   if (returned > 0) {
     return `${returned} 台设备已返航并退出任务编组，不再阻塞任务成功。`
   }
-  if (String(missionMetrics.value.completionBlocker ?? '') === 'OPERATOR_OVERRIDE') {
+  if (blocker === 'OPERATOR_OVERRIDE') {
     return '存在人工接管设备，请选择安全归队或独立返航。'
   }
   return ''
@@ -1948,7 +1954,7 @@ onBeforeUnmount(() => {
               </section>
               <section class="vf-inspector-section">
                 <h4>控制规则</h4>
-                <p class="vf-note">被接管设备暂时退出当前任务输出，仍保留在场景和避碰域中。独立返航抵达起始点后会标记为 RETURNED 并退出任务编组；安全归队则把控制权重新交还群体算法。</p>
+                <p class="vf-note">被接管设备暂时退出当前任务输出，仍保留在场景和避碰域中。独立返航抵达起始点后会标记为 RETURNED 并退出任务编组；剩余兵力足够时任务继续，兵力不足时进入可恢复的降级状态，不会直接失败。安全归队可把控制权重新交还群体算法。</p>
               </section>
             </div>
 
