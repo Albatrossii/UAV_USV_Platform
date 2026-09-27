@@ -82,14 +82,14 @@ $candidate | Select-Object ProcessId,ExecutablePath,CommandLine
 
 ## 同一录音解码档位对比
 
-在拿到可复用的短录音后，可在本目录运行 `benchmark_asr_profiles.py`。它只在内存中解码一次，再用同一个模型实例顺序测试 beam 5 与 beam 2；不会启动控制链路、上传文件、写出识别文字或保存音频。输出仅包含音频时长、解码/推理耗时、转写长度及是否与 beam 5 相同。
+在拿到可复用的短录音后，可在本目录运行 `benchmark_asr_profiles.py`。它只在内存中解码一次，比较 CPU 线程数与 beam 档位；同一线程档位下会交错不同 beam 的运行顺序并重复测量，以降低先后顺序和热缓存造成的偏差。不会启动控制链路、上传文件、写出识别文字或保存音频。输出包含音频时长、解码耗时、各次推理耗时、中位数、转写字符数及与 beam 5 的一致标记；转写只在内存中短暂使用，比较采用摘要值，不写入输出。
 
 ```powershell
 $env:ASR_MODEL_PATH = (Resolve-Path '.\models\whisper-small').Path
-& .\.venv\Scripts\python.exe .\benchmark_asr_profiles.py '<本地录音.mp3>' --threads 6 --beams 5,2
+& .\.venv\Scripts\python.exe .\benchmark_asr_profiles.py '<本地录音.mp3>' --threads 4,6 --beams 5,2 --repeats 1
 ```
 
-beam 5 是对照基线；“结果与 beam 5 相同”不能代替人工确认识别内容正确。只有在音频样本覆盖和准确率核对后，才讨论更改服务默认值。
+beam 5 是对照基线；“结果与 beam 5 相同”不能代替人工确认识别内容正确。多线程档位会依次重新加载模型，推理重复次数为线程候选数 × beam 数 × repeats，耗时可能较长。先用 `--repeats 1` 快速筛选，再对候选配置用 `--repeats 2` 复测，并用多条典型中文命令核对准确率；只有端到端延迟和识别质量均可接受后，才讨论更改服务默认值。服务线上默认仍为 beam 5 / 6线程。
 
 ## 前端
 
