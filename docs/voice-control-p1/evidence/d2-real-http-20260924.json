@@ -1,0 +1,142 @@
+{
+  "startedAt": "2026-09-24T09:33:06+0800",
+  "base": "http://localhost:5175",
+  "scope": "D2-01..D2-17 real HTTP plus database evidence; D2-18 references browser evidence",
+  "cases": {
+    "D2-01": {
+      "result": "PASS",
+      "httpStatus": 401,
+      "code": "UNAUTHORIZED"
+    },
+    "D2-02": {
+      "result": "PASS",
+      "httpStatus": 403,
+      "code": "CSRF_INVALID"
+    },
+    "D2-03": {
+      "result": "PASS",
+      "httpStatus": 403,
+      "code": "FORBIDDEN"
+    },
+    "D2-04": {
+      "result": "PASS",
+      "httpStatus": 400,
+      "code": "VOICE_INVALID_REQUEST"
+    },
+    "D2-05": {
+      "result": "PASS",
+      "variants": [
+        "unknown",
+        "blank",
+        "too_long",
+        "duplicate_action",
+        "bad_device"
+      ]
+    },
+    "D2-06-START": {
+      "result": "PASS",
+      "requestId": "1bde70b0-ca3a-455e-83e6-142f6fb0751f",
+      "classification": "CANDIDATE",
+      "action": "START"
+    },
+    "D2-06-PAUSE": {
+      "result": "PASS",
+      "requestId": "356c5a59-7255-4911-a0bc-5117212da74a",
+      "classification": "CANDIDATE",
+      "action": "PAUSE"
+    },
+    "D2-06-RESUME": {
+      "result": "PASS",
+      "requestId": "7f299256-ada2-4d13-9545-85dfcbf9b1d9",
+      "classification": "CANDIDATE",
+      "action": "RESUME"
+    },
+    "D2-06-STOP": {
+      "result": "PASS",
+      "requestId": "df1032ab-e2c3-45a4-a056-e4dc6efc3538",
+      "classification": "CANDIDATE",
+      "action": "STOP"
+    },
+    "D2-07": {
+      "result": "PASS",
+      "requestId": "83a3530e-e1bf-4247-8b2b-ca5bacf37f9d",
+      "classification": "NOT_ACTIONABLE",
+      "reason": "NEGATED_ACTION"
+    },
+    "D2-08": {
+      "result": "PASS",
+      "requestId": "6b71d6c0-1d7f-4cb1-b161-03c7159bc820",
+      "classification": "NEEDS_CLARIFICATION",
+      "reason": "AMBIGUOUS_ACTION"
+    },
+    "D2-09": {
+      "result": "PASS",
+      "requestId": "0e4aa59b-fcbd-475f-953b-6ef865d71510",
+      "classification": "NEEDS_CLARIFICATION",
+      "reason": "NO_SUPPORTED_ACTION"
+    },
+    "D2-10": {
+      "result": "PASS",
+      "requestId": "de8363e4-f92f-44b2-b99b-f99c466ba65e",
+      "classification": "UNSUPPORTED",
+      "reason": "UNSUPPORTED_CAPABILITY"
+    },
+    "D2-11": {
+      "result": "PASS",
+      "requestId": "4959cd09-bc87-47e1-929a-7878e33ecebf",
+      "classification": "UNSUPPORTED",
+      "reason": "UNSUPPORTED_TARGETING"
+    },
+    "D2-12": {
+      "result": "PASS",
+      "httpStatus": 409,
+      "code": "VOICE_CONTEXT_CHANGED"
+    },
+    "D2-13": {
+      "result": "PASS",
+      "requestId": "62b0cd6f-ca7d-4f45-bce3-998f19cf39d7",
+      "identicalReplay": true
+    },
+    "D2-14": {
+      "result": "PASS",
+      "httpStatus": 409,
+      "code": "IDEMPOTENCY_CONFLICT"
+    },
+    "D2-15": {
+      "result": "PASS",
+      "realHttpVariants": [
+        "other_user",
+        "action_mismatch"
+      ],
+      "expiredVariant": "covered by deterministic service test; no 30-minute wait in this run"
+    },
+    "D2-16": {
+      "result": "PASS",
+      "httpStatus": 409,
+      "code": "IDEMPOTENCY_CONFLICT"
+    },
+    "D2-17": {
+      "result": "PASS",
+      "proposalId": "99070dae-1afd-485c-94b9-e79f3275e2a8",
+      "interpretationId": "81f921ca-d972-4471-b724-30ca171202a5",
+      "proposalStatus": "AWAITING_CONFIRMATION",
+      "executionCountBeforeConfirmation": 0
+    },
+    "D2-18": {
+      "result": "PASS",
+      "evidence": "D2-LOCAL-BROWSER-ACCEPTANCE-20260924.md",
+      "executionId": "87e1e64f-34a3-437d-af5f-919f12fe6c73",
+      "terminal": "SUCCEEDED/SUCCESS/REPORTED_APPLIED"
+    }
+  },
+  "result": "PASS",
+  "cleanup": {
+    "proposalId": "99070dae-1afd-485c-94b9-e79f3275e2a8",
+    "status": "CANCELLED"
+  },
+  "peerAccountRestored": {
+    "role": "ADMIN",
+    "enabled": false
+  },
+  "finishedAt": "2026-09-24T09:34:29+0800"
+}

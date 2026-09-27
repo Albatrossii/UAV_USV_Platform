@@ -1,0 +1,35 @@
+{
+  "evidenceId": "e1-domain-prompt-v1-real-http-20260924",
+  "capturedAt": "2026-09-24T11:43:28.7448964Z",
+  "status": "PASS_REAL",
+  "chain": "authenticated browser-equivalent client -> Java 18081 -> Python ASR 18082 -> small model",
+  "asr": {
+    "modelRevision": "536b0662742c02347bc0e980a01041f333bce120+uav-usv-domain-prompt-v1",
+    "decodingProfileRevision": "uav-usv-domain-prompt-v1",
+    "device": "cpu",
+    "computeType": "int8",
+    "threads": 4,
+    "workerRequestCount": 1,
+    "workerStatus": 200,
+    "workerElapsedMs": 7718
+  },
+  "request": {
+    "requestId": "eecf3b36-2238-45c7-b208-5a18f1aa6168",
+    "audioSha256": "f51f89ecd26fda3829e02d72281e369a0b6d2af5f31182efa810675de324b692",
+    "mime": "audio/webm",
+    "status": 200,
+    "code": "SUCCESS",
+    "elapsedSeconds": 7.999702800007071,
+    "durationMs": 6480,
+    "publicModelAlias": "whisper-small-cpu-int8-r1",
+    "textCodePoints": 16,
+    "identicalReplay": true
+  },
+  "assertions": {
+    "javaStrictRevisionMatch": true,
+    "oneInferenceForReplay": true,
+    "noTranscriptStored": true,
+    "noAudioStoredInRepository": true
+  },
+  "privacy": "No audio, transcript, reference text, credential, cookie, private path, or model weight is included."
+}

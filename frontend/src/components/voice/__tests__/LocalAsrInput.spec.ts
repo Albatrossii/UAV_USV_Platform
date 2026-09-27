@@ -123,7 +123,10 @@ describe('D1 isolated ASR UI', () => {
   })
   it('rejects empty files and unsupported types before API', async () => {
     const { wrapper, transcribe } = setup()
-    await upload(wrapper, 'audio/wav')
+    for (const type of ['audio/webm', 'audio/ogg', 'audio/mp4', 'audio/wav', 'audio/mpeg']) await upload(wrapper, type)
+    expect(transcribe).toHaveBeenCalledTimes(5)
+    transcribe.mockClear()
+    await upload(wrapper, 'audio/flac')
     await upload(wrapper, 'audio/mpeg', '')
     expect(transcribe).not.toHaveBeenCalled()
   })

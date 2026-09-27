@@ -14,7 +14,8 @@ public class AsrSettings {
             intentProvider = "rules",
             llmBaseUrl = "http://127.0.0.1:18083",
             llmToken = "",
-            llmModel = "qwen2.5-1.5b-instruct-q4_k_m";
+            llmModel = "qwen2.5-1.5b-instruct-q4_k_m",
+            resultEncryptionKey = "";
     private int llmTimeoutMs = 20000;
 
     public boolean isEnabled() {
@@ -95,5 +96,13 @@ public class AsrSettings {
 
     public void setLlmTimeoutMs(int v) {
         llmTimeoutMs = v;
+    }
+
+    public String getResultEncryptionKey() {
+        return resultEncryptionKey;
+    }
+
+    public void setResultEncryptionKey(String v) {
+        resultEncryptionKey = v;
     }
 }

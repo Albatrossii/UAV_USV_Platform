@@ -1,0 +1,40 @@
+{
+  "evidenceId": "E1-I06-REAL-RESTART-REPLAY-20260924",
+  "recordedAt": "2026-09-24T08:42:00Z",
+  "environment": {
+    "java": "local isolated service on 127.0.0.1:18081",
+    "asr": "local pinned service on 127.0.0.1:18082",
+    "database": "local MySQL uav_usv_p0_integration",
+    "flywayVersion": "21"
+  },
+  "request": {
+    "requestId": "5eec2832-21e3-4e31-a95b-af8e75dfae77",
+    "audioSha256": "f344979f64317b8295a2f29375566c686291f03fcd7e01928a2a827f9a8312ce",
+    "locale": "zh-CN",
+    "mime": "audio/webm"
+  },
+  "beforeRestart": {
+    "httpStatus": 200,
+    "responseSha256": "9929a3038838693b10c63ca01f55b96e14ad94d74455db44a632528f3a600a25",
+    "asrRequestCount": 1
+  },
+  "afterRestart": {
+    "httpStatus": 200,
+    "responseSha256": "9929a3038838693b10c63ca01f55b96e14ad94d74455db44a632528f3a600a25",
+    "asrRequestCount": 1
+  },
+  "database": {
+    "outcomeEncrypted": true,
+    "ciphertextBytes": 360,
+    "ivBytes": 12,
+    "plaintextStored": false
+  },
+  "assertions": {
+    "sameResponse": true,
+    "noSecondInference": true,
+    "javaRestarted": true,
+    "asrRemainedRunning": true,
+    "pass": true
+  },
+  "privacy": "No transcript, audio, credential, cookie, token, or encryption key is stored in this evidence."
+}

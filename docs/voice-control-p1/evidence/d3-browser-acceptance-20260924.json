@@ -1,0 +1,69 @@
+{
+  "testedAt": "2026-09-24T11:04:43+08:00",
+  "base": "http://127.0.0.1:5175",
+  "scope": "D3 real browser interpretation to confirmed P0 proposal",
+  "input": "结束当前任务",
+  "candidate": {
+    "classification": "CANDIDATE",
+    "action": "STOP",
+    "reason": "MISSION_STOP",
+    "directExecution": false
+  },
+  "confirmedFlow": {
+    "interpretationId": "b0e2eea8-9b0c-4436-931e-fea16b82b533",
+    "proposalId": "b147de21-35ee-41d7-ab56-663fcfc7e387",
+    "proposalStatus": "CONFIRMED",
+    "executionId": "c0a3c2c2-8f3b-4059-94f6-db0435577ffe",
+    "commandId": "71775caa-6cca-4aba-8b06-4d748863de5b",
+    "runtimeRef": "ae32ff92-0935-4f3a-8461-aa27d507733b",
+    "runtimeGeneration": "578795b7-b256-49c5-9455-d214a655fc5a",
+    "executionState": "SUCCEEDED",
+    "outcome": "SUCCESS",
+    "presentationStatus": "NOT_REQUIRED",
+    "visibleRuntimeState": "STOPPED"
+  },
+  "safetyChecks": [
+    {
+      "id": "D3-BROWSER-01",
+      "result": "PASS",
+      "check": "Candidate creation does not directly execute"
+    },
+    {
+      "id": "D3-BROWSER-02",
+      "result": "PASS",
+      "check": "Expired candidate-linked proposal creates no execution",
+      "proposalId": "bf4cab18-d176-48ec-a432-807931362486",
+      "interpretationId": "1e24f901-0d65-466a-8b62-441fe833c38c"
+    },
+    {
+      "id": "D3-BROWSER-03",
+      "result": "PASS",
+      "check": "P0 manual control remains independent",
+      "proposalId": "a16c3856-d1d3-4e67-a281-318df6b8ed6e",
+      "interpretationId": null
+    },
+    {
+      "id": "D3-BROWSER-04",
+      "result": "PASS",
+      "check": "Confirmed candidate preserves interpretation to execution linkage"
+    },
+    {
+      "id": "D3-BROWSER-05",
+      "result": "PASS",
+      "check": "Temporary browser account logged out and removed"
+    },
+    {
+      "id": "D3-BROWSER-06",
+      "result": "PASS",
+      "check": "P0 manual STOP succeeds while the local LLM port is not listening",
+      "llmPortListening": false,
+      "proposalId": "50f03c67-8a2d-4bf4-9c75-c439513f1f61",
+      "executionId": "58c7ebc4-e77c-4f1c-8c54-8e08bcad34a3",
+      "commandId": "7522e361-1b11-47cc-97c5-bda258a21c14",
+      "interpretationId": null,
+      "executionState": "SUCCEEDED",
+      "outcome": "SUCCESS"
+    }
+  ],
+  "result": "PASS"
+}

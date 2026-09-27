@@ -1,0 +1,64 @@
+{
+  "evidenceId": "E1-S04-RUNNER-ASR-RESOURCE-20260924",
+  "recordedAt": "2026-09-24T08:57:02.7122147Z",
+  "environment": {
+    "java": "127.0.0.1:18081",
+    "asr": "127.0.0.1:18082",
+    "runner": "real algorithm-service/runner.py",
+    "unity": "D4 real Unity evidence reused; this measurement does not assert a new Unity browser session"
+  },
+  "asr": {
+    "requestId": "aa738bb7-dd47-4e9e-acb3-2b94b9fbd746",
+    "status": 200,
+    "code": "SUCCESS",
+    "audioSha256": "f281dcf99085fd8752a1f676f1a6b1b01892839b74836ad6d14c58213b9b4855",
+    "elapsedSeconds": 4.537,
+    "durationMs": 5784,
+    "realTimeFactor": 0.784,
+    "identicalReplay": true
+  },
+  "runtime": {
+    "runId": 1790240213269,
+    "runtimeRef": "e1cccc7f-3d9f-410f-bbe5-86eb1a9a75ec",
+    "runtimeGeneration": "abc41010-0629-4b55-9abb-104759b0e377",
+    "heartbeatAt": "2026-09-24T08:56:59.247129Z",
+    "actions": [
+      "START",
+      "PAUSE",
+      "RESUME",
+      "STOP"
+    ],
+    "finalState": "STOPPED"
+  },
+  "resources": {
+    "java": {
+      "rootPid": 19812,
+      "peakProcessTreeRssBytes": 570929152,
+      "peakProcessCount": 4,
+      "peakThreadCount": 74
+    },
+    "asr": {
+      "rootPid": 12468,
+      "peakProcessTreeRssBytes": 571645952,
+      "peakProcessCount": 3,
+      "peakThreadCount": 26
+    },
+    "runner": {
+      "rootPid": 10708,
+      "peakProcessTreeRssBytes": 201916416,
+      "peakProcessCount": 5,
+      "peakThreadCount": 44
+    }
+  },
+  "sampleCount": 8,
+  "sampleIntervalMs": 100,
+  "assertions": {
+    "asrPassed": true,
+    "p0FourActionsPassed": true,
+    "heartbeatPresent": true,
+    "asrWorkerCaptured": true,
+    "runnerAliveDuringAsr": true,
+    "pass": true
+  },
+  "privacy": "No transcript, audio, password, token, cookie, or key is stored."
+}

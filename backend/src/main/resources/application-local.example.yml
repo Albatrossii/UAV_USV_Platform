@@ -25,6 +25,7 @@ app:
     llm-token: ${APP_VOICEINTELLIGENCE_LLM_TOKEN:}
     llm-model: ${APP_VOICEINTELLIGENCE_LLM_MODEL:qwen2.5-1.5b-instruct-q4_k_m}
     llm-timeout-ms: ${APP_VOICEINTELLIGENCE_LLM_TIMEOUT_MS:20000}
+    result-encryption-key: ${APP_VOICEINTELLIGENCE_RESULT_ENCRYPTION_KEY:}
   ros:
     transport: ${ROS_TRANSPORT:v1}
     state-authority: ${ROS_STATE_AUTHORITY:v1}

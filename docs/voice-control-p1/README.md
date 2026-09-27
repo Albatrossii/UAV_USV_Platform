@@ -10,7 +10,13 @@ D2 第一轮由 Java 本地受限规则解析器实现，用于完成真实HTTP�
 
 在常驻 `local` 后端（例如 8083）接入 ASR 时，`app.voiceintelligence` 还必须有可用的 `base-url`、`token` 和 `model-revision`。可通过进程环境 `APP_VOICEINTELLIGENCE_BASE_URL`（默认 `http://127.0.0.1:18082`）、`APP_VOICEINTELLIGENCE_TOKEN` 和 `APP_VOICEINTELLIGENCE_MODEL_REVISION` 提供；仅 ASR `/health/ready` 返回就绪不代表 Java 到 ASR 的内部鉴权成功。D1 已验收模型修订号为 `536b0662742c02347bc0e980a01041f333bce120`。令牌只放本机后端进程环境，不写入仓库或聊天。
 
-V20新增最小受理墓碑，只保存userId、endpoint、requestId、音频指纹和受理/过期时间，不保存音频或文字。内存结果仍按全局1000条、终态30分钟和每分钟清理；墓碑保留7天。Java重启后同键同内容返回409 VOICE_REQUEST_OUTCOME_UNKNOWN，同键不同内容返回409 IDEMPOTENCY_CONFLICT，均禁止再次调用Python；7天到期后才允许作为新请求受理。
+D4 整链路集成复测已完成：`真实录音 → 本地 ASR → 人工核对文字 → 本地 LLM 候选 → 冻结提案 → 人工确认 → Runner / Unity`。文件输入与真实物理麦克风两条链路均已通过；动作白名单未扩大，模型不能直接执行，也未新增独立页面。详见 [D4 整链路验收](P1-D4-本地语音到控制整链路验收-v1.0.md)。
+
+配置见application-d1-asr.yml，启动见start-d1-java.ps1（默认只检查，需先打包）；需环境变量P0_DB_PASSWORD、P0_ADMIN_PASSWORD、P0_INTEGRATION_TOKEN、P0_PYTHON、P0_RUNNER，以及D1_ASR_TOKEN和D1_ASR_MODEL_REVISION。ASR仅127.0.0.1:18082。网页统一localhost，登录后进入`/?workspace=simulation`，校验现有Cookie及CSRF配置。
+
+E1 加密结果恢复还要求 `D1_ASR_RESULT_ENCRYPTION_KEY`：值为恰好 32 个随机字节的 Base64。密钥不得写入仓库、普通日志或前端；同一环境跨重启必须保持稳定。更换或丢失密钥会使尚在 24 小时恢复期内的密文不可解，应先暂停提交并按运维流程处理，不能自动重试推理。
+
+V20新增最小受理墓碑；V21在配置加密密钥后保存 AES-256-GCM 终态密文。结果可恢复24小时，之后清除密文并在7天墓碑期返回409 VOICE_REQUEST_EXPIRED；同键不同内容返回409 IDEMPOTENCY_CONFLICT。30天审计只保存请求标识、状态和时间，不保存音频或文字。没有配置V21密钥时保持D1兼容行为：重启后的旧键返回VOICE_REQUEST_OUTCOME_UNKNOWN，仍禁止再次调用Python。
 
 启用ASR时Tomcat上传读超时10秒、maxSwallowSize=0；该连接器设置会作用于该Java进程其他上传入口，D1应使用隔离服务。音频入口采用Servlet非阻塞读取且有10秒总期限，防止multipart落盘；Servlet容器不解析该路径的multipart。其他路径保持原过滤。
 

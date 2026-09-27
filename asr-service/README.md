@@ -71,11 +71,12 @@ $candidate | Select-Object ProcessId,ExecutablePath,CommandLine
 - `GET /health/ready`：200/503，`{"ready":true/false}`；busy时仍ready。
 - `POST /internal/asr/transcriptions`：Bearer内部凭据；`X-ASR-Timeout-Ms` 1..120000；必须有Content-Length，不接受chunked上传；multipart requestId/locale/audio，未知或重复字段拒绝。
 - Java内部客户端须发送确定长度请求体（最大6MiB），这不改变浏览器到Java的协议。
-- 成功：requestId/text/durationMs/modelRevision四字段，模型revision固定上述版本。Java负责映射公开别名，例如whisper-small-cpu-int8-r1。
+- 成功：requestId/text/durationMs/modelRevision四字段，revision同时冻结模型权重和领域提示解码配置。Java负责映射公开别名，例如whisper-small-cpu-int8-r1。
 - 失败：requestId（尚未解析则null）/code/message。业务错误遵循最终稿。
 - 已对齐mxy提交425a96c：非法内部参数HTTP503＋ASR_UNAVAILABLE，鉴权401＋ASR_UNAVAILABLE。Java均按调用配置错误映射503；用户表单错误仍由Java返回400，未新增公共错误。
 - busy返回429 ASR_BUSY，Retry-After:2；该值是重试建议，不承诺任务两秒内结束。Java不得自动重试推理POST。
-- 实际时长按完整解码并重采样的采样数向上取整；严格拒绝损坏包，不像离线冒烟脚本自动跳过坏包。只接受单音频轨、最多2声道、48kHz、WebM/Opus或MP3。
+- 解码使用冻结领域提示 v1，并保留 Whisper 的低置信度温度回退。不同 requestId 的重复录音可能有小幅输出差异；同一幂等键由 Java 返回已缓存结果，不会再次推理。若改变提示词或解码参数，必须更新完整 `modelRevision` 并重新执行 Q01/Q02。
+- 实际时长按完整解码并重采样的采样数向上取整；严格拒绝损坏包，不像离线冒烟脚本自动跳过坏包。E1 接受单音频轨、最多2声道、48kHz的 WebM/Opus、Ogg/Opus、MP4/AAC、WAV/PCM 与 MP3；容器、codec 和 MIME 必须一致。
 - Python只做本机单槽保护，不持久化业务幂等；Java负责同键恢复、登录、权限、CSRF和缓存。
 - 最多8个HTTP处理线程、读头10秒、请求体6MiB、解码960000采样点上限。D1无独立进程内存硬配额；原生解码卡死按人工恢复流程处理，不把线程timeout当成强制终止。
 
@@ -87,7 +88,7 @@ $candidate | Select-Object ProcessId,ExecutablePath,CommandLine
 - 进入算法仿真工作区即可录音，不要求生成场景、启动算法实例或等待Unity就绪；原P0手工按钮保持独立。ASR-only隐藏旧意图输入。
 - ASR-only始终调用真实Java转写接口，不受旧P1 Mock开关影响、不自动降级Mock。若Java返回test-fixture，显著标明不可用于真实验收。
 - 58秒软停止，等待尾帧；140秒总等待；手动原键/Blob恢复最多10分钟；账号变化、卸载、退出清理；不存localStorage/Pinia。
-- Chromium录音需要真实麦克风权限及localhost/HTTPS。MP3上传测试不能代替浏览器实录验收。
+- Chromium录音需要真实麦克风权限及localhost/HTTPS。E1 文件上传支持五种冻结容器，但不能代替浏览器物理麦克风实录验收。
 
 ## 真实模型HTTP冒烟
 

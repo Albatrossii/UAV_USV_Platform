@@ -1,0 +1,12 @@
+{
+  "requestId": "c59faef3-772a-4235-8b24-0ab94f25ec99",
+  "audioSha256": "7f6fe7a73c36e3639a1438fbd8159841f659454c043cbdc7961f05fd9c72bbc0",
+  "status": 200,
+  "code": "SUCCESS",
+  "elapsedSeconds": 10.807376199983992,
+  "result": "PASS_HTTP_SMOKE",
+  "durationMs": 5784,
+  "model": "whisper-small-cpu-int8-r1",
+  "textCodePoints": 18,
+  "identicalReplay": true
+}

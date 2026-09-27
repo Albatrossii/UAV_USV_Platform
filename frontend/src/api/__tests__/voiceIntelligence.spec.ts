@@ -40,8 +40,16 @@ describe('voice intelligence backend API adapter', () => {
     expect(mocks.post.mock.calls[0]![0]).toBe('/voice/intelligence/transcriptions')
     expect(mocks.post.mock.calls[0]![2].timeout).toBe(140000)
   })
-  it('D1 rejects unapproved audio formats before HTTP', async () => {
-    await expect(transcribeLocalAudio({ requestId, locale: 'zh-CN', audio: new Blob(['audio'], { type: 'audio/wav' }) }))
+  it('E1 accepts the five approved MIME types and rejects other formats before HTTP', async () => {
+    mocks.post.mockResolvedValue({ data: { code: 'SUCCESS', data: {
+      requestId, text: '停止任务', locale: 'zh-CN', durationMs: 1000, provider: 'local-asr', model: 'small-r1',
+    } } })
+    for (const type of ['audio/webm', 'audio/ogg', 'audio/mp4', 'audio/wav', 'audio/mpeg']) {
+      await expect(transcribeLocalAudio({ requestId, locale: 'zh-CN', audio: new Blob(['audio'], { type }) }))
+        .resolves.toMatchObject({ requestId })
+    }
+    mocks.post.mockClear()
+    await expect(transcribeLocalAudio({ requestId, locale: 'zh-CN', audio: new Blob(['audio'], { type: 'audio/flac' }) }))
       .rejects.toMatchObject({ code: 'VOICE_AUDIO_FORMAT_UNSUPPORTED' })
     expect(mocks.post).not.toHaveBeenCalled()
   })

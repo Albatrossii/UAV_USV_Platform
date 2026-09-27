@@ -224,7 +224,10 @@ function pickFile(event: Event) {
   const file = input.files?.[0]
   input.value = ''
   if (!file || inputLocked.value) return
-  if (file.type !== 'audio/mpeg') { message.value = '文件测试仅支持MP3（audio/mpeg）。'; return }
+  if (!['audio/webm', 'audio/ogg', 'audio/mp4', 'audio/wav', 'audio/mpeg'].includes(file.type)) {
+    message.value = '文件测试仅支持WebM/Opus、Ogg/Opus、MP4/AAC、WAV/PCM和MP3。'
+    return
+  }
   submitAudio(file)
 }
 onBeforeUnmount(clear)
@@ -238,7 +241,7 @@ onDeactivated(clear)
     <div class="asr-actions">
       <button v-if="phase === 'recording'" @click="stopRecording">停止录音（{{ elapsed }}秒）</button>
       <button v-else :disabled="inputLocked" @click="startRecording">{{ phase === 'permission' ? '等待麦克风授权' : '开始录音' }}</button>
-      <label>MP3文件测试<input aria-label="MP3文件测试" type="file" accept="audio/mpeg,.mp3" :disabled="inputLocked" @change="pickFile" /></label>
+      <label>音频文件测试<input aria-label="音频文件测试" type="file" accept="audio/webm,audio/ogg,audio/mp4,audio/wav,audio/mpeg,.webm,.ogg,.m4a,.mp4,.wav,.mp3" :disabled="inputLocked" @change="pickFile" /></label>
     </div>
     <small>Chrome/Edge · 最长录制约58秒，文件上限60秒／5 MiB</small>
     <p role="status" aria-live="polite">{{ recognitionStatus }}</p>

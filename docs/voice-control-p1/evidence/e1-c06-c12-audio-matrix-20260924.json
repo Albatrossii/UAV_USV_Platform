@@ -1,0 +1,133 @@
+{
+  "evidenceId": "E1-C06-C12-AUDIO-MATRIX-20260924",
+  "recordedAt": "2026-09-24T09:08:38Z",
+  "sourceSha256": "08859b511bc43a0e9572b75bece5602f77aaf29c38c6bf4ab5161443cdaf19c0",
+  "sourceUse": "Authorized Chinese recording decoded in memory; source and generated audio are not written to evidence.",
+  "results": [
+    {
+      "case": "webm-opus",
+      "requestId": "e2e850a7-21f2-498e-9f00-b574f15392d8",
+      "mime": "audio/webm",
+      "audioSha256": "400eb3c3fc6a9dc11f0f7195090b1c57c557c71a06a9d07085dbb53e84c71609",
+      "audioBytes": 50301,
+      "status": 200,
+      "code": "SUCCESS",
+      "elapsedSeconds": 4.095,
+      "durationMs": 5784,
+      "textCodePoints": 18,
+      "transcriptSha256": "63036d4051d1b38007fe6578fc88b0e08be8ced7289f3ac8b73e7778776e7890"
+    },
+    {
+      "case": "ogg-opus",
+      "requestId": "5b1e6098-63ce-47f9-adf7-28083de7282e",
+      "mime": "audio/ogg",
+      "audioSha256": "ec84a31c195f8f660bce8d0fdc318a3802b2df659e50e7a1818cba85ed424a14",
+      "audioBytes": 48372,
+      "status": 200,
+      "code": "SUCCESS",
+      "elapsedSeconds": 3.983,
+      "durationMs": 5784,
+      "textCodePoints": 18,
+      "transcriptSha256": "63036d4051d1b38007fe6578fc88b0e08be8ced7289f3ac8b73e7778776e7890"
+    },
+    {
+      "case": "mp4-aac",
+      "requestId": "bbb0fdd3-9995-471c-8799-2a0607820fa6",
+      "mime": "audio/mp4",
+      "audioSha256": "a3ebef11f5e21d7a0e05c813cd33e3f57eb04465cdc81ddc6b3bc34c3ce177aa",
+      "audioBytes": 52929,
+      "status": 200,
+      "code": "SUCCESS",
+      "elapsedSeconds": 3.84,
+      "durationMs": 5824,
+      "textCodePoints": 18,
+      "transcriptSha256": "29001a0f198dfc4da9c7b889a6299cf08e2bbc9623fabbee55eaaed929c0117f"
+    },
+    {
+      "case": "wav-pcm",
+      "requestId": "c9f21196-f6ac-44ef-8571-e0657d34aca7",
+      "mime": "audio/wav",
+      "audioSha256": "2f4d057525842767be51791a556974521dec95b611ee36ae1c73c9e4919d3242",
+      "audioBytes": 555342,
+      "status": 200,
+      "code": "SUCCESS",
+      "elapsedSeconds": 3.721,
+      "durationMs": 5784,
+      "textCodePoints": 18,
+      "transcriptSha256": "29001a0f198dfc4da9c7b889a6299cf08e2bbc9623fabbee55eaaed929c0117f"
+    },
+    {
+      "case": "mp3",
+      "requestId": "45747f69-4608-41fe-b7d7-da8b40c37501",
+      "mime": "audio/mpeg",
+      "audioSha256": "7f6fe7a73c36e3639a1438fbd8159841f659454c043cbdc7961f05fd9c72bbc0",
+      "audioBytes": 46701,
+      "status": 200,
+      "code": "SUCCESS",
+      "elapsedSeconds": 3.492,
+      "durationMs": 5784,
+      "textCodePoints": 18,
+      "transcriptSha256": "29001a0f198dfc4da9c7b889a6299cf08e2bbc9623fabbee55eaaed929c0117f"
+    },
+    {
+      "case": "rate-96000",
+      "requestId": "227558cd-344e-41f6-8e2f-c3a895bfff8f",
+      "mime": "audio/wav",
+      "audioSha256": "ad730bfb5ef69240c6a4de5ad264547c7d44f24ecde9d10a557117d34e479d61",
+      "audioBytes": 192102,
+      "status": 415,
+      "code": "VOICE_AUDIO_FORMAT_UNSUPPORTED",
+      "elapsedSeconds": 0.086
+    },
+    {
+      "case": "three-channels",
+      "requestId": "4f2cecf8-7ad2-4eb8-a85f-ce3ab8ee7a0d",
+      "mime": "audio/wav",
+      "audioSha256": "857ccda98d201d60dfd12e4281cbcda7b7e3c89165ccea6738056c0473eac73e",
+      "audioBytes": 288102,
+      "status": 415,
+      "code": "VOICE_AUDIO_FORMAT_UNSUPPORTED",
+      "elapsedSeconds": 0.105
+    },
+    {
+      "case": "damaged-container",
+      "requestId": "6055b447-e8e4-4721-9678-44544d28b00f",
+      "mime": "audio/ogg",
+      "audioSha256": "b25d46ef0169db3fe2920bf0ec54c4fbacf73f76a0e36a2e4accfeedd3ed12e8",
+      "audioBytes": 22,
+      "status": 415,
+      "code": "VOICE_AUDIO_FORMAT_UNSUPPORTED",
+      "elapsedSeconds": 0.085
+    },
+    {
+      "case": "decoded-over-60s",
+      "requestId": "35eafd94-8cae-4080-aeea-a31ba8548020",
+      "mime": "audio/mpeg",
+      "audioSha256": "771f40034658f20a6d9eb72513915f644633b88ba6ad944216c8b921891ce3fb",
+      "audioBytes": 480621,
+      "status": 413,
+      "code": "VOICE_AUDIO_TOO_LONG",
+      "elapsedSeconds": 0.379
+    },
+    {
+      "case": "recovery-after-rejects",
+      "requestId": "1540f16a-a613-4ffe-a6d0-f59b6e514e5f",
+      "mime": "audio/webm",
+      "audioSha256": "bb9a2558ff2a251b04be6444a91f21eabf6ef8c8be72c22d73f63f2e80f10ab5",
+      "audioBytes": 50301,
+      "status": 200,
+      "code": "SUCCESS",
+      "elapsedSeconds": 3.448,
+      "durationMs": 5784,
+      "textCodePoints": 18,
+      "transcriptSha256": "63036d4051d1b38007fe6578fc88b0e08be8ced7289f3ac8b73e7778776e7890"
+    }
+  ],
+  "assertions": {
+    "fiveContainersPassed": true,
+    "resourceLimitsRejected": true,
+    "serviceRecovered": true,
+    "pass": true
+  },
+  "privacy": "No transcript, audio, password, token, cookie, or key is stored."
+}

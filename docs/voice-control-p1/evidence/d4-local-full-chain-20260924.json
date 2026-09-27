@@ -1,0 +1,72 @@
+{
+  "testedAt": "2026-09-24T15:02:45+08:00",
+  "scope": "D1 ASR plus D3 local LLM plus P0 confirmed execution",
+  "sourceAudio": {
+    "name": "Standard recording 6.mp3",
+    "sha256": "08859b511bc43a0e9572b75bece5602f77aaf29c38c6bf4ab5161443cdaf19c0",
+    "originalResult": "VOICE_AUDIO_FORMAT_UNSUPPORTED",
+    "normalizedCopyTemporary": true,
+    "normalizedSha256": "7f6fe7a73c36e3639a1438fbd8159841f659454c043cbdc7961f05fd9c72bbc0"
+  },
+  "asr": {
+    "requestId": "c59faef3-772a-4235-8b24-0ab94f25ec99",
+    "httpStatus": 200,
+    "durationMs": 5784,
+    "model": "whisper-small-cpu-int8-r1",
+    "textCodePoints": 18,
+    "identicalReplay": true,
+    "reviewedText": "在暂停无人机和无人船的实验进行下一步"
+  },
+  "interpretation": {
+    "interpretationId": "dcf599a0-1e2e-4afb-a187-c5cf0af597b5",
+    "provider": "local-llm",
+    "model": "qwen2.5-1.5b-instruct-q4_k_m",
+    "classification": "CANDIDATE",
+    "action": "PAUSE",
+    "reason": "MISSION_PAUSE",
+    "originalRequestRecoveryObserved": true
+  },
+  "stateGate": {
+    "preparedPauseRejectedByUi": true,
+    "manualStartProposalId": "9d370401-80ce-47f1-bcf9-af03d9b38c1c",
+    "manualStartExecutionId": "96c17f3f-dbbc-41e1-9a09-1eb50e22f2f7",
+    "manualStartState": "SUCCEEDED"
+  },
+  "confirmedPause": {
+    "proposalId": "a88aeca3-8538-4faa-b02f-c4e4290bd60b",
+    "executionId": "6245fff4-de0f-4401-88c0-b9411b361826",
+    "commandId": "93c59d3f-b686-4f51-be89-8f2f697769e4",
+    "runtimeRef": "d61ea955-b23c-41a1-9423-057b914bc3b4",
+    "runtimeGeneration": "a874c162-7c64-4933-96f3-889157b8deed",
+    "executionState": "SUCCEEDED",
+    "outcome": "SUCCESS",
+    "presentationStatus": "NOT_REQUIRED",
+    "visibleRuntimeState": "PAUSED"
+  },
+  "physicalMicrophoneWithLocalLlm": {
+    "status": "PASS",
+    "input": "REAL_PHYSICAL_MICROPHONE",
+    "spokenText": "暂停任务",
+    "visibleTranscript": "暫停任務",
+    "fileUploadUsed": false,
+    "mockUsed": false,
+    "asrRequestId": "b92ac6e6-136f-4c44-b96e-9a0b6b0e3ed6",
+    "interpretationId": "cb0a2619-1bc2-47e6-8ce9-a1ce0dfd18fd",
+    "provider": "local-llm",
+    "model": "qwen2.5-1.5b-instruct-q4_k_m",
+    "action": "PAUSE",
+    "reason": "MISSION_PAUSE",
+    "manualStartProposalId": "623a14b2-897e-4396-8fa6-4a12ed4c5d24",
+    "manualStartExecutionId": "0131d145-ebcc-4edb-ab73-df09b867d8c4",
+    "proposalId": "90e4cc0d-1fa5-4eb4-a17c-4f2c1ac06bad",
+    "executionId": "60abb9b3-2400-4a9a-9c33-c0b14767f8d1",
+    "commandId": "76caf72f-d41b-4376-8a65-d4ecf206261b",
+    "runtimeRef": "28008e31-b36d-46db-8dd3-c8fef69b5a19",
+    "runtimeGeneration": "cd44ddb5-5372-4811-a995-1e9e047c6251",
+    "executionState": "SUCCEEDED",
+    "outcome": "SUCCESS",
+    "presentationStatus": "NOT_REQUIRED",
+    "visibleRuntimeState": "PAUSED"
+  },
+  "result": "PASS"
+}

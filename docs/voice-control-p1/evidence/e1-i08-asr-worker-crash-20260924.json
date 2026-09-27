@@ -1,0 +1,38 @@
+{
+  "testedAt": "2026-09-24T16:04:18.9051874+08:00",
+  "scenario": "E1 I08 disposable real ASR worker crash during inference",
+  "disposablePort": 18084,
+  "readyBeforeCrash": true,
+  "requestId": "fd372f30-f59c-44a9-8d56-96dc8e0c39fc",
+  "connectionObservedBeforeCrash": true,
+  "requestResult": {
+    "completed": false,
+    "status": null,
+    "failureType": "MethodInvocationException"
+  },
+  "worker": {
+    "pid": 26916,
+    "workingSetBytesBeforeCrash": 470368256,
+    "cpuSecondsBeforeCrash": 27.640625,
+    "exitedAfterCrash": true
+  },
+  "algorithmRunner": {
+    "pidsBefore": 16076,
+    "aliveAtCrash": true,
+    "pidsAliveAfter": [
+      16076
+    ],
+    "unaffected": true
+  },
+  "primaryAsr": {
+    "readyBefore": true,
+    "readyAfter": true,
+    "unaffected": true
+  },
+  "safeguards": [
+    "Disposable port and random in-memory token used",
+    "Listener command line matched asr_server.py before termination",
+    "algorithm-service/runner.py process was never targeted",
+    "No audio, transcript, token, cookie, or password stored"
+  ]
+}

@@ -1,0 +1,79 @@
+{
+  "startedAt": "2026-09-24T10:49:08+0800",
+  "base": "http://127.0.0.1:5175",
+  "scope": "D3 local LLM real HTTP classification and idempotency",
+  "cases": [
+    {
+      "id": "D3-01",
+      "result": "PASS",
+      "requestId": "0370ae6f-f3c0-4eae-bb55-2e473c81b6e7",
+      "classification": "CANDIDATE",
+      "action": "START"
+    },
+    {
+      "id": "D3-02",
+      "result": "PASS",
+      "requestId": "5c7f968e-1224-4025-b38f-516cad6c343d",
+      "classification": "CANDIDATE",
+      "action": "PAUSE"
+    },
+    {
+      "id": "D3-03",
+      "result": "PASS",
+      "requestId": "29fdf3cc-c6dc-478c-af40-42f038c41678",
+      "classification": "CANDIDATE",
+      "action": "RESUME"
+    },
+    {
+      "id": "D3-04",
+      "result": "PASS",
+      "requestId": "0c23e4a5-7b9a-4312-a714-d3bd2fcdaddc",
+      "classification": "CANDIDATE",
+      "action": "STOP"
+    },
+    {
+      "id": "D3-05",
+      "result": "PASS",
+      "requestId": "bcc58146-b74f-453b-9fca-562900881b3f",
+      "classification": "NEEDS_CLARIFICATION",
+      "reason": "AMBIGUOUS_ACTION"
+    },
+    {
+      "id": "D3-06",
+      "result": "PASS",
+      "requestId": "a8790b06-08f2-4121-9ef4-760ed0e56d0a",
+      "classification": "NEEDS_CLARIFICATION",
+      "reason": "NO_SUPPORTED_ACTION"
+    },
+    {
+      "id": "D3-07",
+      "result": "PASS",
+      "requestId": "911e7bea-c862-4436-9607-e96b90ee9dce",
+      "classification": "UNSUPPORTED",
+      "reason": "UNSUPPORTED_CAPABILITY"
+    },
+    {
+      "id": "D3-08",
+      "result": "PASS",
+      "requestId": "e72e904b-6a0c-476e-b374-4ac90488a869",
+      "classification": "UNSUPPORTED",
+      "reason": "UNSUPPORTED_TARGETING"
+    },
+    {
+      "id": "D3-09",
+      "result": "PASS",
+      "requestId": "4e215ae3-c930-460d-8383-5459ecd2a78a",
+      "classification": "NOT_ACTIONABLE",
+      "reason": "NEGATED_ACTION"
+    },
+    {
+      "id": "D3-10",
+      "result": "PASS",
+      "requestId": "6e8d1269-b6cb-4887-9f4e-083ed4dc09aa",
+      "identicalReplay": true,
+      "changedBody": "IDEMPOTENCY_CONFLICT"
+    }
+  ],
+  "result": "PASS",
+  "finishedAt": "2026-09-24T10:49:17+0800"
+}

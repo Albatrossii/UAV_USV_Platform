@@ -1,0 +1,80 @@
+{
+  "capturedAt": "2026-09-24T01:11:26Z",
+  "environment": {
+    "frontend": "http://localhost:5175/?workspace=simulation",
+    "backend": "http://127.0.0.1:18081",
+    "asr": "http://127.0.0.1:18082",
+    "database": "uav_usv_p0_integration",
+    "asrModel": "whisper-small-cpu-int8-r1",
+    "asrModelRevision": "536b0662742c02347bc0e980a01041f333bce120"
+  },
+  "input": {
+    "source": "physical_microphone",
+    "locale": "zh-CN",
+    "transcriptionRequestId": "812d02f2-69b2-420e-b9d2-ef57d029a99d",
+    "acceptedAt": "2026-09-24T01:03:28.909972Z",
+    "completedAt": "2026-09-24T01:03:57.052Z",
+    "httpStatus": 200,
+    "browserRecovery": "same_request_replay",
+    "transcript": "开始任务"
+  },
+  "interpretation": {
+    "interpretationId": "056d2b4b-581c-4131-b144-c35a73a605d2",
+    "status": "CANDIDATE",
+    "intent": "MISSION_START",
+    "action": "START",
+    "provider": "local-rules",
+    "model": "rules-v1"
+  },
+  "runtime": {
+    "algorithmRunId": "1790207857879",
+    "runtimeRef": "92fa2089-1a32-4e32-b3f2-1af6a219a8fc",
+    "runtimeGeneration": "c796556b-cb4d-457a-afd5-e6c9811e25b6",
+    "bindingId": "a9bcec81-afdc-4dd4-b7bf-dd36825f4b43"
+  },
+  "proposal": {
+    "proposalId": "c9af8b66-5451-4fae-b698-f16398923e9c",
+    "status": "CONFIRMED",
+    "createdAt": "2026-09-24T01:06:48.590679Z",
+    "planVersion": 1,
+    "action": "START",
+    "interpretationId": "056d2b4b-581c-4131-b144-c35a73a605d2",
+    "manualConfirmation": true
+  },
+  "execution": {
+    "executionId": "87e1e64f-34a3-437d-af5f-919f12fe6c73",
+    "commandId": "1c373432-2be3-4e8f-9257-0682b617e7d7",
+    "state": "SUCCEEDED",
+    "outcome": "SUCCESS",
+    "presentationStatus": "REPORTED_APPLIED",
+    "events": [
+      {
+        "sequence": 1,
+        "status": "ACCEPTED",
+        "runtimeState": "PREPARED",
+        "stateVersion": 0,
+        "receivedAt": "2026-09-24T01:07:07.483193Z"
+      },
+      {
+        "sequence": 2,
+        "status": "SUCCEEDED",
+        "runtimeState": "RUNNING",
+        "stateVersion": 1,
+        "receivedAt": "2026-09-24T01:07:07.544233Z"
+      }
+    ],
+    "presentationStartedAt": "2026-09-24T01:07:07.545230Z",
+    "presentationDeadlineAt": "2026-09-24T01:07:37.545230Z",
+    "presentationAppliedAt": "2026-09-24T01:07:15.568557Z"
+  },
+  "browserTerminalEvidence": {
+    "runtimeState": "RUNNING",
+    "algorithmResult": "SUCCESS",
+    "presentation": "Unity 已应用"
+  },
+  "privacy": {
+    "audioStored": false,
+    "credentialsIncluded": false,
+    "tokensIncluded": false
+  }
+}

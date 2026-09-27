@@ -33,11 +33,14 @@ class AsrMysqlMigrationTests {
                 new DriverManagerDataSource(
                         root.replace("/?", "/" + database + "?"), user, password);
         var migration = Flyway.configure().dataSource(ds).load().migrate();
-        assertEquals(20, migration.migrationsExecuted);
-        var store = new AsrAcceptanceStore(new JdbcTemplate(ds));
+        assertEquals(21, migration.migrationsExecuted);
+        var store = new AsrAcceptanceStore(new JdbcTemplate(ds), java.util.Base64.getEncoder().encodeToString(new byte[32]), new com.fasterxml.jackson.databind.ObjectMapper());
         Instant now = Instant.parse("2026-09-23T00:00:00Z");
         assertEquals(AsrAcceptanceStore.Reservation.NEW, store.reserve(1, "id", "hash", now));
         assertEquals(AsrAcceptanceStore.Reservation.MATCH, store.reserve(1, "id", "hash", now));
+        var outcome = new AsrResponses.Outcome(200, java.util.Map.of("code", "SUCCESS", "data", java.util.Map.of("text", "暂停任务")), null);
+        store.saveOutcome(1, "id", "hash", outcome, now);
+        assertEquals(outcome.body(), store.restore(1, "id", "hash", now.plusSeconds(1)).outcome().body());
     }
 
     @AfterEach

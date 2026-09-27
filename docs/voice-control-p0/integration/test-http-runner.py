@@ -4,9 +4,10 @@ p=argparse.ArgumentParser()
 p.add_argument('--credentials',required=True)
 p.add_argument('--output',required=True)
 p.add_argument('--mysql',required=True)
+p.add_argument('--base',default='http://127.0.0.1:15174')
 a=p.parse_args()
 s=json.loads(pathlib.Path(a.credentials).read_text(encoding='utf-8-sig'))
-base='http://127.0.0.1:15174'
+base=a.base.rstrip('/')
 o=urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
 headers={}
 report={'startedAt':time.strftime('%Y-%m-%dT%H:%M:%S%z'),'scope':'real HTTP manual controls; no Unity presentation reports','actions':[]}

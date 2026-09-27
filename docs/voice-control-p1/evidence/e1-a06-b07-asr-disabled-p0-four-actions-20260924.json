@@ -1,0 +1,62 @@
+{
+  "evidenceId": "E1-A06-B07-ASR-DISABLED-P0-FOUR-ACTIONS-20260924",
+  "recordedAt": "2026-09-24T08:49:00Z",
+  "environment": {
+    "java": "local isolated service on 127.0.0.1:18081",
+    "database": "local MySQL uav_usv_p0_integration",
+    "voiceIntelligenceEnabled": false,
+    "voiceControlEnabled": true,
+    "runner": "real algorithm-service/runner.py"
+  },
+  "asrDisabledProbe": {
+    "requestId": "3382366f-23a2-4a51-b0e3-4426100ae801",
+    "httpStatus": 503,
+    "code": "VOICE_INTELLIGENCE_DISABLED"
+  },
+  "runtime": {
+    "runId": 1790239726293,
+    "runtimeRef": "616b7fef-5472-4507-afc5-b663efca7445",
+    "runtimeGeneration": "94f8cef1-7979-4e8c-b703-525b8b872b85",
+    "finalState": "STOPPED"
+  },
+  "actions": [
+    {
+      "action": "START",
+      "executionId": "037872c5-0a6c-46ca-8e63-4c283ea7159c",
+      "commandId": "79224694-a078-4085-acf1-6d155ad6be13",
+      "state": "SUCCEEDED",
+      "outcome": "SUCCESS"
+    },
+    {
+      "action": "PAUSE",
+      "executionId": "c4b70b99-d0cd-47bc-9a4e-943b4e1922e5",
+      "commandId": "7103583a-83b5-4cd4-afb0-c8b7012909a4",
+      "state": "SUCCEEDED",
+      "outcome": "SUCCESS"
+    },
+    {
+      "action": "RESUME",
+      "executionId": "8261b428-ebad-4d79-8aea-2eded17a9de3",
+      "commandId": "88026fdc-eb00-4771-bf61-bbc6391221c7",
+      "state": "SUCCEEDED",
+      "outcome": "SUCCESS"
+    },
+    {
+      "action": "STOP",
+      "executionId": "3f9910bf-bb2c-44da-8298-9281f86d2585",
+      "commandId": "7746cd31-a0db-497e-af93-32e3ef84c05e",
+      "state": "SUCCEEDED",
+      "outcome": "SUCCESS"
+    }
+  ],
+  "assertions": {
+    "asrEndpointDisabled": true,
+    "startPassed": true,
+    "pausePassed": true,
+    "resumePassed": true,
+    "stopPassed": true,
+    "finalRunnerStateStopped": true,
+    "pass": true
+  },
+  "privacy": "No password, token, cookie, transcript, audio, or encryption key is stored in this evidence."
+}

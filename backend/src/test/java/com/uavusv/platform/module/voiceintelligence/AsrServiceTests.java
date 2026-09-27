@@ -44,6 +44,8 @@ class AsrServiceTests {
         acceptances = mock(AsrAcceptanceStore.class);
         when(acceptances.reserve(anyLong(), anyString(), anyString(), any()))
                 .thenReturn(AsrAcceptanceStore.Reservation.NEW);
+        when(acceptances.restore(anyLong(), anyString(), anyString(), any()))
+                .thenReturn(AsrAcceptanceStore.Stored.unknown());
         clock = new Time();
         service = new AsrService(access, settings, provider, acceptances, clock);
         when(provider.transcribe(any(), anyLong()))
@@ -229,6 +231,42 @@ class AsrServiceTests {
     }
 
     @Test
+    void distinctUsersShareOneGlobalInferenceSlot() throws Exception {
+        var entered = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        when(provider.transcribe(any(), anyLong()))
+                .thenAnswer(
+                        invocation -> {
+                            entered.countDown();
+                            assertTrue(release.await(5, TimeUnit.SECONDS));
+                            var request = (SpeechProvider.Audio) invocation.getArgument(0);
+                            return new SpeechProvider.Transcript(
+                                    request.requestId(), "文本", 10, "r1");
+                        });
+
+        var pool = Executors.newSingleThreadExecutor();
+        try {
+            var first = pool.submit(() -> call(101, UUID.randomUUID().toString()));
+            assertTrue(entered.await(2, TimeUnit.SECONDS));
+
+            var busy =
+                    assertThrows(
+                            AsrFailure.class,
+                            () -> call(202, UUID.randomUUID().toString()));
+            assertEquals(429, busy.status);
+            assertEquals("VOICE_RATE_LIMITED", busy.code);
+            assertEquals(2, busy.retryAfter);
+
+            release.countDown();
+            assertEquals(200, first.get().status());
+            verify(provider, times(1)).transcribe(any(), anyLong());
+        } finally {
+            release.countDown();
+            pool.shutdownNow();
+        }
+    }
+
+    @Test
     void restartWithAcceptedKeyReturnsUnknownWithoutInference() {
         String id = UUID.randomUUID().toString();
         call(1, id);
@@ -245,6 +283,30 @@ class AsrServiceTests {
                                         System.nanoTime() + TimeUnit.SECONDS.toNanos(120)));
         assertEquals("VOICE_REQUEST_OUTCOME_UNKNOWN", e.code);
         verify(provider, times(1)).transcribe(any(), anyLong());
+    }
+
+    @Test
+    void restartReturnsPersistedOutcomeWithoutInference() {
+        String id = UUID.randomUUID().toString();
+        var expected = new AsrResponses.Outcome(200, Map.of("code", "SUCCESS"), null);
+        when(acceptances.reserve(eq(1L), eq(id), anyString(), any()))
+                .thenReturn(AsrAcceptanceStore.Reservation.MATCH);
+        when(acceptances.restore(eq(1L), eq(id), anyString(), any()))
+                .thenReturn(new AsrAcceptanceStore.Stored(AsrAcceptanceStore.StoredState.RESTORED, expected));
+        assertSame(expected, call(1, id));
+        verifyNoInteractions(provider);
+    }
+
+    @Test
+    void expiredPersistedOutcomeDoesNotRepeatInference() {
+        String id = UUID.randomUUID().toString();
+        when(acceptances.reserve(eq(1L), eq(id), anyString(), any()))
+                .thenReturn(AsrAcceptanceStore.Reservation.MATCH);
+        when(acceptances.restore(eq(1L), eq(id), anyString(), any()))
+                .thenReturn(new AsrAcceptanceStore.Stored(AsrAcceptanceStore.StoredState.EXPIRED, null));
+        var failure = assertThrows(AsrFailure.class, () -> call(1, id));
+        assertEquals("VOICE_REQUEST_EXPIRED", failure.code);
+        verifyNoInteractions(provider);
     }
 
     @Test

@@ -96,8 +96,21 @@ public class AsrService {
             }
             if (reservation == AsrAcceptanceStore.Reservation.CONFLICT)
                 throw new AsrFailure(409, "IDEMPOTENCY_CONFLICT");
-            if (reservation == AsrAcceptanceStore.Reservation.MATCH)
+            if (reservation == AsrAcceptanceStore.Reservation.MATCH) {
+                AsrAcceptanceStore.Stored stored;
+                try {
+                    stored = acceptances.restore(user, audio.requestId(), hash, now);
+                } catch (RuntimeException e) {
+                    throw new AsrFailure(503, "VOICE_PROVIDER_UNAVAILABLE");
+                }
+                if (stored.state() == AsrAcceptanceStore.StoredState.RESTORED) {
+                    access.require(user, true);
+                    return stored.outcome();
+                }
+                if (stored.state() == AsrAcceptanceStore.StoredState.EXPIRED)
+                    throw new AsrFailure(409, "VOICE_REQUEST_EXPIRED");
                 throw new AsrFailure(409, "VOICE_REQUEST_OUTCOME_UNKNOWN");
+            }
             q.add(now);
             entry = new Entry(hash);
             entries.put(key, entry);
@@ -142,6 +155,11 @@ public class AsrService {
             entry.completed = clock.instant();
             quarantined |= uncertain;
             occupied = quarantined;
+        }
+        try {
+            acceptances.saveOutcome(user, audio.requestId(), hash, outcome, entry.completed);
+        } catch (RuntimeException e) {
+            LOG.warn("ASR outcome persistence deferred user={} requestId={}", user, audio.requestId());
         }
         LOG.info(
                 "ASR completed user={} requestId={} status={} elapsedMs={} quarantined={}",

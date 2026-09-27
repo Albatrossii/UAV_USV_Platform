@@ -105,8 +105,10 @@ class HttpTests(unittest.TestCase):
         for body in (multipart(b''), multipart().replace(b'zh-CN', b'en-US'), multipart().replace(ID.encode(), b'bad')):
             self.assertEqual(self.request(body)[0], 503)
 
-    def test_unsupported_mime(self):
-        self.assertEqual(self.request(multipart(mime='audio/wav'))[0], 415)
+    def test_supported_and_unsupported_mime(self):
+        for mime in ('audio/webm', 'audio/ogg', 'audio/mp4', 'audio/wav', 'audio/mpeg'):
+            self.assertEqual(self.request(multipart(mime=mime))[0], 200)
+        self.assertEqual(self.request(multipart(mime='audio/flac'))[0], 415)
 
     def test_expired_work_remains_busy_ready_stays_true(self):
         self.engine.block = threading.Event()
@@ -160,7 +162,9 @@ def encoded_silence(seconds, format='mp3', codec='libmp3lame', rate=48000, layou
         stream.layout = layout
         for start in range(0, int(seconds * rate), 960):
             size = min(960, int(seconds * rate) - start)
-            frame = av.AudioFrame.from_ndarray(np.zeros((1, size), dtype=np.float32), format='fltp', layout=layout)
+            channels = len(av.AudioLayout(layout).channels)
+            frame = av.AudioFrame.from_ndarray(
+                np.zeros((channels, size), dtype=np.float32), format='fltp', layout=layout)
             frame.sample_rate = rate
             for packet in stream.encode(frame):
                 container.mux(packet)
@@ -178,6 +182,35 @@ class DecodeTests(unittest.TestCase):
     def test_webm_opus(self):
         samples, duration = decode_audio(encoded_silence(1, 'webm', 'libopus'), 'audio/webm', time.monotonic() + 10)
         self.assertEqual(duration, 1000)
+
+    def test_e1_five_real_containers(self):
+        cases = (
+            ('webm', 'libopus', 'audio/webm'),
+            ('ogg', 'libopus', 'audio/ogg'),
+            ('mp4', 'aac', 'audio/mp4'),
+            ('wav', 'pcm_s16le', 'audio/wav'),
+            ('mp3', 'libmp3lame', 'audio/mpeg'),
+        )
+        for container, codec, mime in cases:
+            with self.subTest(mime=mime):
+                samples, duration = decode_audio(
+                    encoded_silence(1, container, codec), mime, time.monotonic() + 10)
+                # AAC may add one codec frame of padding; decoded duration remains bounded.
+                self.assertGreaterEqual(duration, 1000)
+                self.assertLessEqual(duration, 1050)
+                self.assertEqual(len(samples), duration * 16)
+
+    def test_abnormal_rate_and_channels_are_bounded_and_service_recovers(self):
+        for data in (
+            encoded_silence(1, 'wav', 'pcm_s16le', rate=96000),
+            encoded_silence(1, 'wav', 'pcm_s16le', layout='2.1'),
+        ):
+            with self.assertRaises(AsrError) as context:
+                decode_audio(data, 'audio/wav', time.monotonic() + 10)
+            self.assertEqual(context.exception.code, 'ASR_AUDIO_FORMAT_UNSUPPORTED')
+        self.assertEqual(
+            decode_audio(encoded_silence(1, 'wav', 'pcm_s16le'), 'audio/wav', time.monotonic() + 10)[1],
+            1000)
 
     def test_fake_mime_and_damage(self):
         for data, mime in ((b'not audio', 'audio/webm'), (encoded_silence(1), 'audio/webm')):
