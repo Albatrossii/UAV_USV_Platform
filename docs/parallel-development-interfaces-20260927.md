@@ -1,0 +1,34 @@
+# 语音提速与单设备控制并行开发接口约定
+
+日期：2026-09-27  
+基线：本地集成提交 `aeb1f98`，含 SAN60 optical 与 P1 本地语音分支
+
+## 分支与交付边界
+
+两条工作线从同一集成基线分别开发，互不直接修改对方文件：
+
+| 工作线 | 本地分支 | 允许的主要改动 |
+| --- | --- | --- |
+| 本地 ASR 提速 | `codex/asr-latency-optimization` | `asr-service/` 的解码、性能日志和同录音基准工具；仅在需要呈现计时指标时修改 ASR 结果展示 |
+| 单设备控制 | `codex/single-device-control` | `frontend/src/components/control/` 的单设备选择/控制体验、`backend/src/main/java/com/uavusv/platform/module/runtimecontrol/` 的定向校验与回执适配、对应文档 |
+
+## ASR 接口契约
+
+- 浏览器至后端的既有入口保持 `POST /api/voice/intelligence/transcriptions`。
+- 请求仍由音频 Blob、语言、唯一 request ID 组成，并使用 `X-Request-ID` 与 `Idempotency-Key`；成功仍返回 `VoiceTranscript`：识别文字、语言、音频长度、provider 和模型标识。
+- ASR 工作线只负责把相同输入音频转成文本并报告耗时。它不解析控制意图、不选择设备、不调用语音命令接口，也不改变任务或设备状态。
+- 性能诊断只记录阶段耗时、音频长度/字节数、参数档位和匿名请求标识；不得记录音频、转写文本、令牌或认证信息。
+- 默认识别参数不因单次样本而降低。比较不同 beam 档位必须对同一音频运行，记录端到端和推理耗时、逐字转写差异；确认可接受的准确率后再单独提出默认值变更。
+
+## 单设备控制接口契约
+
+- 前端继续通过既有 `POST /api/runtime-control/commands` 发出命令；请求沿用 `RuntimeCommandRequest` 的 `commandType`、单一 `deviceCode`、运行范围和运行实例标识，返回沿用 `RuntimeCommandResponse` 的 `commandKey` 与命令状态。
+- 单设备路径必须只带一个有效设备编号。设备类型、在线/遥测新鲜度、运行实例和动作允许状态由后端控制服务校验；执行成功以现有 Gateway/Unity 命令回执为准，不能以 HTTP 接收成功冒充设备执行成功。
+- 设备控制工作线不新增绕过 `RuntimeControlService` 的直接 ROS/WebSocket 控制链路，不改语音转写/解析入口，不改任务状态机或任务生命周期 API。
+- 任务状态仍由现有任务与运行时服务维护；单设备控制只提交定向设备命令并读取其回执，不直接写任务状态。
+
+## 集成规则
+
+- 两条工作线分别提交，先各自在自己的分支构建，再通过接口契约评审后集成。
+- 公共入口、设备命令 DTO、任务状态机若确需变更，应单独提交并说明迁移影响；不得把这类变更夹带进 ASR 参数优化。
+- 当前 ASR 实测基线为 2.16 秒音频、beam 5、推理约 53.3 秒、端到端约 54.3 秒。该数据用于对照，不代表降低 beam 后的准确率已验收。
