@@ -117,6 +117,13 @@ type InspectorTab = 'status' | 'voice' | 'protocol' | 'logs' | 'single'
 
 type TacticalEvent = SimulationTacticalNotice
 
+type ControlledDeviceSummary = {
+  code: string
+  authority: string
+  motionState: string
+  label: string
+}
+
 type VirtualFleetRecoverySnapshot = {
   version: 1
   userScope: string
@@ -428,6 +435,29 @@ const selectedControlState = computed(() => {
   const states = missionMetrics.value.deviceControlStates
   if (!states || typeof states !== 'object') return null
   return (states as Record<string, { controlAuthority?: string; motionState?: string }>)[selectedDevice.value] ?? null
+})
+const controlledDeviceStateLabels: Record<string, string> = {
+  HOLDING: '悬停 / 驻留',
+  STOPPED: '已停止',
+  RETURNING: '返航中',
+  RETURNED: '已返航',
+  HOLDING_AT_HOME: '已返航',
+  REJOINING: '安全归队中',
+}
+const controlledDevices = computed<ControlledDeviceSummary[]>(() => {
+  const states = missionMetrics.value.deviceControlStates
+  if (!states || typeof states !== 'object') return []
+  return Object.entries(states as Record<string, { controlAuthority?: string; motionState?: string }>)
+    .map(([code, value]) => {
+      const motionState = String(value?.motionState ?? 'OPERATOR').toUpperCase()
+      return {
+        code,
+        authority: String(value?.controlAuthority ?? 'OPERATOR').toUpperCase(),
+        motionState,
+        label: controlledDeviceStateLabels[motionState] ?? motionState,
+      }
+    })
+    .sort((left, right) => left.code.localeCompare(right.code))
 })
 const singleDeviceRuntimeNotice = computed(() => {
   if (!isSingleDeviceAlgorithm.value) return ''
@@ -1894,6 +1924,25 @@ onBeforeUnmount(() => {
                   <button class="vf-button" type="button" :disabled="!selectedDevice || singleDeviceCommandPending" @click="submitSingleDeviceCommand('return')">独立返航</button>
                   <button class="vf-button success" type="button" :disabled="!selectedDevice || singleDeviceCommandPending" @click="submitSingleDeviceCommand('rejoin')">安全归队</button>
                 </div>
+                <div v-if="controlledDevices.length" class="vf-controlled-device-list">
+                  <h5>已接管设备 <span>{{ controlledDevices.length }}</span></h5>
+                  <div class="vf-controlled-device-tags">
+                    <button
+                      v-for="device in controlledDevices"
+                      :key="device.code"
+                      type="button"
+                      :class="[
+                        `state-${device.motionState.toLowerCase().replace(/_/g, '-')}`,
+                        { active: selectedDevice === device.code },
+                      ]"
+                      :title="`点击切换到 ${device.code}`"
+                      @click="selectDeviceForControl(device.code)"
+                    >
+                      <strong>{{ device.code }}</strong>
+                      <span>{{ device.label }}</span>
+                    </button>
+                  </div>
+                </div>
                 <p v-if="singleDeviceCommandMessage" class="vf-action-message">{{ singleDeviceCommandMessage }}</p>
                 <p v-if="singleDeviceRuntimeNotice" class="vf-action-message vf-return-status">{{ singleDeviceRuntimeNotice }}</p>
               </section>
@@ -2073,6 +2122,17 @@ onBeforeUnmount(() => {
 .vf-control-authority strong.operator { color: #ffcf72; }
 .vf-single-command-grid { display: grid; margin-top: 10px; gap: 7px; grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .vf-single-command-grid .vf-button { width: 100%; }
+.vf-controlled-device-list { margin-top: 12px; }
+.vf-controlled-device-list h5 { display: flex; margin: 0 0 7px; align-items: center; justify-content: space-between; color: #8eb7b3; font-size: 10px; font-weight: 500; }
+.vf-controlled-device-list h5 span { min-width: 20px; padding: 2px 6px; color: #06161a; background: #6ce4d5; border-radius: 10px; text-align: center; font: 700 9px/1.4 Consolas, monospace; }
+.vf-controlled-device-tags { display: flex; flex-wrap: wrap; gap: 6px; }
+.vf-controlled-device-tags button { display: inline-flex; min-height: 29px; padding: 5px 7px; align-items: center; gap: 6px; color: #bdd8d5; background: rgba(7, 28, 33, .82); border: 1px solid #28515a; border-radius: 4px; cursor: pointer; }
+.vf-controlled-device-tags button:hover, .vf-controlled-device-tags button.active { border-color: #6ce4d5; box-shadow: 0 0 0 1px rgba(108, 228, 213, .12) inset; }
+.vf-controlled-device-tags strong { color: #eefcf9; font: 700 9px/1.2 Consolas, monospace; }
+.vf-controlled-device-tags span { padding: 2px 5px; color: #ffcf72; background: rgba(255, 196, 92, .1); border-radius: 8px; font-size: 9px; }
+.vf-controlled-device-tags .state-returned span { color: #63e5ad; background: rgba(99, 229, 173, .1); }
+.vf-controlled-device-tags .state-stopped span { color: #ff8178; background: rgba(255, 96, 87, .1); }
+.vf-controlled-device-tags .state-rejoining span { color: #6ce4d5; background: rgba(108, 228, 213, .1); }
 .vf-live-strip .vf-return-notice { color: #ffcf72; }
 .vf-return-status { padding: 8px; background: rgba(255, 196, 92, .07); border-left: 2px solid #ffcf72; }
 @media (max-width: 1500px) {
