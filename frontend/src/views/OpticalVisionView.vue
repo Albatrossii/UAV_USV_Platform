@@ -25,6 +25,7 @@ let viewActive = false
 const overview = computed(() => store.displayOverview)
 const sensors = computed(() => overview.value.sensors)
 const frames = computed(() => store.channels.SYSTEM_OVERVIEW.frameUrls)
+const stats = computed(() => store.streamStats)
 const radar = computed(() => radarStore.overview)
 const detectorSelected = computed(() => activeSourceId.value === DETECTOR_ID)
 const activeCamera = computed(() => sensors.value.find(item => item.cameraId === activeSourceId.value) ?? null)
