@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onDeactivated, ref, shallowRef, watch } from 'vue'
+import { computed, onBeforeUnmount, onDeactivated, onMounted, ref, shallowRef, watch } from 'vue'
 import { Mic, Square, WandSparkles } from '@lucide/vue'
 import { createVoiceIntelligenceAdapter } from '@/services/voiceIntelligence'
 import { voiceRecoveryInfo } from '@/services/voiceIntelligenceRecovery'
@@ -20,24 +20,32 @@ const props = withDefaults(defineProps<{
   runtimeContext?: VoiceInterpretationRuntimeContext | null
   operatorScope?: string
   inputDisabled?: boolean
+  autoExecuteSpeech?: boolean
   allowMockSubmission?: boolean
   submissionDisabled?: boolean
   actionDisabledReason?: (action: VoiceAction) => string
 }>(), {
   adapter: undefined, runtimeContext: null, operatorScope: '', inputDisabled: false,
-  allowMockSubmission: false, submissionDisabled: false, actionDisabledReason: undefined,
+  autoExecuteSpeech: false, allowMockSubmission: false, submissionDisabled: false, actionDisabledReason: undefined,
 })
-const emit = defineEmits<{ candidate: [intent: VoiceIntent, interpretationId?: string] }>()
+const emit = defineEmits<{
+  candidate: [intent: VoiceIntent, interpretationId?: string]
+  voiceCandidate: [intent: VoiceIntent, interpretationId: string]
+}>()
 const adapter = props.adapter ?? createVoiceIntelligenceAdapter()
 const draft = ref('')
 const stage = ref<VoiceInputStage>('IDLE')
 const result = ref<VoiceParseResult | null>(null)
 const message = ref('输入文字或录音，识别结果可编辑后再解析。')
+const stageElapsed = ref(0)
+const stageStartedAt = ref(performance.now())
+let elapsedTimer: number | undefined
 type Pending = { kind: 'audio'; input: VoiceAudioInput } | { kind: 'text'; input: VoiceParseRequest }
 // Keep the exact original body and key in memory for explicit recovery.
 const pending = shallowRef<Pending | null>(null)
 const failed = ref(false)
 const retryable = ref(false)
+const speechFallbackAvailable = ref(false)
 const coolingDown = ref(false)
 const accessDenied = ref(false)
 const permissionPending = ref(false)
@@ -63,6 +71,9 @@ const statusLabel = computed(() => ({
   PARSING: '正在解析', CANDIDATE: '候选指令', NEEDS_CLARIFICATION: '需要澄清',
   UNSUPPORTED: '暂不支持', ERROR: '处理失败',
 }[stage.value]))
+const exactFastPath = computed(() => result.value?.provider === 'local-rules'
+  && result.value.model === 'rules-v1'
+  && ['开始任务', '暂停任务', '继续任务', '停止任务'].includes(result.value.normalizedText.replace(/[。！？!?，,]+$/, '')))
 const adapterLabel = computed(() => adapter.mode === 'MOCK' ? '本地解析 MOCK'
   : result.value?.provider === 'test-fixture' ? '后端测试适配器' : adapter.name === 'unconfigured' ? '待配置' : '平台接口')
 
@@ -91,6 +102,7 @@ function resetInput() {
   coolingDown.value = false
   pending.value = null
   failed.value = false
+  speechFallbackAvailable.value = false
   result.value = null
   draft.value = ''
   stage.value = 'IDLE'
@@ -106,6 +118,7 @@ watch([
   accessDenied.value = false
   message.value = '操作员已切换或运行上下文变化，请重新输入指令。'
 }, { flush: 'sync' })
+watch(stage, () => { stageStartedAt.value = performance.now(); stageElapsed.value = 0 }, { flush: 'sync' })
 
 async function runRequest() {
   if (!pending.value || blocked.value || busy.value || coolingDown.value) return
@@ -116,15 +129,66 @@ async function runRequest() {
   failed.value = false
   result.value = null
   stage.value = current.kind === 'audio' ? 'TRANSCRIBING' : 'PARSING'
+  message.value = current.kind === 'audio'
+    ? '本地模型正在识别录音，可能需要数十秒，请等待；无需重复录音。'
+    : '正在解析指令，请等待。'
   try {
     if (current.kind === 'audio') {
       const transcript = await adapter.transcribe({ ...current.input, signal: active.signal })
       if (ticket !== epoch || active.signal.aborted) return
       draft.value = transcript.text
+      pending.value = null
+      const transcriptIsLocal = transcript.provider === 'local-asr'
+      if (!transcript.text.trim()) {
+        speechFallbackAvailable.value = true
+        stage.value = 'ERROR'
+        message.value = '没有识别到有效语音，请重新录音或改为输入文字。'
+        return
+      }
       message.value = transcript.provider === 'test-fixture'
         ? '后端测试适配器返回的固定样例，请核对文字；未调用真实 ASR。'
         : adapter.mode === 'MOCK' ? '本地录音演示返回固定文字，不是实际语音识别。'
-          : '请核对识别文字后再解析。'
+          : transcriptIsLocal && props.autoExecuteSpeech
+            ? '语音已识别，正在由本地离线模型判断动作。'
+            : '请核对识别文字后再解析。'
+      if (props.autoExecuteSpeech && transcriptIsLocal && transcript.text.trim()) {
+        stage.value = 'PARSING'
+        const parseInput: VoiceParseRequest = {
+          requestId: crypto.randomUUID(),
+          text: transcript.text,
+          locale: 'zh-CN',
+          allowedActions: [...props.allowedActions],
+          availableDeviceCodes: [...props.deviceCodes],
+          runtimeContext: props.runtimeContext ? { ...props.runtimeContext } : null,
+        }
+        // Preserve the interpretation key/body if the second stage times out.
+        pending.value = { kind: 'text', input: parseInput }
+        const parsed = await adapter.parse({ ...parseInput, signal: active.signal })
+        if (ticket !== epoch || active.signal.aborted) return
+        pending.value = null
+        result.value = parsed
+        stage.value = parsed.status === 'CANDIDATE' ? 'CANDIDATE'
+          : parsed.status === 'NOT_ACTIONABLE' ? 'NEEDS_CLARIFICATION' : parsed.status
+        if (parsed.status === 'CANDIDATE'
+          && (parsed.provider === 'local-llm' || exactFastPath.value)
+          && !props.submissionDisabled
+          && !candidateDisabledReason.value) {
+          result.value = null
+          message.value = exactFastPath.value
+            ? '明确口令已由本地规则快速确认，正在自动提交仿真动作。'
+            : '识别成功，正在自动提交仿真动作并等待回执。'
+          emit('voiceCandidate', parsed.intent, parsed.requestId)
+        } else if (parsed.status === 'CANDIDATE') {
+          speechFallbackAvailable.value = true
+          message.value = parsed.provider === 'local-llm' || exactFastPath.value
+            ? candidateDisabledReason.value || '当前仿真条件未通过自动执行检查，请核对识别文字。'
+            : '解析来源不是本地离线模型；已保留识别文字，请核对后重新解析。'
+        } else {
+          speechFallbackAvailable.value = true
+          message.value = parsed.message
+        }
+        return
+      }
       stage.value = 'READY_TO_PARSE'
     } else {
       const parsed = await adapter.parse({ ...current.input, signal: active.signal })
@@ -132,7 +196,7 @@ async function runRequest() {
       result.value = parsed
       stage.value = parsed.status === 'NOT_ACTIONABLE' ? 'NEEDS_CLARIFICATION' : parsed.status
       message.value = parsed.status === 'CANDIDATE'
-        ? '已生成候选；创建冻结提案后仍需人工确认。' : parsed.message
+        ? '已生成候选；请核对识别文字与动作后提交。' : parsed.message
     }
     pending.value = null
   } catch (error) {
@@ -143,6 +207,7 @@ async function runRequest() {
       accessDenied.value = true
     } else {
       failed.value = true
+      speechFallbackAvailable.value = props.autoExecuteSpeech && current.kind === 'audio'
       retryable.value = info.retryable
       coolingDown.value = info.retryAfter > 0
       window.clearTimeout(cooldownTimer)
@@ -165,6 +230,17 @@ function discardPending() {
   resetInput()
   message.value = '已清除本页请求；后续操作将作为新请求，可能产生新的调用费用。'
 }
+function switchToText() {
+  epoch++
+  controller?.abort()
+  controller = null
+  pending.value = null
+  failed.value = false
+  speechFallbackAvailable.value = false
+  retryable.value = false
+  stage.value = draft.value.trim() ? 'READY_TO_PARSE' : 'IDLE'
+  message.value = '请在上方输入任务指令，核对后再解析。'
+}
 
 function preferredAudioType() {
   return ['audio/webm;codecs=opus', 'audio/ogg;codecs=opus', 'audio/mp4', 'audio/webm']
@@ -173,6 +249,7 @@ function preferredAudioType() {
 async function startRecording() {
   if (blocked.value || busy.value || pending.value || recorder) return
   const ticket = epoch
+  speechFallbackAvailable.value = false
   permissionPending.value = true
   result.value = null
   try {
@@ -219,7 +296,7 @@ async function startRecording() {
     })
     active.start(1000)
     stage.value = 'RECORDING'
-    message.value = '最多录制 60 秒；实际时长由后端解码校验。'
+    message.value = '只录任务口令，说完立即点击停止录音，可减少识别等待时间。'
     recordingTimer = window.setTimeout(() => {
       if (active.state === 'recording') active.stop()
     }, recordingMaxMs)
@@ -253,6 +330,14 @@ function submitCandidate() {
 }
 onBeforeUnmount(resetInput)
 onDeactivated(resetInput)
+onMounted(() => {
+  elapsedTimer = window.setInterval(() => {
+    if (['RECORDING', 'TRANSCRIBING', 'PARSING'].includes(stage.value)) {
+      stageElapsed.value = Math.floor((performance.now() - stageStartedAt.value) / 1000)
+    }
+  }, 250)
+})
+onBeforeUnmount(() => window.clearInterval(elapsedTimer))
 </script>
 
 <template>
@@ -261,7 +346,7 @@ onDeactivated(resetInput)
       <strong>语音 / 文本指令</strong>
       <span :class="adapter.mode.toLowerCase()">{{ adapterLabel }}</span>
     </header>
-    <textarea v-model="draft" rows="3" placeholder="例如：暂停当前任务" :disabled="busy || !!pending || blocked || stage === 'RECORDING'" />
+    <textarea v-model="draft" rows="3" placeholder="录音未能明确识别时，可在此修改指令后重试" :disabled="busy || !!pending || blocked || stage === 'RECORDING'" />
     <p v-if="textLength > 200" role="alert">识别文字共 {{ textLength }} 字，请编辑至 200 字以内再解析；文字未截断。</p>
     <div class="controls">
       <button v-if="stage !== 'RECORDING'" type="button" :disabled="busy || !!pending || blocked" @click="startRecording">
@@ -272,15 +357,24 @@ onDeactivated(resetInput)
         <WandSparkles :size="13" />解析指令
       </button>
     </div>
-    <p class="status"><b>{{ statusLabel }}</b><span>{{ message }}</span></p>
+    <p class="status"><b>{{ statusLabel }}<template v-if="['RECORDING', 'TRANSCRIBING', 'PARSING'].includes(stage)"> · {{ stageElapsed }} 秒</template></b><span>{{ message }}</span></p>
+    <details v-if="result" class="result-details">
+      <summary>{{ result.provider === 'local-llm' ? '本地离线模型' : result.provider === 'local-rules' ? '本地规则解析' : '解析信息' }}</summary>
+      <div>模型：{{ result.model }}</div>
+      <div>请求编号：{{ result.requestId }}</div>
+    </details>
     <button v-if="busy && pending" type="button" @click="cancelWaiting">停止等待（不保证后端取消）</button>
+    <button v-if="speechFallbackAvailable" type="button" :disabled="busy || blocked" @click="switchToText">
+      {{ draft.trim() ? '编辑识别文字并重新解析' : '识别失败，重新输入文字' }}
+    </button>
     <div v-if="failed && pending" class="controls">
       <button type="button" :disabled="!retryable || coolingDown || busy || blocked" @click="runRequest">使用原请求恢复查询</button>
+      <button v-if="!speechFallbackAvailable" type="button" :disabled="busy || blocked" @click="switchToText">识别失败，改为输入文字</button>
       <button type="button" :disabled="busy" @click="discardPending">放弃本页恢复（新请求可能重复计费）</button>
     </div>
     <article v-if="candidate" class="candidate">
       <div><strong>{{ candidate.action }}</strong><small>{{ candidate.intent }}</small></div>
-      <p>候选结果不会直接执行；下一步仍进入冻结提案和人工确认。</p>
+      <p>请核对识别文字与动作；不符合预期时修改文字后重新解析。</p>
       <button type="button" :disabled="submissionDisabled || !!candidateDisabledReason" :title="candidateDisabledReason" @click="submitCandidate">
         {{ candidateDisabledReason || '生成待确认提案' }}
       </button>
@@ -297,5 +391,6 @@ textarea { box-sizing:border-box; width:100%; resize:vertical; padding:8px; colo
 textarea:focus { outline:1px solid #58bfb3; border-color:#58bfb3; }.controls button,.candidate button { display:inline-flex; align-items:center; justify-content:center; gap:4px; padding:6px 8px; color:#aedad4; cursor:pointer; background:#0a282e; border:1px solid #285159; border-radius:4px; font-size:9px; }
 .controls button { flex:1; }.controls button.recording { color:#ffb3aa; border-color:#8b453f; }.controls button:disabled,.candidate button:disabled { cursor:not-allowed; opacity:.35; }
 .status { display:grid; gap:2px; margin:0; color:#709792; line-height:1.4; }.status b { color:#93c4be; font-size:9px; }.status span { font-size:9px; }
+.result-details { color:#86aca7; font-size:9px; line-height:1.5; overflow-wrap:anywhere; }.result-details summary { cursor:pointer; color:#aedad4; }
 .candidate { display:grid; gap:6px; padding:8px; background:#082329; border:1px solid #2a7052; border-radius:4px; }.candidate strong { color:#78eadb; }.candidate small { color:#709792; }.candidate p { margin:0; color:#86aca7; font-size:9px; line-height:1.4; }.candidate button { color:#04191b; background:#6ce4d5; border-color:#6ce4d5; }
 </style>

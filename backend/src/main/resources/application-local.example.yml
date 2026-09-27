@@ -17,6 +17,10 @@ app:
   voiceintelligence:
     enabled: ${APP_VOICEINTELLIGENCE_ENABLED:false}
     intent-provider: ${APP_VOICEINTELLIGENCE_INTENT_PROVIDER:rules}
+    base-url: ${APP_VOICEINTELLIGENCE_BASE_URL:http://127.0.0.1:18082}
+    token: ${APP_VOICEINTELLIGENCE_TOKEN:}
+    model-revision: ${APP_VOICEINTELLIGENCE_MODEL_REVISION:}
+    model-alias: ${APP_VOICEINTELLIGENCE_MODEL_ALIAS:whisper-small-cpu-int8-r1}
     llm-base-url: ${APP_VOICEINTELLIGENCE_LLM_BASE_URL:http://127.0.0.1:18083}
     llm-token: ${APP_VOICEINTELLIGENCE_LLM_TOKEN:}
     llm-model: ${APP_VOICEINTELLIGENCE_LLM_MODEL:qwen2.5-1.5b-instruct-q4_k_m}
@@ -26,7 +30,10 @@ app:
     state-authority: ${ROS_STATE_AUTHORITY:v1}
   gateway:
     v1:
-      websocket-url: ${ROS_GATEWAY_V1_WEBSOCKET_URL:ws://127.0.0.1:8765/uav_usv/v1}
+      websocket-url: ${ROS_GATEWAY_V1_WEBSOCKET_URL:ws://10.16.79.66:8765/uav_usv/v1}
+  visual-sensor:
+    websocket-enabled: ${VISUAL_SENSOR_WEBSOCKET_ENABLED:true}
+    websocket-url: ${VISUAL_SENSOR_WEBSOCKET_URL:ws://10.16.79.66:8765/ws}
   integration:
     token: ${PLATFORM_INTEGRATION_TOKEN:uav-usv-local-agent}
   security:
@@ -34,7 +41,7 @@ app:
       username: ${BOOTSTRAP_ADMIN_USERNAME:admin}
       password: ${BOOTSTRAP_ADMIN_PASSWORD}
   control:
-    mission-dispatch-mode: ${MISSION_DISPATCH_MODE:ros-websocket}
+    mission-dispatch-mode: ${MISSION_DISPATCH_MODE:ros-gateway-v1}
     vehicle-dispatch-mode: ${VEHICLE_DISPATCH_MODE:browser-unity}
     command-ack-timeout-seconds: ${COMMAND_ACK_TIMEOUT_SECONDS:15}
     wsl-distribution: ${WSL_DISTRIBUTION:Ubuntu22}
@@ -43,4 +50,4 @@ app:
     unity-project: ${UNITY_PROJECT_PATH:F:/Unity/Projects/unity_ws}
   runtime:
     ros-enabled: ${ROS_ENABLED:false}
-    ros-websocket-url: ${ROS_WEBSOCKET_URL:ws://127.0.0.1:8765/uav_usv}
+    ros-websocket-url: ${ROS_WEBSOCKET_URL:ws://10.16.79.66:8765/ws}

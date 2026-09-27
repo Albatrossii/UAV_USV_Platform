@@ -12,9 +12,12 @@ import type {
 import { VoiceIntelligenceError } from '@/types/voiceIntelligence'
 
 export const VOICE_AUDIO_MAX_BYTES = 5 * 1024 * 1024
-export const VOICE_TRANSCRIPTION_TIMEOUT_MS = 20_000
-export const LOCAL_ASR_TIMEOUT_MS = 140_000
-export const VOICE_PARSE_TIMEOUT_MS = 12_000
+// Java permits up to 120 seconds for CPU ASR. Keep the browser alive through
+// that deadline, with time for upload and response delivery on the local host.
+export const VOICE_TRANSCRIPTION_TIMEOUT_MS = 140_000
+export const LOCAL_ASR_TIMEOUT_MS = VOICE_TRANSCRIPTION_TIMEOUT_MS
+// Allow the local CPU model's 60-second budget plus validation and delivery.
+export const VOICE_PARSE_TIMEOUT_MS = 75_000
 const supportedAudioTypes = new Set(['audio/webm', 'audio/ogg', 'audio/mp4', 'audio/wav', 'audio/mpeg'])
 const actions = new Set(['START', 'PAUSE', 'RESUME', 'STOP'])
 const intents = new Set(['MISSION_START', 'MISSION_PAUSE', 'MISSION_RESUME', 'MISSION_STOP'])

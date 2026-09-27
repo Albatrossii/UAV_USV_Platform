@@ -45,7 +45,21 @@ const chosenMockOutcome = ref<VoiceMockOutcome>('SUCCESS')
 const presentationPendingSince = ref<number | null>(null)
 const presentationBridgeEnabled = import.meta.env.VITE_VOICE_UNITY_PRESENTATION_V1 === 'true'
 const voiceP1PreparationEnabled = import.meta.env.VITE_VOICE_P1_PREPARATION === 'true'
+const voiceP1BackendEnabled = import.meta.env.VITE_VOICE_P1_BACKEND === 'true'
 const asrOnly = import.meta.env.VITE_VOICE_ASR_ONLY === 'true'
+const voiceAutomationStatus = ref('')
+const automaticProposalId = ref<string | null>(null)
+const voiceActionStartedAt = ref<number | null>(null)
+const voiceAutomationDisplay = computed(() => {
+  const result = execution.value
+  const elapsed = voiceActionStartedAt.value === null ? 0 : Math.max(0, Math.floor((now.value - voiceActionStartedAt.value) / 1000))
+  if (!automaticProposalId.value || result?.proposalId !== automaticProposalId.value) {
+    return voiceAutomationStatus.value && voiceActionStartedAt.value !== null
+      ? `${voiceAutomationStatus.value}（已等待 ${elapsed} 秒）`
+      : voiceAutomationStatus.value
+  }
+  return `仿真动作：${executionLabels[result.state] ?? result.state}；Unity ${presentationLabels[result.presentationStatus] ?? result.presentationStatus}；已用 ${elapsed} 秒。`
+})
 const runtimeEnded = computed(() => !!context.value && (
   ['STOPPED', 'CANCELLED', 'COMPLETED', 'FAILED', 'LOST'].includes(context.value.state)
   || (execution.value?.runtimeRef === context.value.runtimeRef
@@ -141,6 +155,14 @@ const intelligenceRuntimeContext = computed(() => parserRuntimeContext.value ? {
   contextVersion: parserRuntimeContext.value.contextVersion,
 } : null)
 const operatorScope = computed(() => `${authStore.user?.username ?? ''}:${authStore.user?.role ?? ''}`)
+const autoExecuteSimulationVoice = computed(() => voiceP1PreparationEnabled
+  && voiceP1BackendEnabled
+  && !asrOnly
+  && !voiceP0MockEnabled
+  && authStore.user?.role === 'ADMIN'
+  && context.value?.runtimeScope === 'MISSION_CENTER'
+  && context.value.runtimeKind === 'STANDALONE_ALGORITHM'
+  && context.value.executionBackend === 'PYTHON_SIMULATION')
 
 function disabledReason(action: VoiceAction) {
   if (recoveryPending.value || responseUnknown.value) return '请先核对上一次写请求的权威结果'
@@ -156,9 +178,17 @@ function disabledReason(action: VoiceAction) {
   return ''
 }
 
-async function propose(intent: VoiceIntent, interpretationId?: string) {
+async function propose(intent: VoiceIntent, interpretationId?: string, automaticVoice = false) {
   await store.propose(intent, interpretationId)
-  dialogOpen.value = proposal.value?.status === 'AWAITING_CONFIRMATION'
+  const expectedAction = intent.replace('MISSION_', '')
+  const proposalMatchesVoice = Boolean(interpretationId
+    && proposal.value?.status === 'AWAITING_CONFIRMATION'
+    && proposal.value.interpretationId === interpretationId
+    && proposal.value.plan.action === expectedAction
+    && proposal.value.plan.runtimeRef === context.value?.runtimeRef
+    && proposal.value.plan.runtimeGeneration === context.value?.runtimeGeneration)
+  dialogOpen.value = !automaticVoice && proposal.value?.status === 'AWAITING_CONFIRMATION'
+  return !automaticVoice || proposalMatchesVoice
 }
 
 async function confirm() {
@@ -177,6 +207,40 @@ async function cancel() {
 
 async function handleVoiceCandidate(intent: VoiceIntent, interpretationId?: string) {
   await propose(intent, interpretationId)
+}
+
+async function handleAutomaticVoiceCandidate(intent: VoiceIntent, interpretationId: string) {
+  automaticProposalId.value = null
+  voiceActionStartedAt.value = Date.now()
+  const action = intent.replace('MISSION_', '') as VoiceAction
+  if (!autoExecuteSimulationVoice.value || disabledReason(action)) {
+    voiceAutomationStatus.value = '已识别语音，但当前仿真或运行条件不允许自动执行；识别文字已保留，请检查后重试。'
+    return
+  }
+  voiceAutomationStatus.value = '语音已识别，正在创建并自动提交当前仿真提案。'
+  const proposalReady = await propose(intent, interpretationId, true)
+  if (!proposalReady) {
+    voiceAutomationStatus.value = store.responseUnknown
+      ? '提案结果待核对，已停止自动重试；请先核对上次请求。'
+      : `自动执行未提交${displayError.value ? `：${displayError.value}` : '，请检查识别文字后重试。'}`
+    return
+  }
+  const submittedProposal = proposal.value
+  if (!submittedProposal || submittedProposal.status !== 'AWAITING_CONFIRMATION') {
+    voiceAutomationStatus.value = '提案状态无法核实，已停止自动提交；请检查识别文字后重试。'
+    return
+  }
+  automaticProposalId.value = submittedProposal.proposalId
+  await confirm()
+  const executionMatchesProposal = execution.value?.proposalId === submittedProposal.proposalId
+    && execution.value.runtimeRef === submittedProposal.plan.runtimeRef
+    && execution.value.runtimeGeneration === submittedProposal.plan.runtimeGeneration
+    && execution.value.action === submittedProposal.plan.action
+  voiceAutomationStatus.value = executionMatchesProposal
+    ? '仿真动作已自动提交，正在等待算法回执。'
+    : store.responseUnknown
+      ? '执行确认结果待核对，已停止自动重试；请先核对上次请求。'
+      : `自动执行未完成${displayError.value ? `：${displayError.value}` : '，请检查识别文字后重试。'}`
 }
 
 function presentationIdentityMatches(message: UnityPresentationIncoming) {
@@ -322,12 +386,12 @@ watch(() => props.runtimeHint.algorithmRunId, algorithmRunId => {
   void store.selectAlgorithmRun(algorithmRunId)
 }, { immediate: true })
 
-watch(() => [
-  context.value?.runtimeRef,
-  context.value?.runtimeGeneration,
-  props.unitySession.connected,
-  props.unitySession.unityInstanceId,
-  props.unitySession.sceneRevision,
+watch([
+  () => context.value?.runtimeRef,
+  () => context.value?.runtimeGeneration,
+  () => props.unitySession.connected,
+  () => props.unitySession.unityInstanceId,
+  () => props.unitySession.sceneRevision,
 ], async () => {
   presentationBridgeReady.value = false
   helloAttempts.value = 0
@@ -419,9 +483,12 @@ onBeforeUnmount(() => {
     </article>
     <p class="scope-note">
       {{ asrOnly ? '本轮仅本地语音转文字；手工任务控制独立使用，识别结果不执行动作。' : voiceP1PreparationEnabled
-        ? '已启用供应商无关输入准备；解析仅生成候选，单设备控制尚未开放。'
+        ? autoExecuteSimulationVoice
+          ? '仿真语音自动模式：录音结束后自动识别、解析并提交明确的整队任务动作；不能确认时保留文字供修改。'
+          : '已启用语音文本输入；自动执行仅限受保护的 Python 仿真语音识别结果。'
         : '当前验证整队任务控制链路；麦克风、模型解析和单设备控制将在后续阶段接入。' }}
     </p>
+    <p v-if="voiceAutomationDisplay" class="scope-note" role="status">{{ voiceAutomationDisplay }}</p>
     <p v-if="recoveryPending" class="recovery-note">正在使用原请求内容和原幂等键核对上次未确认的响应……</p>
     <p v-else-if="responseUnknown" class="recovery-note">上次写请求结果未知，不能换新幂等键重发。</p>
     <p v-else-if="!recoveryAvailable" class="error">本地恢复日志不可用，写操作已阻止。</p>
@@ -436,10 +503,12 @@ onBeforeUnmount(() => {
       :runtime-context="intelligenceRuntimeContext"
       :operator-scope="operatorScope"
       :input-disabled="authStore.user?.role !== 'ADMIN'"
+      :auto-execute-speech="autoExecuteSimulationVoice"
       :allow-mock-submission="voiceP0MockEnabled"
       :submission-disabled="loading || recoveryPending || responseUnknown || !activeVoiceContext"
       :action-disabled-reason="disabledReason"
       @candidate="handleVoiceCandidate"
+      @voice-candidate="handleAutomaticVoiceCandidate"
     />
 
     <div class="action-grid">
@@ -499,7 +568,7 @@ onBeforeUnmount(() => {
   <div v-if="dialogOpen && proposal" class="voice-modal" role="dialog" aria-modal="true" aria-label="确认冻结指令计划">
     <section>
       <header><ShieldCheck :size="18" /><strong>确认冻结计划</strong></header>
-      <p>只有点击“确认执行”后才会向算法执行端下发。计划内容不可在此修改。</p>
+      <p>此提案等待确认。计划内容不可在此修改。</p>
       <dl>
         <div><dt>动作</dt><dd>{{ actionLabels[proposal.plan.action] }}</dd></div>
         <div><dt>当前仿真</dt><dd>运行 {{ context?.algorithmRunId ?? '-' }} / {{ context?.state ?? '-' }}</dd></div>

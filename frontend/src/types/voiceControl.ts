@@ -55,6 +55,7 @@ export interface VoiceFrozenPlan {
 
 export interface VoiceProposal {
   proposalId: string
+  interpretationId?: string
   status: VoiceProposalStatus
   planVersion: 1
   planHash: string

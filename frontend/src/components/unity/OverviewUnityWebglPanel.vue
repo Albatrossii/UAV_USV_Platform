@@ -15,7 +15,7 @@ import type { UnityWindowMessage } from '@/utils/unityWebglProtocol'
 
 const RUNTIME_SCOPE = 'SYSTEM_OVERVIEW' as const
 const RUNTIME_INSTANCE_ID = 'overview-unity-01'
-const WEBGL_SOURCE = import.meta.env.VITE_OVERVIEW_WEBGL_URL ?? '/unity-overview/index.html?embedded=1'
+const WEBGL_SOURCE = import.meta.env.VITE_OVERVIEW_WEBGL_URL ?? '/unity-overview-test/index.html?embedded=1'
 
 const iframeRef = ref<HTMLIFrameElement | null>(null)
 const panelRef = ref<HTMLElement | null>(null)

@@ -8,6 +8,8 @@ const messages: Record<string, string> = {
   VOICE_CONTEXT_CHANGED: '运行上下文已变化，请重新核对场景并输入指令。',
   VOICE_INTERPRETATION_INVALID: '解析来源已失效，请重新核对并解析。',
   VOICE_INTELLIGENCE_DISABLED: '后端尚未启用语音智能接口。',
+  VOICE_PROVIDER_UNAVAILABLE: '本地语音识别服务未就绪，或 ASR 令牌 / 模型版本配置不匹配；请检查识别服务配置后再录音。',
+  VOICE_PROVIDER_INVALID_RESPONSE: '本地语音识别服务响应格式或模型版本不匹配，请检查 ASR 配置。',
   VOICE_AUDIO_EMPTY: '音频文件为空，请重新录制或选择有效文件。',
   VOICE_AUDIO_TOO_LARGE: '音频超过5 MiB，请缩短后重试。',
   VOICE_AUDIO_FORMAT_UNSUPPORTED: '音频格式或文件内容无效，请使用Chrome/Edge录制的WebM/Opus或有效MP3。',
@@ -15,10 +17,11 @@ const messages: Record<string, string> = {
   VOICE_NO_SPEECH: '未识别到语音，请重新录音。',
   VOICE_RATE_LIMITED: '请求过于频繁，请等待后重试原请求。',
   VOICE_BUDGET_EXCEEDED: '本阶段调用预算已耗尽，请联系管理员。',
-  VOICE_PROVIDER_INVALID_RESPONSE: '上游返回结构不合规，本次不生成候选。',
   VOICE_UPLOAD_TIMEOUT: '上传超时，请使用原请求恢复查询。',
   VOICE_TRANSCRIPTION_TIMEOUT: '语音识别超时，请使用原请求核对结果。',
   VOICE_PARSE_TIMEOUT: '意图解析超时，请使用原请求核对结果。',
+  VOICE_INTERPRETATION_TIMEOUT: '语音已转成文字，但本地模型解析动作超时。请恢复原请求或编辑文字后重新解析，无需重新录音。',
+  VOICE_INVALID_REQUEST: '指令解析参数无效，请刷新运行上下文后重新解析已识别文字。',
 }
 
 export function voiceRecoveryInfo(error: unknown) {

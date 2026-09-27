@@ -24,6 +24,11 @@ export const useAuthStore = defineStore('auth', {
     isAuthenticated: (state) => state.user !== null,
   },
   actions: {
+    expireSession() {
+      // Keep recovery journals so reauthentication can resume the same workspace.
+      this.user = null
+      this.initialized = true
+    },
     async initialize(force = false) {
       if (this.initialized && !force) return
 

@@ -20,7 +20,13 @@ import time
 MAX_AUDIO = 5 * 1024 * 1024
 MAX_BODY = 6 * 1024 * 1024
 MAX_SAMPLES = 960000
-REVISION = '536b0662742c02347bc0e980a01041f333bce120'
+MODEL_REVISION = '536b0662742c02347bc0e980a01041f333bce120'
+BEAM_SIZE = int(os.environ.get('ASR_BEAM_SIZE', '5'))
+if BEAM_SIZE not in (1, 2, 3, 5):
+    raise RuntimeError('ASR_BEAM_SIZE must be one of 1, 2, 3, or 5')
+DECODING_PROFILE_REVISION = ('uav-usv-domain-prompt-v1' if BEAM_SIZE == 5
+                             else f'uav-usv-domain-prompt-v1-beam-{BEAM_SIZE}')
+REVISION = f'{MODEL_REVISION}+{DECODING_PROFILE_REVISION}'
 MODEL_SHA256 = '3e305921506d8872816023e4c273e75d2419fb89b24da97b4fe7bce14170d671'
 MODEL_FILES = {
     'model.bin': MODEL_SHA256,
@@ -29,6 +35,18 @@ MODEL_FILES = {
     'vocabulary.txt': '34ce3fe1c5041027b3f8d42912270993f986dbc4bb34cf27f951e34a1e453913',
 }
 UUID = re.compile(r'[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\Z')
+DOMAIN_INITIAL_PROMPT = (
+    '无人机，无人艇，协同搜索，协同航迹，改进蛙跳算法，粒子群优化，全局最优解，'
+    '运行时引用，运行代次，展示绑定，编队控制，动态避障，航向角速度，经纬度，遥测，'
+    '场景就绪，帧应用回执，幂等请求，命令序列，WebGL，实时因子，峰值内存，九十五分位延迟'
+)
+PRODUCTION_TRANSCRIBE_OPTIONS = {
+    'language': 'zh',
+    'beam_size': BEAM_SIZE,
+    'vad_filter': True,
+    'condition_on_previous_text': False,
+    'initial_prompt': DOMAIN_INITIAL_PROMPT,
+}
 
 
 def file_sha256(file_object):
@@ -80,11 +98,14 @@ def parse_multipart(content_type, body):
             if len(payload) > MAX_AUDIO:
                 raise AsrError(413, 'ASR_AUDIO_TOO_LARGE', '音频超过5 MiB')
             mime = part.get_content_type()
-            if mime not in ('audio/webm', 'audio/mpeg'):
-                raise AsrError(415, 'ASR_AUDIO_FORMAT_UNSUPPORTED', 'D1仅支持WebM/Opus和MP3')
+            if mime not in ('audio/webm', 'audio/ogg', 'audio/mp4', 'audio/wav', 'audio/mpeg'):
+                raise AsrError(415, 'ASR_AUDIO_FORMAT_UNSUPPORTED', '音频格式不支持')
             codec = part.get_param('codecs')
-            if codec and ((mime == 'audio/webm' and codec.lower() != 'opus')
-                          or (mime == 'audio/mpeg' and codec.lower() != 'mp3')):
+            expected_codec = {
+                'audio/webm': 'opus', 'audio/ogg': 'opus', 'audio/mp4': 'aac',
+                'audio/wav': 'pcm', 'audio/mpeg': 'mp3',
+            }[mime]
+            if codec and codec.lower() != expected_codec:
                 raise AsrError(415, 'ASR_AUDIO_FORMAT_UNSUPPORTED', '音频codec不支持')
             fields[name] = payload
         else:
@@ -110,9 +131,18 @@ def decode_audio(audio, mime, deadline):
                 raise ValueError('stream')
             stream = streams[0]
             fmt, codec = container.format.name, stream.codec_context.name
-            if not ((mime == 'audio/mpeg' and fmt == 'mp3' and codec in ('mp3', 'mp3float'))
-                    or (mime == 'audio/webm' and 'webm' in fmt and codec == 'opus'
-                        and b'webm' in audio[:4096])):
+            valid_format = (
+                (mime == 'audio/mpeg' and fmt == 'mp3' and codec in ('mp3', 'mp3float'))
+                or (mime == 'audio/webm' and 'webm' in fmt and codec == 'opus'
+                    and b'webm' in audio[:4096])
+                or (mime == 'audio/ogg' and 'ogg' in fmt and codec == 'opus'
+                    and audio.startswith(b'OggS'))
+                or (mime == 'audio/mp4' and 'mp4' in fmt and codec == 'aac'
+                    and b'ftyp' in audio[:64])
+                or (mime == 'audio/wav' and fmt == 'wav' and codec.startswith('pcm_')
+                    and audio.startswith(b'RIFF') and audio[8:12] == b'WAVE')
+            )
+            if not valid_format:
                 raise ValueError('format')
             if not 1 <= stream.codec_context.channels <= 2 or not 1 <= stream.codec_context.sample_rate <= 48000:
                 raise ValueError('specification')
@@ -164,18 +194,38 @@ class LocalEngine:
         list(segments)
 
     def transcribe(self, audio, mime, deadline):
-        samples, duration = decode_audio(audio, mime, deadline)
+        decode_started = time.monotonic()
+        try:
+            samples, duration = decode_audio(audio, mime, deadline)
+        except Exception:
+            print(json.dumps({'event': 'ASR_STAGE', 'stage': 'decode', 'status': 'failed',
+                              'elapsedMs': round((time.monotonic() - decode_started) * 1000),
+                              'pid': os.getpid()}), flush=True)
+            raise
+        print(json.dumps({'event': 'ASR_STAGE', 'stage': 'decode', 'status': 'ok',
+                          'elapsedMs': round((time.monotonic() - decode_started) * 1000),
+                          'audioDurationMs': duration, 'audioBytes': len(audio),
+                          'pid': os.getpid()}), flush=True)
         check_deadline(deadline)
-        segments, _ = self.model.transcribe(samples, language='zh', beam_size=5,
-                                            vad_filter=True, condition_on_previous_text=False)
-        pieces, length = [], 0
-        for segment in segments:
+        inference_started = time.monotonic()
+        try:
+            segments, _ = self.model.transcribe(samples, **PRODUCTION_TRANSCRIBE_OPTIONS)
+            pieces, length = [], 0
+            for segment in segments:
+                check_deadline(deadline)
+                pieces.append(segment.text)
+                length += len(segment.text)
+                if length > 500:
+                    raise AsrError(422, 'ASR_TRANSCRIPT_TOO_LONG', '识别文字超过500字符')
             check_deadline(deadline)
-            pieces.append(segment.text)
-            length += len(segment.text)
-            if length > 500:
-                raise AsrError(422, 'ASR_TRANSCRIPT_TOO_LONG', '识别文字超过500字符')
-        check_deadline(deadline)
+        except Exception:
+            print(json.dumps({'event': 'ASR_STAGE', 'stage': 'inference', 'status': 'failed',
+                              'elapsedMs': round((time.monotonic() - inference_started) * 1000),
+                              'beamSize': BEAM_SIZE, 'pid': os.getpid()}), flush=True)
+            raise
+        print(json.dumps({'event': 'ASR_STAGE', 'stage': 'inference', 'status': 'ok',
+                          'elapsedMs': round((time.monotonic() - inference_started) * 1000),
+                          'beamSize': BEAM_SIZE, 'pid': os.getpid()}), flush=True)
         text = ''.join(pieces).strip()
         if not text:
             raise AsrError(422, 'ASR_NO_SPEECH', '未检测到可识别语音')
@@ -362,7 +412,7 @@ def main():
     model_path = os.environ.get('ASR_MODEL_PATH', '')
     if len(token) < 32 or not token.isascii() or not model_path:
         raise SystemExit('Set ASR_SERVICE_TOKEN (32+ ASCII characters) and ASR_MODEL_PATH; no secrets are printed.')
-    threads = int(os.environ.get('ASR_CPU_THREADS', '4'))
+    threads = int(os.environ.get('ASR_CPU_THREADS', '6'))
     if not 1 <= threads <= 16:
         raise SystemExit('ASR_CPU_THREADS must be 1..16')
     runtime = Runtime(token, audit=True)
@@ -371,7 +421,8 @@ def main():
         try:
             runtime.engine = LocalEngine(model_path, threads)
             print(json.dumps({'event': 'ASR_READY', 'pid': os.getpid(), 'modelRevision': REVISION,
-                              'threads': threads}), flush=True)
+                              'decodingProfileRevision': DECODING_PROFILE_REVISION,
+                              'threads': threads, 'beamSize': BEAM_SIZE}), flush=True)
         except Exception:
             print(json.dumps({'event': 'ASR_NOT_READY', 'pid': os.getpid()}), flush=True)
     threading.Thread(target=initialize, daemon=True).start()

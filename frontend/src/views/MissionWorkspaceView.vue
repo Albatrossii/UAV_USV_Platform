@@ -34,6 +34,7 @@ import { useUnityViewportStore } from '@/stores/unityViewport'
 import {
   algorithmFrameToTrajectoryFrame,
   isRealtimeEnvelopeApplicable,
+  isPoseBatchLive,
   mergeAuthoritativeFrame,
 } from '@/services/realtimeTrajectoryAdapter'
 import type { AlgorithmRuntimeFrame, Mission, MissionDetail } from '@/types/mission'
@@ -75,7 +76,7 @@ const algorithmFrameStatusText = computed(() => ({
 })[algorithmFrameState.value])
 const workspaceRuntimeState = computed(() => realMissionRuntimeStore.runtimeState)
 const rosOnline = computed(() =>
-  monitoringStore.nodes.some(node => node.type === 'ROS_NODE' && node.status === 'ONLINE'),
+  realtimeStore.connected && isPoseBatchLive(realtimeStore.poseBatch, poseFreshnessNow.value),
 )
 const onlineVehicleCount = computed(() =>
   runtimeNodes.value.filter(node => node.status === 'ONLINE').length,

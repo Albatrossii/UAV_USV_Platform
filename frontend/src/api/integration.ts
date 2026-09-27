@@ -1,4 +1,5 @@
 import { http } from './http'
+import { fetchCsrfToken } from './auth'
 import type { ApiResponse } from '@/types/api'
 
 export type IntegrationState = 'ONLINE' | 'RUNNING' | 'STOPPED' | 'OFFLINE' | 'FAILED'
@@ -17,12 +18,11 @@ export interface IntegrationHeartbeatPayload {
   trajectorySequence?: number
 }
 
-const integrationToken = import.meta.env.VITE_PLATFORM_INTEGRATION_TOKEN ?? 'uav-usv-local-agent'
-
 export async function sendIntegrationHeartbeat(payload: IntegrationHeartbeatPayload): Promise<void> {
-  await http.post<ApiResponse<{ accepted: boolean }>>('/integration/heartbeat', payload, {
+  const csrf = await fetchCsrfToken()
+  await http.post<ApiResponse<{ accepted: boolean }>>('/monitoring/unity-heartbeat', payload, {
     headers: {
-      'X-Platform-Token': integrationToken,
+      [csrf.headerName]: csrf.token,
     },
   })
 }

@@ -33,6 +33,7 @@ let reconnectTimer: number | null = null
 let reconnectAttempts = 0
 let reconnectEnabled = false
 let hydrationPromise: Promise<void> | null = null
+let connectionGeneration = 0
 
 function reconnectDelay() {
   return Math.min(1000 * 2 ** reconnectAttempts, 15000)
@@ -103,25 +104,38 @@ export const useRealtimeStore = defineStore('realtime', {
   actions: {
     connect() {
       reconnectEnabled = true
-      void this.hydrateSnapshot()
       if (socket && socket.readyState !== WebSocket.CLOSED) return
+      const generation = ++connectionGeneration
+      this.hydrated = false
+      hydrationPromise = null
+      this.streamSequences = {}
+      this.poseBatch = null
+      this.targetBatch = null
+      this.missionStatus = null
+      void this.hydrateSnapshot()
       if (reconnectTimer !== null) {
         window.clearTimeout(reconnectTimer)
         reconnectTimer = null
       }
       this.connectionState = 'CONNECTING'
       this.lastError = ''
-      socket = new WebSocket(realtimeUrl())
-      socket.onopen = () => {
+      const currentSocket = new WebSocket(realtimeUrl())
+      socket = currentSocket
+      currentSocket.onopen = () => {
+        if (socket !== currentSocket) return
         this.connectionState = 'CONNECTED'
         this.lastError = ''
         reconnectAttempts = 0
       }
-      socket.onmessage = event => this.ingestMessage(event.data)
-      socket.onerror = () => {
+      currentSocket.onmessage = event => {
+        if (socket === currentSocket) this.ingestMessage(event.data)
+      }
+      currentSocket.onerror = () => {
+        if (socket !== currentSocket) return
         this.lastError = 'Realtime WebSocket connection error'
       }
-      socket.onclose = () => {
+      currentSocket.onclose = () => {
+        if (socket !== currentSocket || generation !== connectionGeneration) return
         this.connectionState = 'DISCONNECTED'
         socket = null
         if (reconnectEnabled && reconnectTimer === null) {
@@ -139,8 +153,10 @@ export const useRealtimeStore = defineStore('realtime', {
       if (hydrationPromise) return hydrationPromise
 
       this.hydrating = true
+      const generation = connectionGeneration
       hydrationPromise = fetchRealtimeSnapshot()
         .then((snapshot) => {
+          if (generation !== connectionGeneration) return
           this.ingestSnapshot(snapshot)
           this.hydrated = true
         })
@@ -149,15 +165,19 @@ export const useRealtimeStore = defineStore('realtime', {
           // and will continue filling the store with subsequent realtime frames.
         })
         .finally(() => {
+          if (generation !== connectionGeneration) return
           this.hydrating = false
           hydrationPromise = null
         })
       return hydrationPromise
     },
     refreshSnapshot() {
+      const generation = connectionGeneration
       return (hydrationPromise ?? Promise.resolve())
         .then(() => fetchRealtimeSnapshot())
-        .then(snapshot => this.ingestSnapshot(snapshot))
+        .then(snapshot => {
+          if (generation === connectionGeneration) this.ingestSnapshot(snapshot)
+        })
         .catch(() => {
           // An explicit RUN-boundary refresh is also best-effort. Live WebSocket
           // frames remain authoritative if the debug snapshot is unavailable.
@@ -170,14 +190,18 @@ export const useRealtimeStore = defineStore('realtime', {
     },
     disconnect() {
       reconnectEnabled = false
+      connectionGeneration += 1
+      hydrationPromise = null
       if (reconnectTimer !== null) {
         window.clearTimeout(reconnectTimer)
         reconnectTimer = null
       }
-      socket?.close()
+      const previousSocket = socket
       socket = null
+      previousSocket?.close()
       reconnectAttempts = 0
       this.connectionState = 'DISCONNECTED'
+      this.clear()
     },
     ingestMessage(raw: unknown) {
       try {

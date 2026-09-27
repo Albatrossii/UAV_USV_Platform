@@ -8,6 +8,7 @@ let runtimeEvents: EventSource | null = null
 let refreshTimer: number | null = null
 let refreshInFlight = false
 let pendingRefresh: { overrides: RuntimeNodeQuery; silent: boolean } | null = null
+let sessionGeneration = 0
 
 interface MonitoringState {
   summary: RuntimeSummary | null
@@ -34,6 +35,7 @@ export const useMonitoringStore = defineStore('monitoring', {
         return
       }
       refreshInFlight = true
+      const generation = sessionGeneration
       const query: RuntimeNodeQuery = {
         type: overrides.type ?? this.type,
         status: overrides.status ?? this.status,
@@ -43,12 +45,16 @@ export const useMonitoringStore = defineStore('monitoring', {
       this.error = ''
       try {
         const [summary, nodes] = await Promise.all([fetchRuntimeSummary(), fetchRuntimeNodes(query)])
+        if (generation !== sessionGeneration) return
         this.summary = summary
         this.nodes = nodes
       } catch (error) {
+        if (generation !== sessionGeneration) return
+        this.summary = null
         this.nodes = []
         this.error = error instanceof Error ? error.message : '运行监控数据加载失败'
       } finally {
+        if (generation !== sessionGeneration) return
         if (!silent) this.loading = false
         refreshInFlight = false
         const pending = pendingRefresh
@@ -58,19 +64,24 @@ export const useMonitoringStore = defineStore('monitoring', {
     },
     connectEvents() {
       if (runtimeEvents) return
-      runtimeEvents = new EventSource('/api/monitoring/events')
-      runtimeEvents.addEventListener('runtime-change', () => {
+      const events = new EventSource('/api/monitoring/events')
+      runtimeEvents = events
+      events.addEventListener('runtime-change', () => {
+        if (runtimeEvents !== events) return
         if (refreshTimer !== null) return
         refreshTimer = window.setTimeout(() => {
           refreshTimer = null
           void this.refresh({}, true)
         }, 3000)
       })
-      runtimeEvents.onerror = () => {
+      events.onerror = () => {
+        if (runtimeEvents !== events) return
         this.error = '实时状态连接中断，正在自动重连'
       }
-      runtimeEvents.onopen = () => {
+      events.onopen = () => {
+        if (runtimeEvents !== events) return
         if (this.error === '实时状态连接中断，正在自动重连') this.error = ''
+        void this.refresh({}, true)
       }
     },
     disconnectEvents() {
@@ -78,6 +89,16 @@ export const useMonitoringStore = defineStore('monitoring', {
       runtimeEvents = null
       if (refreshTimer !== null) window.clearTimeout(refreshTimer)
       refreshTimer = null
+    },
+    clearSession() {
+      this.disconnectEvents()
+      sessionGeneration += 1
+      refreshInFlight = false
+      pendingRefresh = null
+      this.summary = null
+      this.nodes = []
+      this.loading = false
+      this.error = ''
     },
   },
 })

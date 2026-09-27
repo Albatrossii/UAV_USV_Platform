@@ -163,6 +163,43 @@ describe('VoiceP0ControlPanel presentation recovery UI', () => {
     wrapper.unmount()
   })
 
+  it('keeps an in-flight presentation challenge across heartbeat refreshes but clears it for a new scene', async () => {
+    const wrapper = mountPanel('NOT_REQUIRED')
+    const store = useVoiceControlStore()
+    store.takePresentationBinding = vi.fn().mockImplementation(async () => {
+      store.presentationBinding = {
+        bindingId: '77777777-7777-4777-8777-777777777777',
+        runtimeGeneration: context.runtimeGeneration,
+      }
+    })
+    await wrapper.setProps({ unitySession: { connected: true, unityInstanceId: 'unity-test', sceneRevision: 1 } })
+    await nextTick()
+    await wrapper.vm.handleUnityPresentationMessage({ type: 'PRESENTATION_READY', payload: {
+      protocolVersion: 'unity.presentation.v1', runtimeRef: context.runtimeRef, runtimeGeneration: context.runtimeGeneration,
+      bindingId: '77777777-7777-4777-8777-777777777777', unityInstanceId: 'unity-test', sceneRevision: 1, scenarioReady: true,
+    } })
+    const challenge = {
+      runtimeGeneration: context.runtimeGeneration,
+      bindingId: '77777777-7777-4777-8777-777777777777', kind: 'SCENE_READY' as const,
+      executionId: null, requestId: '88888888-8888-4888-8888-888888888888', sequence: 1,
+      expiresAt: new Date(Date.now() + 5000).toISOString(),
+    }
+    store.presentationChallenge = challenge
+    const messagesBeforeRefresh = wrapper.emitted('presentationMessage')?.length
+
+    store.contexts = [{ ...context, lastHeartbeatReceivedAt: new Date(Date.now() + 1000).toISOString(), latestFrameSequence: 13 }]
+    await nextTick()
+    expect(store.presentationChallenge).toEqual(challenge)
+    expect(wrapper.emitted('presentationMessage')).toHaveLength(messagesBeforeRefresh!)
+    expect(store.takePresentationBinding).toHaveBeenCalledOnce()
+
+    await wrapper.setProps({ unitySession: { connected: true, unityInstanceId: 'unity-test', sceneRevision: 2 } })
+    await nextTick()
+    expect(store.presentationChallenge).toBeNull()
+    expect(store.takePresentationBinding).toHaveBeenCalledTimes(2)
+    wrapper.unmount()
+  })
+
 
   it('does not resume presentation probes after STOP succeeds while context is stale', async () => {
     const wrapper = mountPanel('NOT_REQUIRED')

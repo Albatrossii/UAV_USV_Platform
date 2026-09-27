@@ -26,6 +26,10 @@ public class IntentService {
                     "PAUSE", Pattern.compile("暂停|先停一下|暂停任务"),
                     "RESUME", Pattern.compile("继续|恢复(?:任务|执行|运行)?"),
                     "STOP", Pattern.compile("停止|终止|结束任务"));
+    // Exact, unambiguous commands can skip the local LLM round trip. The result still goes
+    // through runtime capability checks and is stored as a normal interpretation candidate.
+    private static final Map<String, String> EXACT_COMMANDS =
+            Map.of("开始任务", "START", "暂停任务", "PAUSE", "继续任务", "RESUME", "停止任务", "STOP");
     private static final Pattern NEGATED =
             Pattern.compile("(不要|别|无需|不用|禁止).{0,6}(开始|启动|暂停|继续|恢复|停止|终止|结束)");
     private static final Pattern UNSUPPORTED = Pattern.compile("攻击|打击|开火|围捕|包围|撤退|返航");
@@ -134,8 +138,9 @@ public class IntentService {
 
         ObjectNode runtime = requireContext(user, body.path("runtimeContext"));
         String text = normalize(body.path("text").asText());
+        boolean exactCommand = EXACT_COMMANDS.containsKey(text);
         IntentClassification parsed = parse(text, body.path("allowedActions"), runtime);
-        boolean localLlm = "local-llm".equals(settings.getIntentProvider());
+        boolean localLlm = "local-llm".equals(settings.getIntentProvider()) && !exactCommand;
         ObjectNode data =
                 parsed.data(
                         requestId,
@@ -241,7 +246,10 @@ public class IntentService {
                     "一句话中包含多个动作，请一次只说明一个任务动作。",
                     null);
         IntentClassification parsed;
-        if ("local-llm".equals(settings.getIntentProvider())) {
+        String exactAction = EXACT_COMMANDS.get(text);
+        if (exactAction != null) {
+            parsed = new IntentClassification("CANDIDATE", null, null, exactAction);
+        } else if ("local-llm".equals(settings.getIntentProvider())) {
             if (llm == null) throw new AsrFailure(503, "VOICE_PROVIDER_UNAVAILABLE");
             parsed = llm.classify(text);
         } else if ("rules".equals(settings.getIntentProvider())) {
@@ -329,7 +337,7 @@ public class IntentService {
     }
 
     private static String normalize(String text) {
-        return text.trim().replaceAll("\\s+", "");
+        return text.trim().replaceAll("\\s+", "").replaceAll("[。！？!?，,]+$", "");
     }
 
     @Scheduled(fixedDelay = 60000)

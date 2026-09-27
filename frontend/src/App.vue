@@ -1,26 +1,39 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { RouterView } from 'vue-router'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import UnityRuntimeHost from '@/components/unity/UnityRuntimeHost.vue'
 import SimulationRuntimeHost from '@/components/unity/SimulationRuntimeHost.vue'
 import { simulationRuntime } from '@/composables/simulationRuntime'
 import { useAuthStore } from '@/stores/auth'
+import { useConnectivityStore } from '@/stores/connectivity'
 import { useRealtimeStore } from '@/stores/realtime'
 import { useUnityBridgeStore } from '@/stores/unityBridge'
 import { useUnityViewportStore } from '@/stores/unityViewport'
+import { useVisualSensorStore } from '@/stores/visualSensor'
+import { useMonitoringStore } from '@/stores/monitoring'
+import { useRadarSensorStore } from '@/stores/radarSensor'
 
 const route = useRoute()
+const router = useRouter()
 const authStore = useAuthStore()
+const connectivityStore = useConnectivityStore()
+watch(() => connectivityStore.backend, (state) => {
+  if (state !== 'AUTH_EXPIRED' || !authStore.isAuthenticated) return
+  const redirect = route.fullPath
+  authStore.expireSession()
+  if (route.meta.requiresAuth) void router.replace({ name: 'login', query: { redirect } })
+}, { flush: 'sync' })
 const realtimeStore = useRealtimeStore()
 const unityBridgeStore = useUnityBridgeStore()
 const unityViewportStore = useUnityViewportStore()
 
 // ASR first visit must not initialize Unity; preserve an already-loaded P0 session.
 const overviewUnityRequested = ref(false)
-watch(() => [route.name, route.meta.requiresAuth], () => {
+watch(() => [route.name, route.query.workspace, route.meta.requiresAuth], () => {
   if (!route.meta.requiresAuth) overviewUnityRequested.value = false
-  else if (route.name !== 'local-asr') overviewUnityRequested.value = true
+  else if ((route.name === 'dashboard' && route.query.workspace !== 'simulation')
+    || route.name === 'optical-vision') overviewUnityRequested.value = true
 }, { immediate: true })
 const mountSystemOverviewUnity = computed(() => Boolean(route.meta.requiresAuth) && overviewUnityRequested.value)
 const systemOverviewUnityActive = computed(() =>
@@ -43,7 +56,12 @@ watch(
   () => authStore.isAuthenticated,
   (authenticated) => {
     if (authenticated) realtimeStore.connect()
-    else realtimeStore.disconnect()
+    else {
+      realtimeStore.disconnect()
+      useVisualSensorStore().clearSession()
+      useMonitoringStore().clearSession()
+      useRadarSensorStore().clearSession()
+    }
   },
   { immediate: true },
 )
@@ -78,7 +96,7 @@ watch(visualSubscriptionActive, (active, wasActive) => {
   />
   <UnityRuntimeHost
     v-if="showMissionCenterUnity"
-    iframe-src="/unity-overview/index.html?embedded=1"
+    iframe-src="/unity-overview-test/index.html?embedded=1"
     viewport="mission-execution"
     runtime-scope="MISSION_CENTER"
     :runtime-instance-id="unityViewportStore.missionInstanceId"

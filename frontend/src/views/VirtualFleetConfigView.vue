@@ -14,6 +14,7 @@ import {
 } from '@lucide/vue'
 
 import ConsoleLayout from '@/components/layout/ConsoleLayout.vue'
+import { ApiClientError } from '@/api/http'
 import VoiceP0ControlPanel from '@/components/voice/VoiceP0ControlPanel.vue'
 import {
   simulationRuntime,
@@ -740,6 +741,14 @@ async function onUnityReady() {
       algorithmPrepared.value = true
       addLog(`algorithm runtime recovered: ${runtimeState} runId=${state.runId}`)
     } catch (error) {
+      if (error instanceof ApiClientError && error.status === 404) {
+        // An expired server runtime cannot be recovered by reloading WebGL.
+        // Recreate the preview only; starting a mission remains an explicit action.
+        algorithmPrepared.value = false
+        addLog('原算法运行已不存在，清理恢复记录并重新生成仿真预览')
+        await resetMission()
+        return
+      }
       failSceneRecovery(`无法核对原算法运行：${error instanceof Error ? error.message : String(error)}`)
       return
     }

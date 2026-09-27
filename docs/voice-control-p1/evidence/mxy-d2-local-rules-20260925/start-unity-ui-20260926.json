@@ -1,0 +1,8 @@
+{
+  "observedAt": "2026-09-26T06:10:48.5764134Z",
+  "algorithmRunId": "1790402623851",
+  "interfaceStatus": "RUNNING",
+  "unityStatus": "Unity 已应用",
+  "observedFrameSequence": 116,
+  "observation": "After proposal expiration and subsequent parse/proposal UI interactions, the live UI reported START success and Unity applied. Agent did not click confirmation; confirmer and proposal correlation have not yet been verified."
+}

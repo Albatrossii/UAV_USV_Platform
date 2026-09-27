@@ -152,6 +152,7 @@ export async function createVoiceProposal(payload: VoiceProposalRequest, idempot
       proposalId: uuid(), status: 'AWAITING_CONFIRMATION', planVersion: 1,
       planHash: await planHash(plan), plan, requiresConfirmation: true,
       createdAt: new Date(now).toISOString(), expiresAt: new Date(now + 30_000).toISOString(), executionId: null,
+      ...(interpretationId ? { interpretationId } : {}),
     }
     proposals.set(proposal.proposalId, proposal)
     proposalReplay.set(idempotencyKey, proposal)

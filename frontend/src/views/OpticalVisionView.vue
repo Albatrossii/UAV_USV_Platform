@@ -118,6 +118,7 @@ onMounted(async () => {
   if (!viewActive) return
   focusedCameraId.value = overview.value.focusedCameraId || sensors.value[0]?.cameraId || 'uav_01'
   await refreshFocusedStream(focusedCameraId.value)
+  if (!viewActive) return
   timer = window.setInterval(() => {
     void store.refreshOverview()
     void store.refreshFrames()
@@ -149,12 +150,14 @@ onBeforeUnmount(() => {
   })
   if (timer) window.clearInterval(timer)
   store.disconnectFrameStream()
+  store.disposeFrames('SYSTEM_OVERVIEW')
   store.markUnityBridgeReady('SYSTEM_OVERVIEW', false)
 })
 </script>
 
 <template>
   <ConsoleLayout title="光电视觉" eyebrow="ELECTRO-OPTICAL VISION">
+    <p v-if="store.error" role="alert">{{ store.error }}；连接恢复后自动重新获取视频状态。</p>
     <template #actions>
       <span class="top-chip" :class="{ online }"><Zap :size="14" />{{ linkLabel }}</span>
       <span class="top-chip"><Camera :size="14" />{{ overview.onlineCount }}/{{ overview.totalCount }} 路在线</span>
@@ -216,8 +219,8 @@ onBeforeUnmount(() => {
       </div>
 
       <footer class="stream-metrics">
-        <article><span>实时帧率</span><b>{{ stats?.measuredFps?.toFixed(1) || '--' }} FPS</b></article>
-        <article><span>端到端延迟</span><b>{{ stats?.renderMs?.toFixed(1) || '--' }} ms</b></article>
+        <article><span>实时帧率</span><b>{{ (stats?.measuredFps || focused?.fps)?.toFixed(1) || '--' }} FPS</b></article>
+        <article><span>帧新鲜度</span><b>{{ focused && focused.latencyMs >= 0 ? focused.latencyMs.toFixed(0) : '--' }} ms</b></article>
         <article><span>在线通道</span><b>{{ overview.onlineCount }}/{{ overview.totalCount }}</b></article>
         <article><span>当前链路</span><b>{{ overview.gatewayDetail }}</b></article>
       </footer>

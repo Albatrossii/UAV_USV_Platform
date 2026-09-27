@@ -18,6 +18,10 @@ const retryable = ref(false)
 const cooldown = ref(false)
 const denied = ref(false)
 const elapsed = ref(0)
+const recognitionElapsed = ref(0)
+const completedRecognitionElapsedMs = ref<number | null>(null)
+const recognitionStatus = computed(() => phase.value === 'waiting'
+  ? `${message.value} 已等待 ${recognitionElapsed.value} 秒。` : message.value)
 const locked = computed(() => props.disabled || denied.value)
 const inputLocked = computed(() => locked.value || phase.value !== 'idle' || !!pending.value)
 const adapterLabel = computed(() => !result.value ? '等待真实识别'
@@ -32,6 +36,8 @@ let recordTimer: number | undefined
 let expireTimer: number | undefined
 let cooldownTimer: number | undefined
 let requestTimer: number | undefined
+let recognitionTimer: number | undefined
+let recognitionStarted = 0
 const RECOVERY_MS = 600_000
 
 function releaseCapture() {
@@ -50,6 +56,7 @@ function clear() {
   window.clearTimeout(expireTimer)
   window.clearTimeout(cooldownTimer)
   window.clearTimeout(requestTimer)
+  window.clearInterval(recognitionTimer)
   pending.value = null
   text.value = ''
   result.value = null
@@ -57,6 +64,8 @@ function clear() {
   retryable.value = false
   cooldown.value = false
   elapsed.value = 0
+  recognitionElapsed.value = 0
+  completedRecognitionElapsedMs.value = null
   submitted = 0
 }
 function discard() {
@@ -79,6 +88,13 @@ async function send() {
   const controller = new AbortController()
   activeRequest = controller
   phase.value = 'waiting'
+  recognitionStarted = performance.now()
+  completedRecognitionElapsedMs.value = null
+  recognitionElapsed.value = 0
+  window.clearInterval(recognitionTimer)
+  recognitionTimer = window.setInterval(() => {
+    recognitionElapsed.value = Math.floor((performance.now() - recognitionStarted) / 1000)
+  }, 250)
   retryable.value = false
   message.value = '正在本地识别，最多等待140秒。停止等待不代表模型停止。'
   requestTimer = window.setTimeout(() => {
@@ -88,6 +104,7 @@ async function send() {
     const response = await (props.transcribe ?? transcribeLocalAudio)({ ...pending.value, signal: controller.signal })
     if (ticket !== epoch || controller.signal.aborted) return
     result.value = response
+    completedRecognitionElapsedMs.value = Math.round(performance.now() - recognitionStarted)
     text.value = response.text
     pending.value = null
     window.clearTimeout(expireTimer)
@@ -109,6 +126,7 @@ async function send() {
   } finally {
     if (activeRequest === controller) {
       window.clearTimeout(requestTimer)
+      window.clearInterval(recognitionTimer)
       activeRequest = null
       phase.value = 'idle'
     }
@@ -118,6 +136,7 @@ function stopWaiting(note = '已停止等待，后台可能仍在处理；可在
   activeRequest?.abort()
   activeRequest = null
   window.clearTimeout(requestTimer)
+  window.clearInterval(recognitionTimer)
   phase.value = 'idle'
   retryable.value = true
   message.value = note
@@ -222,11 +241,11 @@ onDeactivated(clear)
       <label>MP3文件测试<input aria-label="MP3文件测试" type="file" accept="audio/mpeg,.mp3" :disabled="inputLocked" @change="pickFile" /></label>
     </div>
     <small>Chrome/Edge · 最长录制约58秒，文件上限60秒／5 MiB</small>
-    <p role="status" aria-live="polite">{{ message }}</p>
+    <p role="status" aria-live="polite">{{ recognitionStatus }}</p>
     <p v-if="locked" role="alert">当前账号不可识别，请确认登录及ADMIN权限。</p>
     <textarea v-model="text" aria-label="识别文字" rows="6" placeholder="真实识别结果将在这里显示，可人工编辑。" :disabled="locked || phase !== 'idle' || !!pending" />
     <small>{{ [...text].length }} 字符（不会按旧意图解析200字上限截断）</small>
-    <p v-if="result" class="metadata">{{ result.durationMs }} ms · {{ result.provider }} · {{ result.model }}</p>
+    <p v-if="result" class="metadata">识别耗时 {{ ((completedRecognitionElapsedMs ?? 0) / 1000).toFixed(1) }} 秒 · 音频 {{ result.durationMs }} ms · {{ result.provider }} · {{ result.model }}</p>
     <button v-if="phase === 'waiting'" @click="stopWaiting()">停止等待（不保证后台取消）</button>
     <div v-if="pending && phase === 'idle'" class="asr-actions">
       <button :disabled="!retryable || cooldown || locked" @click="send">{{ cooldown ? '请等待重试冷却' : '使用原请求恢复' }}</button>

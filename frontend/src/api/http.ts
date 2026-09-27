@@ -1,5 +1,5 @@
 import axios from 'axios'
-import type { AxiosError } from 'axios'
+import type { AxiosError, InternalAxiosRequestConfig } from 'axios'
 
 import type { ApiErrorResponse } from '@/types/api'
 import { useConnectivityStore } from '@/stores/connectivity'
@@ -33,15 +33,24 @@ export const http = axios.create({
   },
 })
 
+type SessionRequestConfig = InternalAxiosRequestConfig & { __sessionGeneration?: number; __safeRetryCount?: number }
+let sessionGeneration = 0
+http.interceptors.request.use((config) => {
+  const sessionConfig = config as SessionRequestConfig
+  sessionConfig.__sessionGeneration = sessionGeneration
+  return config
+})
+
 http.interceptors.response.use(
   (response) => {
+    if (response.config.url === '/auth/login') sessionGeneration += 1
     useConnectivityStore().markOnline()
     return response
   },
   async (error: AxiosError<ApiErrorResponse>) => {
     if (error.code === 'ERR_CANCELED') return Promise.reject(new ApiClientError('请求已取消', undefined, 'ERR_CANCELED'))
     const connectivity = useConnectivityStore()
-    const config = error.config as (typeof error.config & { __safeRetryCount?: number })
+    const config = error.config as SessionRequestConfig | undefined
     const safeMethod = (config?.method ?? 'get').toLowerCase() === 'get'
     const transient = !error.response || error.response.status >= 500
     const retries = config?.__safeRetryCount ?? 0
@@ -52,8 +61,13 @@ http.interceptors.response.use(
     }
     let message: string
     if (error.response) {
+      if (import.meta.env.DEV && config?.url?.startsWith('/voice/intelligence/')) {
+        console.warn('[voice-api]', config.url.split('?')[0], error.response.status, error.response.data?.code ?? 'UNKNOWN')
+      }
+      if (import.meta.env.DEV && error.response.status === 401) console.warn('[api] Authentication required:', config?.url?.split('?')[0])
       message = error.response.data?.message ?? `后端请求失败（HTTP ${error.response.status}）`
-      if (error.response.status === 401) connectivity.markFailure('AUTH_EXPIRED', '登录状态已失效，请重新登录')
+      // A late response from the old session must not invalidate a new login.
+      if (error.response.status === 401 && !config?.url?.startsWith('/integration/') && config?.__sessionGeneration === sessionGeneration) connectivity.markFailure('AUTH_EXPIRED', '登录状态已失效，请重新登录')
       else if (error.response.status >= 500) connectivity.markFailure('DEGRADED', message)
     } else if (error.code === 'ECONNABORTED' || error.code === 'ETIMEDOUT') {
       message = '后端响应超时，请稍后重试；若持续出现请检查数据库连接'

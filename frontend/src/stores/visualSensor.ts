@@ -37,6 +37,7 @@ const SENSOR_CATALOG: Array<{
 ]
 
 interface VisualSensorChannelState {
+  generation: number
   overview: VisualSensorOverview | null
   frameUrls: Record<string, string>
   frameReceivedAtMs: Record<string, number>
@@ -91,6 +92,7 @@ function createContext(runtimeScope: VisualSensorRuntimeScope): VisualSensorRunt
 
 function createChannel(runtimeScope: VisualSensorRuntimeScope): VisualSensorChannelState {
   return {
+    generation: 0,
     overview: null,
     frameUrls: {},
     frameReceivedAtMs: {},
@@ -113,6 +115,8 @@ function decodeJpeg(jpegBase64: string) {
 }
 
 function releaseChannelFrames(channel: VisualSensorChannelState) {
+  channel.generation += 1
+  channel.framesRefreshing = false
   Object.values(channel.frameUrls).forEach((url) => URL.revokeObjectURL(url))
   channel.frameUrls = {}
   channel.frameReceivedAtMs = {}
@@ -260,14 +264,21 @@ export const useVisualSensorStore = defineStore('visual-sensor', {
       channel.context = { ...context }
     },
     async refreshOverview() {
+      if (this.loading) return
+      const channel = this.channels.SYSTEM_OVERVIEW
+      const generation = channel.generation
+      this.loading = true
       try {
-        this.channels.SYSTEM_OVERVIEW.overview = await fetchVisualSensors()
+        const overview = await fetchVisualSensors()
+        if (generation !== channel.generation) return
+        channel.overview = overview
         this.error = ''
-      } catch {
-        if (!this.channels.SYSTEM_OVERVIEW.overview) {
-          this.channels.SYSTEM_OVERVIEW.overview = fallbackOverview()
-        }
-        // The backend gateway is an optional system-overview fallback.
+      } catch (error) {
+        if (generation !== channel.generation) return
+        channel.overview = fallbackOverview(channel.unityFocusedCameraId)
+        this.error = error instanceof Error ? error.message : '视频状态加载失败'
+      } finally {
+        if (generation === channel.generation) this.loading = false
       }
     },
     async select(cameraId: string) {
@@ -277,8 +288,11 @@ export const useVisualSensorStore = defineStore('visual-sensor', {
       const channel = this.channels[scope]
       channel.unityFocusedCameraId = cameraId
       if (scope !== 'SYSTEM_OVERVIEW') return
+      const generation = channel.generation
       try {
-        channel.overview = await focusVisualSensor(cameraId)
+        const overview = await focusVisualSensor(cameraId)
+        if (generation !== channel.generation || channel.unityFocusedCameraId !== cameraId) return
+        channel.overview = overview
         this.error = ''
       } catch {
         // Keep the local Unity selection; backend focus is only a fallback.
@@ -316,6 +330,7 @@ export const useVisualSensorStore = defineStore('visual-sensor', {
         this.error = ''
       }
       socket.onmessage = (event) => {
+        if (frameStreamSocket !== socket) return
         try {
           const payload = JSON.parse(String(event.data)) as Record<string, unknown>
           if (payload.type !== 'visualSensorFrame') return
@@ -458,6 +473,7 @@ export const useVisualSensorStore = defineStore('visual-sensor', {
       const channel = this.channels[scope]
       if (channel.framesRefreshing) return
       channel.framesRefreshing = true
+      const generation = channel.generation
       const sensors = buildDisplayOverview(channel).sensors
       const targets = focusedOnly
         ? sensors.filter((sensor) => sensor.cameraId === channel.unityFocusedCameraId)
@@ -470,7 +486,7 @@ export const useVisualSensorStore = defineStore('visual-sensor', {
           ) return
           try {
             const blob = await fetchVisualSensorFrame(sensor.cameraId)
-            if (!blob) return
+            if (!blob || generation !== channel.generation) return
             const nextUrl = URL.createObjectURL(blob)
             const previousUrl = channel.frameUrls[sensor.cameraId]
             channel.frameUrls[sensor.cameraId] = nextUrl
@@ -481,13 +497,22 @@ export const useVisualSensorStore = defineStore('visual-sensor', {
           }
         }))
       } finally {
-        channel.framesRefreshing = false
+        if (generation === channel.generation) channel.framesRefreshing = false
       }
     },
     disposeFrames(scope: VisualSensorRuntimeScope = 'SYSTEM_OVERVIEW') {
       const channel = this.channels[scope]
       releaseChannelFrames(channel)
+      if (scope === 'SYSTEM_OVERVIEW') this.loading = false
       channel.unityBridgeReady = false
+    },
+    clearSession() {
+      this.disconnectFrameStream()
+      for (const scope of ['SYSTEM_OVERVIEW', 'MISSION_CENTER', 'VIRTUAL_FLEET'] as const) {
+        this.disposeFrames(scope)
+        this.channels[scope].overview = null
+      }
+      this.error = ''
     },
   },
 })

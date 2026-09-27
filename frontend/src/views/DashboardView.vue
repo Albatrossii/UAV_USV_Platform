@@ -308,12 +308,12 @@ function ensureOverviewCamera(force = false) {
 }
 
 const realtimeVehicles = computed(() => realtimeStore.poseBatch?.payload.vehicles ?? [])
-const rosBridgeOnline = computed(() => realtimeStore.connected && realtimeStore.poseBatch !== null)
+const rosBridgeOnline = computed(() => realtimeStore.connected && isPoseBatchLive(realtimeStore.poseBatch, freshnessClock.value))
 const unityReady = computed(() => unityConnection.value.includes('Unity WebGL 已连接'))
 const realtimePoseCount = computed(
-  () => realtimeVehicles.value.filter(
+  () => rosBridgeOnline.value ? realtimeVehicles.value.filter(
     vehicle => vehicle.fresh !== false && vehicle.positionValid !== false && vehicle.localPositionEnuM,
-  ).length,
+  ).length : 0,
 )
 const onlineNodeCount = computed(() => displayedNodes.value.filter((node) => node.status === 'ONLINE').length)
 const onlineVehicleCount = computed(() => realtimePoseCount.value)
