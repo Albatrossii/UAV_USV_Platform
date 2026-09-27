@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import math
+
 from app.adapters.base import AlgorithmAdapter
 from app.adapters.single_device import SingleDeviceControlAdapter
-from app.schemas import AgentFrame, RuntimeFrame
+from app.schemas import AgentFrame, RuntimeFrame, TargetFrame
 
 
 class MovingAdapter(AlgorithmAdapter):
@@ -53,14 +55,16 @@ class CompletedCaptureFleetAdapter(AlgorithmAdapter):
 
     def step(self) -> RuntimeFrame:
         self.sequence += 1
-        x = float(self.sequence)
-        agents = [
-            AgentFrame(f"UAV-{index:03d}", "UAV", x, float(index), 20.0, 0.0, "CAPTURE")
-            for index in range(1, 6)
-        ] + [
-            AgentFrame(f"USV-{index:03d}", "USV", x, float(index + 10), 0.0, 0.0, "CAPTURE")
-            for index in range(1, 6)
-        ]
+        agents = []
+        for index in range(10):
+            angle = 2.0 * math.pi * index / 10.0
+            kind = "UAV" if index < 5 else "USV"
+            local_index = index + 1 if kind == "UAV" else index - 4
+            agents.append(AgentFrame(
+                f"{kind}-{local_index:03d}", kind,
+                20.0 * math.cos(angle), 20.0 * math.sin(angle),
+                20.0 if kind == "UAV" else 0.0, 0.0, "CAPTURE",
+            ))
         return RuntimeFrame(
             runId=self.run_id,
             algorithmCode=self.code,
@@ -68,7 +72,7 @@ class CompletedCaptureFleetAdapter(AlgorithmAdapter):
             timestamp=self.sequence * 100,
             phase="COMPLETED",
             agents=agents,
-            targets=[],
+            targets=[TargetFrame("THREAT-001", "THREAT", 0.0, 0.0, 0.0)],
             metrics={"progress": 1.0, "requiredCaptureAgents": 10},
             terminalStatus="COMPLETED",
         )
@@ -177,6 +181,67 @@ def test_capture_return_uses_structural_minimum_not_original_group_size() -> Non
     completed = subject.step()
 
     assert completed.terminalStatus == "COMPLETED"
-    assert completed.metrics["requiredActiveMissionDeviceCount"] == 5
+    assert completed.metrics["requiredActiveMissionDeviceCount"] == 3
     assert completed.metrics["activeMissionDeviceCount"] == 9
     assert completed.metrics["completionBlocker"] == "NONE"
+
+
+def test_hold_is_excluded_from_roster_but_does_not_block_valid_completion() -> None:
+    subject = SingleDeviceControlAdapter(
+        CompletedFleetAdapter(11, {}),
+        "ESCORT_GUARD_SINGLE_DEVICE",
+    )
+    subject.step()
+    subject.control_device("UAV-001", "UAV_HOVER")
+
+    completed = subject.step()
+
+    assert completed.terminalStatus == "COMPLETED"
+    assert completed.metrics["completionBlocker"] == "NONE"
+    assert completed.metrics["activeMissionDeviceCount"] == 2
+    assert completed.metrics["activeMissionDeviceCodes"] == ["UAV-002", "USV-001"]
+    assert completed.metrics["excludedMissionDeviceCodes"] == ["UAV-001"]
+
+
+def test_hold_enters_recoverable_degraded_mode_when_a_type_is_lost() -> None:
+    subject = adapter()
+    subject.step()
+    subject.control_device("UAV-001", "UAV_HOVER")
+
+    degraded = subject.step()
+
+    assert degraded.terminalStatus is None
+    assert degraded.metrics["completionBlocker"] == "INSUFFICIENT_ACTIVE_FORCE"
+    assert degraded.metrics["missingActiveDeviceTypes"] == ["UAV"]
+    assert degraded.metrics["missionCapability"] == "DEGRADED"
+
+
+def test_capture_repairs_the_real_ring_after_multiple_devices_exit() -> None:
+    subject = SingleDeviceControlAdapter(
+        CompletedCaptureFleetAdapter(
+            12,
+            {"uavSpeedMps": 15.0, "usvSpeedMps": 4.0},
+        ),
+        "GB_SFLA_CS_SINGLE_DEVICE",
+    )
+    subject.step()
+    remaining = {"UAV-001", "UAV-002", "USV-001"}
+    for agent in list(subject._last_agents.values()):
+        if agent.code in remaining:
+            continue
+        command = "UAV_HOVER" if agent.type == "UAV" else "USV_HOLD"
+        subject.control_device(agent.code, command)
+
+    first = subject.step()
+    assert first.terminalStatus is None
+    assert first.metrics["completionBlocker"] == "ACTIVE_FORMATION_NOT_CLOSED"
+    assert first.metrics["activeFormationReplanning"] is True
+
+    latest = first
+    for _ in range(120):
+        latest = subject.step()
+        if latest.terminalStatus == "COMPLETED":
+            break
+
+    assert latest.terminalStatus == "COMPLETED"
+    assert latest.metrics["activeFormationBlocker"] == "NONE"

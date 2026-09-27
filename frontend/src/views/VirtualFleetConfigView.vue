@@ -469,12 +469,19 @@ const singleDeviceRuntimeNotice = computed(() => {
       : ''
     return missingTypes
       ? `剩余编组缺少 ${missingTypes}，任务保持运行；请让对应类型设备安全归队。`
-      : `剩余兵力低于最低要求，任务保持运行；请让至少 ${deficit} 台设备安全归队。`
+      : `活动编组低于最低结构，任务保持运行；请让至少 ${deficit} 台设备安全归队。`
   }
   const returning = Number(missionMetrics.value.returningDeviceCount ?? 0)
   const returned = Number(missionMetrics.value.returnedDeviceCount ?? 0)
   if (returning > 0) {
     return `等待 ${returning} 台设备抵达返航点；任务完成度暂时保持在 99%。`
+  }
+  const rejoining = Number(missionMetrics.value.rejoiningDeviceCount ?? 0)
+  if (rejoining > 0 || blocker === 'WAITING_FOR_REJOIN') {
+    return `等待 ${Math.max(1, rejoining)} 台设备完成安全归队；控制权交接完成前任务不宣告成功。`
+  }
+  if (blocker === 'ACTIVE_FORMATION_NOT_CLOSED') {
+    return '剩余活动设备尚未形成有效闭环，算法将继续调整队形。'
   }
   if (returned > 0) {
     return `${returned} 台设备已返航并退出任务编组，不再阻塞任务成功。`
@@ -1954,7 +1961,7 @@ onBeforeUnmount(() => {
               </section>
               <section class="vf-inspector-section">
                 <h4>控制规则</h4>
-                <p class="vf-note">被接管设备暂时退出当前任务输出，仍保留在场景和避碰域中。独立返航抵达起始点后会标记为 RETURNED 并退出任务编组；剩余兵力足够时任务继续，兵力不足时进入可恢复的降级状态，不会直接失败。安全归队可把控制权重新交还群体算法。</p>
+                <p class="vf-note">被接管设备退出活动编组，但仍保留在场景和避碰域中。围捕要求至少 3 台且同时包含 UAV、USV；护航要求至少 1 UAV + 1 USV。悬停、停止和已返航设备在剩余编组满足规则时不阻塞成功；返航中、归队中会等待控制权交接完成。结构不足只进入可恢复降级，不会直接失败。</p>
               </section>
             </div>
 
