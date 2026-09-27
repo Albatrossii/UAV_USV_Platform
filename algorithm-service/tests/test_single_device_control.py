@@ -25,6 +25,29 @@ class MovingAdapter(AlgorithmAdapter):
         )
 
 
+class CompletedFleetAdapter(AlgorithmAdapter):
+    code = "TEST_COMPLETED"
+
+    def step(self) -> RuntimeFrame:
+        self.sequence += 1
+        x = float(self.sequence)
+        return RuntimeFrame(
+            runId=self.run_id,
+            algorithmCode=self.code,
+            sequence=self.sequence,
+            timestamp=self.sequence * 100,
+            phase="COMPLETED",
+            agents=[
+                AgentFrame("UAV-001", "UAV", x, 0.0, 20.0, 0.0, "SCOUT"),
+                AgentFrame("UAV-002", "UAV", x, 5.0, 20.0, 0.0, "SCOUT"),
+                AgentFrame("USV-001", "USV", x, 10.0, 0.0, 0.0, "GUARD"),
+            ],
+            targets=[],
+            metrics={"progress": 1.0},
+            terminalStatus="COMPLETED",
+        )
+
+
 def adapter() -> SingleDeviceControlAdapter:
     return SingleDeviceControlAdapter(
         MovingAdapter(7, {"uavSpeedMps": 5.0, "usvSpeedMps": 3.0}),
@@ -75,3 +98,40 @@ def test_rejects_command_for_wrong_device_type() -> None:
         assert "requires a UAV" in str(error)
     else:
         raise AssertionError("expected device type mismatch")
+
+
+def test_return_blocks_completion_only_until_device_reaches_home() -> None:
+    subject = SingleDeviceControlAdapter(
+        CompletedFleetAdapter(8, {"uavSpeedMps": 5.0}),
+        "ESCORT_GUARD_SINGLE_DEVICE",
+    )
+    subject.step()
+    subject.step()
+    subject.control_device("UAV-001", "UAV_RETURN")
+
+    returning = subject.step()
+    assert returning.terminalStatus is None
+    assert returning.metrics["completionBlocker"] == "WAITING_FOR_RETURN"
+    assert returning.metrics["returningDeviceCount"] == 1
+
+    returned = subject.step()
+    assert returned.terminalStatus == "COMPLETED"
+    assert returned.agents[0].status == "RETURNED"
+    assert returned.agents[0].role == "RETURNED"
+    assert returned.metrics["returnedDeviceCount"] == 1
+    assert returned.metrics["completionBlocker"] == "NONE"
+
+
+def test_returned_device_fails_terminal_when_remaining_fleet_breaks_quorum() -> None:
+    subject = SingleDeviceControlAdapter(
+        MovingAdapter(9, {"uavSpeedMps": 5.0}),
+        "ESCORT_GUARD_SINGLE_DEVICE",
+    )
+    subject.step()
+    subject.step()
+    subject.control_device("UAV-001", "UAV_RETURN")
+    subject.step()
+    failed = subject.step()
+
+    assert failed.terminalStatus == "FAILED"
+    assert failed.metrics["missionFailureReason"] == "INSUFFICIENT_ACTIVE_FORCE"

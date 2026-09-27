@@ -429,6 +429,25 @@ const selectedControlState = computed(() => {
   if (!states || typeof states !== 'object') return null
   return (states as Record<string, { controlAuthority?: string; motionState?: string }>)[selectedDevice.value] ?? null
 })
+const singleDeviceRuntimeNotice = computed(() => {
+  if (!isSingleDeviceAlgorithm.value) return ''
+  const failureReason = String(missionMetrics.value.missionFailureReason ?? '')
+  if (failureReason === 'INSUFFICIENT_ACTIVE_FORCE') {
+    return '返航后剩余兵力不足，任务已判定失败。'
+  }
+  const returning = Number(missionMetrics.value.returningDeviceCount ?? 0)
+  const returned = Number(missionMetrics.value.returnedDeviceCount ?? 0)
+  if (returning > 0) {
+    return `等待 ${returning} 台设备抵达返航点；任务完成度暂时保持在 99%。`
+  }
+  if (returned > 0) {
+    return `${returned} 台设备已返航并退出任务编组，不再阻塞任务成功。`
+  }
+  if (String(missionMetrics.value.completionBlocker ?? '') === 'OPERATOR_OVERRIDE') {
+    return '存在人工接管设备，请选择安全归队或独立返航。'
+  }
+  return ''
+})
 const phaseSteps = computed(() => isEscortAlgorithm.value
   ? ['编队护航', '意图识别', '分向守卫', '协同拦截', '追逃压制', '动态围捕', '稳定闭环', '完成']
   : ['目标逃逸', '协同追击', '截击部署', '动态围捕', '稳定闭环', '完成'])
@@ -1460,6 +1479,9 @@ async function submitSingleDeviceCommand(action: 'hold' | 'stop' | 'return' | 'r
       throw new Error(result.detail || result.errorCode || `指令状态：${result.status}`)
     }
     singleDeviceCommandMessage.value = `${selectedDevice.value}：${commandType} 已由 Python 算法接收。`
+    if (action === 'return') {
+      singleDeviceCommandMessage.value += ' 抵达返航点后将退出任务编组并自动参与最终结算。'
+    }
     addLog(`singleDeviceCommand: ${selectedDevice.value} ${commandType} ${result.status}`)
     await pollAlgorithmFrame()
   } catch (error) {
@@ -1654,6 +1676,7 @@ onBeforeUnmount(() => {
               机动余量归队 <strong>{{ postMissionFormationReadyCount }}/{{ postMissionFormationRequiredCount }}</strong>
             </span>
             <span>仿真时长 <strong>{{ simulationElapsedLabel }}</strong></span>
+            <span v-if="singleDeviceRuntimeNotice" class="vf-return-notice">{{ singleDeviceRuntimeNotice }}</span>
           </div>
           <div class="vf-command-bar">
             <div class="vf-command-actions">
@@ -1872,10 +1895,11 @@ onBeforeUnmount(() => {
                   <button class="vf-button success" type="button" :disabled="!selectedDevice || singleDeviceCommandPending" @click="submitSingleDeviceCommand('rejoin')">安全归队</button>
                 </div>
                 <p v-if="singleDeviceCommandMessage" class="vf-action-message">{{ singleDeviceCommandMessage }}</p>
+                <p v-if="singleDeviceRuntimeNotice" class="vf-action-message vf-return-status">{{ singleDeviceRuntimeNotice }}</p>
               </section>
               <section class="vf-inspector-section">
                 <h4>控制规则</h4>
-                <p class="vf-note">被接管设备暂时退出当前任务输出，仍保留在场景和避碰域中；安全归队完成后，控制权自动交还群体算法。</p>
+                <p class="vf-note">被接管设备暂时退出当前任务输出，仍保留在场景和避碰域中。独立返航抵达起始点后会标记为 RETURNED 并退出任务编组；安全归队则把控制权重新交还群体算法。</p>
               </section>
             </div>
 
@@ -2049,6 +2073,8 @@ onBeforeUnmount(() => {
 .vf-control-authority strong.operator { color: #ffcf72; }
 .vf-single-command-grid { display: grid; margin-top: 10px; gap: 7px; grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .vf-single-command-grid .vf-button { width: 100%; }
+.vf-live-strip .vf-return-notice { color: #ffcf72; }
+.vf-return-status { padding: 8px; background: rgba(255, 196, 92, .07); border-left: 2px solid #ffcf72; }
 @media (max-width: 1500px) {
   .vf-workbench { --vf-left-width: 220px; --vf-right-width: 232px; gap: 9px; }
   .vf-workbench.left-collapsed { --vf-current-left: 42px; }

@@ -106,7 +106,7 @@ class SingleDeviceControlAdapter(AlgorithmAdapter):
                 target = self._home[code]
                 arrived = self._move_towards(code, override, target[:3])
                 if arrived:
-                    override.mode = "HOLDING_AT_HOME"
+                    override.mode = "RETURNED"
                     override.heading = target[3]
             elif override.mode == "REJOINING":
                 target = (float(agent.x), float(agent.y), float(agent.z))
@@ -121,7 +121,7 @@ class SingleDeviceControlAdapter(AlgorithmAdapter):
                 agent.y = override.y
                 agent.z = override.z
                 agent.heading = override.heading
-                agent.role = "OPERATOR_CONTROLLED"
+                agent.role = "RETURNED" if override.mode == "RETURNED" else "OPERATOR_CONTROLLED"
                 agent.status = override.mode
                 agent.assignedTargetCode = ""
 
@@ -132,20 +132,76 @@ class SingleDeviceControlAdapter(AlgorithmAdapter):
         self._last_agents = {code: agent for code, agent in agents.items()}
         states = {
             code: {
-                "controlAuthority": "OPERATOR",
+                "controlAuthority": (
+                    "RETURNED" if override.mode == "RETURNED" else "OPERATOR"
+                ),
                 "motionState": override.mode,
+                "returnedAtHome": override.mode == "RETURNED",
             }
             for code, override in sorted(self._overrides.items())
         }
+        returning = [
+            code for code, override in self._overrides.items()
+            if override.mode == "RETURNING"
+        ]
+        returned = [
+            code for code, override in self._overrides.items()
+            if override.mode == "RETURNED"
+        ]
+        blocking = [
+            code for code, override in self._overrides.items()
+            if override.mode != "RETURNED"
+        ]
         frame.metrics["singleDeviceControlEnabled"] = True
         frame.metrics["operatorControlledDeviceCount"] = len(states)
         frame.metrics["deviceControlStates"] = states
-        if states:
+        frame.metrics["returningDeviceCount"] = len(returning)
+        frame.metrics["returnedDeviceCount"] = len(returned)
+        frame.metrics["returningDeviceCodes"] = sorted(returning)
+        frame.metrics["returnedDeviceCodes"] = sorted(returned)
+        frame.metrics["activeMissionDeviceCount"] = len(agents) - len(returned)
+        if blocking:
             # A group completion cannot be authoritative while a required
-            # member is outside the algorithm's control domain.
+            # member is still travelling home or waiting for an operator
+            # decision.  A device that has reached home is a settled task
+            # withdrawal and no longer blocks the mission terminal state.
             frame.terminalStatus = None
             frame.metrics["controlOverrideActive"] = True
+            frame.metrics["completionBlocker"] = (
+                "WAITING_FOR_RETURN" if returning else "OPERATOR_OVERRIDE"
+            )
+            frame.metrics["completionBlockerDeviceCodes"] = sorted(blocking)
+        elif returned:
+            frame.metrics["controlOverrideActive"] = False
+            frame.metrics["completionBlocker"] = "NONE"
+            if self._remaining_force_is_insufficient(frame, returned):
+                frame.terminalStatus = "FAILED"
+                frame.phase = "FAILED"
+                frame.metrics["terminalReason"] = "INSUFFICIENT_ACTIVE_FORCE"
+                frame.metrics["missionFailureReason"] = "INSUFFICIENT_ACTIVE_FORCE"
         return frame
+
+    def _remaining_force_is_insufficient(
+        self,
+        frame: RuntimeFrame,
+        returned: list[str],
+    ) -> bool:
+        """Reject a false success when permanent withdrawals break quorum."""
+        active_agents = [agent for agent in frame.agents if agent.code.upper() not in returned]
+        if self.code.startswith("GB_SFLA_CS"):
+            configured = frame.metrics.get("requiredCaptureAgents", 5)
+            try:
+                required = int(configured)
+            except (TypeError, ValueError):
+                required = 5
+            if required <= 0:
+                required = min(5, len(frame.agents))
+            frame.metrics["requiredActiveMissionDeviceCount"] = required
+            return len(active_agents) < required
+
+        active_types = {agent.type.upper() for agent in active_agents}
+        frame.metrics["requiredActiveDeviceTypes"] = ["UAV", "USV"]
+        return not {"UAV", "USV"}.issubset(active_types)
 
     def _move_towards(
         self,
