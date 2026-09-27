@@ -1,5 +1,6 @@
 package com.uavusv.platform.module.visualsensor;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.uavusv.platform.module.visualsensor.service.VisualSensorService;
 import org.junit.jupiter.api.Test;
 
@@ -8,6 +9,8 @@ import java.util.Base64;
 import static org.assertj.core.api.Assertions.assertThat;
 
 class VisualSensorServiceTests {
+
+    private final ObjectMapper objectMapper = new ObjectMapper();
 
     @Test
     void exposesSixWaitingChannelsWithoutFabricatingOnlineFrames() {
@@ -70,6 +73,39 @@ class VisualSensorServiceTests {
                 stored -> assertThat(stored).isEqualTo(jpeg)
         );
         assertThat(service.latestFrame("usv_01_front")).isEmpty();
+    }
+
+    @Test
+    void acceptsCurrentGatewayCameraFrameEnvelope() throws Exception {
+        VisualSensorService service = new VisualSensorService();
+        byte[] jpeg = {(byte) 0xff, (byte) 0xd8, 5, 6, (byte) 0xff, (byte) 0xd9};
+        String encoded = Base64.getEncoder().encodeToString(jpeg);
+        var frame = objectMapper.readTree("""
+                {
+                  "message_type": "camera_frame",
+                  "timestamp": 1790409897.6063564,
+                  "source": "ros_gateway",
+                  "data": {
+                    "stream_id": "uav_03_down",
+                    "vehicle_id": "uav_03",
+                    "encoding": "image/jpeg",
+                    "width": 720,
+                    "height": 540,
+                    "data_base64": "%s"
+                  }
+                }
+                """.formatted(encoded));
+
+        service.observeFrame(frame);
+
+        var overview = service.overview();
+        assertThat(overview.onlineCount()).isEqualTo(1);
+        assertThat(overview.sensors().get(2).status()).isEqualTo("ONLINE");
+        assertThat(overview.sensors().get(2).width()).isEqualTo(720);
+        assertThat(overview.sensors().get(2).height()).isEqualTo(540);
+        assertThat(service.latestFrame("uav_03")).hasValueSatisfying(
+                stored -> assertThat(stored).isEqualTo(jpeg)
+        );
     }
 
     @Test

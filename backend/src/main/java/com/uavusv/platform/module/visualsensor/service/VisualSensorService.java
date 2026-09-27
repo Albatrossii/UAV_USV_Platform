@@ -62,39 +62,55 @@ public class VisualSensorService {
     }
 
     public synchronized void observeFrame(JsonNode frame) {
-        String cameraId = normalizeCameraId(frame.path("camera_id").asText(""));
-        FrameState state = frames.get(cameraId);
-        if (state == null || !"jpeg".equalsIgnoreCase(frame.path("encoding").asText("jpeg"))) {
+        JsonNode payload = frame.has("data") && frame.path("data").isObject()
+                ? frame.path("data")
+                : frame;
+        String cameraId = firstText(payload,
+                "camera_id", "cameraId", "stream_id", "streamId", "vehicle_id", "vehicleId");
+        String encoding = firstText(payload, "encoding", "format");
+        if (!encoding.isBlank()
+                && !"jpeg".equalsIgnoreCase(encoding)
+                && !"jpg".equalsIgnoreCase(encoding)
+                && !"image/jpeg".equalsIgnoreCase(encoding)) {
             return;
         }
+        String encoded = firstText(payload,
+                "jpeg_base64", "jpegBase64", "data_base64", "dataBase64");
+        double rawTimestamp = firstNumber(payload, "timestamp_ms", "timestampMs", "timestamp");
+        if (rawTimestamp <= 0 && payload != frame) {
+            rawTimestamp = firstNumber(frame, "timestamp_ms", "timestampMs", "timestamp");
+        }
+        long timestampMillis = rawTimestamp > 0 && rawTimestamp < 10_000_000_000L
+                ? Math.round(rawTimestamp * 1000)
+                : Math.round(rawTimestamp);
+        observeJpegFrame(
+                cameraId,
+                encoded,
+                payload.path("width").asInt(0),
+                payload.path("height").asInt(0),
+                timestampMillis,
+                payload.path("age_seconds").asDouble(-1)
+        );
+    }
 
-        String encoded = frame.path("jpeg_base64").asText("");
-        if (encoded.isBlank()) {
-            return;
+    private static String firstText(JsonNode node, String... names) {
+        for (String name : names) {
+            String value = node.path(name).asText("");
+            if (!value.isBlank()) {
+                return value;
+            }
         }
+        return "";
+    }
 
-        byte[] jpeg;
-        try {
-            jpeg = Base64.getDecoder().decode(encoded);
-        } catch (IllegalArgumentException exception) {
-            return;
+    private static double firstNumber(JsonNode node, String... names) {
+        for (String name : names) {
+            JsonNode value = node.path(name);
+            if (value.isNumber()) {
+                return value.asDouble();
+            }
         }
-        if (jpeg.length < 4) {
-            return;
-        }
-
-        long now = clock.millis();
-        if (state.receivedAtMillis > 0 && now > state.receivedAtMillis) {
-            double instantFps = 1000.0 / (now - state.receivedAtMillis);
-            state.fps = state.fps <= 0 ? instantFps : state.fps * 0.78 + instantFps * 0.22;
-        }
-        state.jpeg = jpeg;
-        state.width = frame.path("width").asInt(0);
-        state.height = frame.path("height").asInt(0);
-        state.timestampMillis = frame.path("timestamp_ms").asLong(now);
-        state.receivedAtMillis = now;
-        state.source = frame.path("source").asText("ROS / Gazebo");
-        publishFrame(cameraId, encoded, state.width, state.height, state.timestampMillis, state.source);
+        return 0;
     }
 
     public synchronized boolean observeJpegFrame(

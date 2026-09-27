@@ -11,6 +11,22 @@ public record RadarOverviewResponse(
         int detectionCount,
         Double nearestObstacleRange,
         String latestTargetId,
-        List<RadarItemResponse> items
+        List<RadarItemResponse> items,
+        boolean spectrumConnected,
+        String spectrumVehicleId,
+        String spectrumSensorId,
+        String spectrumStreamId,
+        Long spectrumGatewaySequence,
+        Long spectrumSequence,
+        Double spectrumCapturedAt,
+        Double spectrumStartHz,
+        Double spectrumStopHz,
+        Double spectrumBinHz,
+        Double spectrumRbwHz,
+        Double spectrumRefLevelDbm,
+        Double spectrumPeakHz,
+        Double spectrumPeakDbm,
+        Double spectrumTemperatureC,
+        List<Double> spectrumPowersDbm
 ) {
 }

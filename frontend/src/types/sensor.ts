@@ -21,4 +21,20 @@ export interface RadarOverview {
   nearestObstacleRange: number | null
   latestTargetId: string
   items: RadarItem[]
+  spectrumConnected: boolean
+  spectrumVehicleId: string
+  spectrumSensorId: string
+  spectrumStreamId: string
+  spectrumGatewaySequence: number | null
+  spectrumSequence: number | null
+  spectrumCapturedAt: number | null
+  spectrumStartHz: number | null
+  spectrumStopHz: number | null
+  spectrumBinHz: number | null
+  spectrumRbwHz: number | null
+  spectrumRefLevelDbm: number | null
+  spectrumPeakHz: number | null
+  spectrumPeakDbm: number | null
+  spectrumTemperatureC: number | null
+  spectrumPowersDbm: number[]
 }

@@ -170,4 +170,47 @@ class SensorRuntimeServiceTests {
         assertThat(items).hasSize(2);
         assertThat(items).extracting("range").containsExactly(3.0, 700.0);
     }
+
+    @Test
+    void exposesGatewaySpectrumFrameAsElectronicDetectorData() throws Exception {
+        SensorRuntimeService service = new SensorRuntimeService();
+
+        service.observeSpectrumFrame(objectMapper.readTree("""
+                {
+                  "message_type": "spectrum_frame",
+                  "timestamp": 1790411201.7340817,
+                  "sequence": 12345,
+                  "data": {
+                    "vehicle_id": "uav_01",
+                    "sensor_id": "san60",
+                    "stream_id": "uav_01_san60",
+                    "captured_at": 1790411201.6340817,
+                    "start_hz": 2399948790.93684,
+                    "stop_hz": 2500046445.56842,
+                    "bin_hz": 61035.1552631579,
+                    "rbw_hz": 100000,
+                    "ref_level_dbm": 0,
+                    "peak_hz": 2462326719.61579,
+                    "peak_dbm": -68.4945,
+                    "temperature_c": 42.32,
+                    "powers_dbm": [-95.7, -91.3, -68.49, -92.5],
+                    "sequence": 38423
+                  }
+                }
+                """));
+
+        var overview = service.radarOverview();
+        assertThat(overview.connected()).isTrue();
+        assertThat(overview.spectrumConnected()).isTrue();
+        assertThat(overview.spectrumVehicleId()).isEqualTo("uav_01");
+        assertThat(overview.spectrumSensorId()).isEqualTo("san60");
+        assertThat(overview.spectrumStreamId()).isEqualTo("uav_01_san60");
+        assertThat(overview.spectrumGatewaySequence()).isEqualTo(12345L);
+        assertThat(overview.spectrumSequence()).isEqualTo(38423L);
+        assertThat(overview.spectrumRbwHz()).isEqualTo(100000.0);
+        assertThat(overview.spectrumPeakHz()).isEqualTo(2462326719.61579);
+        assertThat(overview.spectrumPeakDbm()).isEqualTo(-68.4945);
+        assertThat(overview.spectrumPowersDbm()).containsExactly(-95.7, -91.3, -68.49, -92.5);
+        assertThat(overview.updatedAt()).isEqualTo(1790411201634L);
+    }
 }

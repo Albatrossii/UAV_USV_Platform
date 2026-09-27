@@ -1,114 +1,175 @@
 <script setup lang="ts">
-import { Camera, Radio, Zap } from '@lucide/vue'
+import { Camera, Crosshair, Maximize2, Radio, ScanLine, Zap } from '@lucide/vue'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
 import ConsoleLayout from '@/components/layout/ConsoleLayout.vue'
 import { useRadarSensorStore } from '@/stores/radarSensor'
 import { useUnityBridgeStore } from '@/stores/unityBridge'
 import { useVisualSensorStore } from '@/stores/visualSensor'
+import type { RadarItem } from '@/types/sensor'
 import type { VisualSensor } from '@/types/visualSensor'
+
+const DETECTOR_ID = 'electronic_detector_01'
+const TARGET_FPS = 30
 
 const store = useVisualSensorStore()
 const radarStore = useRadarSensorStore()
 const bridge = useUnityBridgeStore()
-const quality = ref<'720p' | '1080p'>('1080p')
-const focusedCameraId = ref('')
-const switching = ref(false)
-const targetFps = 30
-const feedElements = new Map<string, HTMLElement>()
-let timer: number | undefined
+const activeSourceId = ref(DETECTOR_ID)
+const focusedCameraId = ref('uav_01')
+let statusTimer: number | undefined
+let spectrumTimer: number | undefined
+let radarRefreshing = false
 let viewActive = false
 
 const overview = computed(() => store.displayOverview)
 const sensors = computed(() => overview.value.sensors)
 const frames = computed(() => store.channels.SYSTEM_OVERVIEW.frameUrls)
-const stats = computed(() => store.streamStats)
-const focused = computed(() =>
-  sensors.value.find(item => item.cameraId === focusedCameraId.value) ?? sensors.value[0],
-)
-const detection = computed(() => radarStore.overview?.latestTargetId
-  ? { id: radarStore.overview.latestTargetId, count: radarStore.overview.detectionCount }
-  : null)
-const online = computed(() => store.unityBridgeReady || overview.value.gatewayConnected)
-const linkLabel = computed(() =>
-  store.unityBridgeReady
-    ? 'Unity 视觉链路在线'
-    : overview.value.gatewayConnected
-      ? 'ROS 视觉链路在线'
-      : '等待视觉链路',
-)
+const radar = computed(() => radarStore.overview)
+const detectorSelected = computed(() => activeSourceId.value === DETECTOR_ID)
+const activeCamera = computed(() => sensors.value.find(item => item.cameraId === activeSourceId.value) ?? null)
+const totalSources = computed(() => sensors.value.length + 1)
+const onlineSources = computed(() => overview.value.onlineCount + (radar.value?.connected ? 1 : 0))
+const linkOnline = computed(() => store.unityBridgeReady || overview.value.gatewayConnected || Boolean(radar.value?.connected))
+const linkLabel = computed(() => linkOnline.value ? '融合链路在线' : '等待视觉链路')
+const detectorCount = computed(() => radar.value?.detectionCount ?? 0)
+const spectrumActive = computed(() => Boolean(
+  radar.value?.spectrumConnected && radar.value.spectrumPowersDbm?.length,
+))
+const spectrumBounds = computed(() => {
+  const values = radar.value?.spectrumPowersDbm ?? []
+  const min = values.length ? Math.floor(Math.min(...values) / 10) * 10 : -130
+  const max = values.length ? Math.ceil(Math.max(...values) / 10) * 10 : -40
+  return { min, max: Math.max(max, min + 20) }
+})
+const spectrumPolyline = computed(() => {
+  const values = radar.value?.spectrumPowersDbm ?? []
+  const span = spectrumBounds.value.max - spectrumBounds.value.min
+  return values.map((value, index) => {
+    const x = values.length > 1 ? index / (values.length - 1) * 1000 : 0
+    const y = 300 - (value - spectrumBounds.value.min) / span * 270
+    return `${x.toFixed(1)},${Math.max(20, Math.min(300, y)).toFixed(1)}`
+  }).join(' ')
+})
+const spectrumAxisStopHz = computed(() => {
+  const start = radar.value?.spectrumStartHz
+  const bin = radar.value?.spectrumBinHz
+  const points = radar.value?.spectrumPowersDbm?.length ?? 0
+  return start != null && bin != null && points > 0
+    ? start + (points - 1) * bin
+    : radar.value?.spectrumStopHz
+})
+const spectrumPeakPoint = computed(() => {
+  const start = radar.value?.spectrumStartHz ?? 0
+  const stop = spectrumAxisStopHz.value ?? start
+  const peak = radar.value?.spectrumPeakHz ?? start
+  const dbm = radar.value?.spectrumPeakDbm ?? spectrumBounds.value.min
+  const x = stop > start ? (peak - start) / (stop - start) * 1000 : 0
+  const y = 300 - (dbm - spectrumBounds.value.min) / (spectrumBounds.value.max - spectrumBounds.value.min) * 270
+  return { x: Math.max(0, Math.min(1000, x)), y: Math.max(20, Math.min(300, y)) }
+})
+const detectorUpdatedAgo = computed(() => {
+  const updatedAt = radar.value?.updatedAt ?? 0
+  if (!updatedAt) return '--'
+  const delay = Math.max(0, Date.now() - updatedAt)
+  return delay < 1000 ? `${delay} ms` : `${(delay / 1000).toFixed(1)} s`
+})
+const radarRange = computed(() => {
+  const ranges = (radar.value?.items ?? [])
+    .map(item => item.range ?? (item.x != null && item.y != null ? Math.hypot(item.x, item.y) : 0))
+    .filter(value => Number.isFinite(value) && value > 0)
+  return Math.max(100, ...ranges)
+})
+const radarPoints = computed(() => (radar.value?.items ?? []).slice(0, 80).map((item, index) => ({
+  item,
+  style: radarPointStyle(item),
+  label: item.id || `T-${String(index + 1).padStart(3, '0')}`,
+})))
 
 function channelLabel(sensor: VisualSensor) {
   return `${sensor.deviceType === 'UAV' ? '空中视角' : '水面视角'} ${sensor.cameraId.slice(-2)}`
 }
 
-function setFeedElement(cameraId: string, element: unknown) {
-  if (element instanceof HTMLElement) feedElements.set(cameraId, element)
-  else feedElements.delete(cameraId)
+function shortDeviceLabel(sensor: VisualSensor) {
+  return sensor.deviceCode || sensor.cameraId.toUpperCase().replace('_', '-')
 }
 
-function slotClass(cameraId: string) {
-  if (cameraId === focusedCameraId.value) return 'focus'
-  const index = sensors.value
-    .filter(item => item.cameraId !== focusedCameraId.value)
-    .findIndex(item => item.cameraId === cameraId)
-  return `slot-${Math.max(0, index) + 1}`
+function formatGhz(value: number | null | undefined, digits = 3) {
+  return value == null ? '--' : `${(value / 1_000_000_000).toFixed(digits)} GHz`
 }
 
-function subscribe(cameraId = focused.value?.cameraId || 'uav_01') {
+function radarPointStyle(item: RadarItem) {
+  const distance = item.range ?? (item.x != null && item.y != null ? Math.hypot(item.x, item.y) : 0)
+  const bearing = item.bearing ?? (item.x != null && item.y != null
+    ? Math.atan2(item.x, item.y) * 180 / Math.PI
+    : 0)
+  const radius = Math.min(43, Math.max(3, distance / radarRange.value * 43))
+  const radians = bearing * Math.PI / 180
+  return { left: `${50 + Math.sin(radians) * radius}%`, top: `${50 - Math.cos(radians) * radius}%` }
+}
+
+function subscribe(cameraId = focusedCameraId.value) {
   if (!viewActive) return
   bridge.sendFor('SYSTEM_OVERVIEW', 'visualSensorSubscribe', {
     enabled: true,
     focusedCameraId: cameraId,
     displayMode: 'focus',
-    quality: quality.value,
-    targetFps,
+    quality: '1080p',
+    targetFps: TARGET_FPS,
     gpuDirect: true,
     jpegFallback: true,
     thumbnailFps: 2,
-    focusedFps: targetFps,
+    focusedFps: TARGET_FPS,
   })
 }
 
-async function refreshFocusedStream(cameraId: string) {
-  await store.select(cameraId)
-  subscribe(cameraId)
-  await nextTick()
-  window.dispatchEvent(new CustomEvent('unity-runtime-track', { detail: { duration: 900 } }))
-  await store.refreshFrames(false)
+async function refreshRadar() {
+  if (!viewActive || radarRefreshing) return
+  radarRefreshing = true
+  try {
+    await radarStore.refresh(true)
+    const frame = radarStore.overview
+    if (frame?.spectrumConnected && frame.spectrumPowersDbm.length) {
+      bridge.sendFor('SYSTEM_OVERVIEW', 'spectrumFrame', {
+        vehicleId: frame.spectrumVehicleId,
+        sensorId: frame.spectrumSensorId,
+        streamId: frame.spectrumStreamId,
+        gatewaySequence: frame.spectrumGatewaySequence ?? 0,
+        sequence: frame.spectrumSequence ?? 0,
+        capturedAt: frame.spectrumCapturedAt ?? 0,
+        startHz: frame.spectrumStartHz ?? 0,
+        stopHz: frame.spectrumStopHz ?? 0,
+        binHz: frame.spectrumBinHz ?? 0,
+        rbwHz: frame.spectrumRbwHz ?? 0,
+        refLevelDbm: frame.spectrumRefLevelDbm ?? 0,
+        temperatureC: frame.spectrumTemperatureC ?? 0,
+        peakHz: frame.spectrumPeakHz ?? 0,
+        peakDbm: frame.spectrumPeakDbm ?? 0,
+        powersDbm: frame.spectrumPowersDbm,
+      })
+    }
+  } finally {
+    radarRefreshing = false
+  }
 }
 
-async function switchFocus(cameraId: string) {
-  if (switching.value || cameraId === focusedCameraId.value) return
-  const before = new Map<string, DOMRect>()
-  feedElements.forEach((element, id) => before.set(id, element.getBoundingClientRect()))
-
-  switching.value = true
-  focusedCameraId.value = cameraId
-  void store.select(cameraId)
-  subscribe(cameraId)
+async function selectSource(sourceId: string) {
+  if (activeSourceId.value === sourceId) return
+  activeSourceId.value = sourceId
+  if (sourceId === DETECTOR_ID) return
+  focusedCameraId.value = sourceId
+  await store.select(sourceId)
+  subscribe(sourceId)
   await nextTick()
-
-  const animations: Animation[] = []
-  feedElements.forEach((element, id) => {
-    const first = before.get(id)
-    if (!first) return
-    const last = element.getBoundingClientRect()
-    const deltaX = first.left - last.left
-    const deltaY = first.top - last.top
-    const scaleX = first.width / Math.max(1, last.width)
-    const scaleY = first.height / Math.max(1, last.height)
-    if (Math.abs(deltaX) < 1 && Math.abs(deltaY) < 1 && Math.abs(scaleX - 1) < .01 && Math.abs(scaleY - 1) < .01) return
-    animations.push(element.animate([
-      { transformOrigin: 'top left', transform: `translate(${deltaX}px, ${deltaY}px) scale(${scaleX}, ${scaleY})` },
-      { transformOrigin: 'top left', transform: 'translate(0, 0) scale(1, 1)' },
-    ], { duration: 380, easing: 'cubic-bezier(.22,.8,.22,1)' }))
-  })
-
-  window.dispatchEvent(new CustomEvent('unity-runtime-track', { detail: { duration: 480 } }))
-  await Promise.allSettled(animations.map(animation => animation.finished))
-  switching.value = false
+  window.dispatchEvent(new CustomEvent('unity-runtime-track', { detail: { duration: 700 } }))
   void store.refreshFrames(false)
+}
+
+async function openFullscreen() {
+  const viewer = document.querySelector<HTMLElement>('.primary-viewer')
+  if (!viewer) return
+  if (document.fullscreenElement) await document.exitFullscreen()
+  else await viewer.requestFullscreen?.()
 }
 
 onMounted(async () => {
@@ -117,20 +178,22 @@ onMounted(async () => {
   await Promise.all([store.refreshOverview(), radarStore.refresh(true)])
   if (!viewActive) return
   focusedCameraId.value = overview.value.focusedCameraId || sensors.value[0]?.cameraId || 'uav_01'
-  await refreshFocusedStream(focusedCameraId.value)
-  if (!viewActive) return
-  timer = window.setInterval(() => {
+  subscribe(focusedCameraId.value)
+  await nextTick()
+  window.dispatchEvent(new CustomEvent('unity-runtime-track', { detail: { duration: 900 } }))
+  void store.refreshFrames(false)
+  statusTimer = window.setInterval(() => {
     void store.refreshOverview()
     void store.refreshFrames()
-    void radarStore.refresh(true)
   }, 2500)
+  spectrumTimer = window.setInterval(() => void refreshRadar(), 100)
 })
 
 watch(
   () => store.unityBridgeReady,
   async (ready) => {
     if (!ready || !viewActive) return
-    subscribe(focusedCameraId.value || focused.value?.cameraId || 'uav_01')
+    subscribe(focusedCameraId.value)
     await nextTick()
     window.dispatchEvent(new CustomEvent('unity-runtime-track', { detail: { duration: 900 } }))
     void store.refreshFrames(false)
@@ -141,14 +204,15 @@ onBeforeUnmount(() => {
   viewActive = false
   bridge.sendFor('SYSTEM_OVERVIEW', 'visualSensorSubscribe', {
     enabled: false,
-    focusedCameraId: focusedCameraId.value || 'uav_01',
+    focusedCameraId: focusedCameraId.value,
     displayMode: 'off',
-    quality: quality.value,
-    targetFps,
+    quality: '1080p',
+    targetFps: TARGET_FPS,
     gpuDirect: false,
     jpegFallback: false,
   })
-  if (timer) window.clearInterval(timer)
+  if (statusTimer) window.clearInterval(statusTimer)
+  if (spectrumTimer) window.clearInterval(spectrumTimer)
   store.disconnectFrameStream()
   store.disposeFrames('SYSTEM_OVERVIEW')
   store.markUnityBridgeReady('SYSTEM_OVERVIEW', false)
@@ -159,103 +223,121 @@ onBeforeUnmount(() => {
   <ConsoleLayout title="光电视觉" eyebrow="ELECTRO-OPTICAL VISION">
     <p v-if="store.error" role="alert">{{ store.error }}；连接恢复后自动重新获取视频状态。</p>
     <template #actions>
-      <span class="top-chip" :class="{ online }"><Zap :size="14" />{{ linkLabel }}</span>
-      <span class="top-chip"><Camera :size="14" />{{ overview.onlineCount }}/{{ overview.totalCount }} 路在线</span>
+      <span class="top-chip" :class="{ online: linkOnline }"><Zap :size="14" />{{ linkLabel }}</span>
+      <span class="top-chip"><Camera :size="14" />{{ onlineSources }}/{{ totalSources }} 路在线</span>
     </template>
 
-    <section class="optical-stage">
-      <header class="stage-title">
-        <span>LIVE OPTICAL NETWORK</span>
-        <b>六路协同视觉回传</b>
-        <small>点击任意副视角，与当前关注画面平滑交换</small>
+    <section class="vision-stage">
+      <header class="stage-header">
+        <div class="stage-heading">
+          <span class="stage-icon"><ScanLine :size="19" /></span>
+          <span><b>七路协同视觉回传</b><small>6 路摄像头 + 1 路电子探测仪，点击右侧视角切换主屏</small></span>
+        </div>
+        <div class="stage-actions">
+          <div class="dimension-switch" aria-label="电子探测显示维度">
+            <button class="active" type="button">2D 探测</button>
+            <button type="button" disabled title="等待三维探测数据接入">3D 待接入</button>
+          </div>
+          <button class="fullscreen-button" type="button" @click="openFullscreen"><Maximize2 :size="15" />全屏</button>
+        </div>
       </header>
 
-      <div class="quality">
-        <button :class="{ active: quality === '720p' }" @click="quality = '720p'; subscribe()">720P</button>
-        <button :class="{ active: quality === '1080p' }" @click="quality = '1080p'; subscribe()">1080P</button>
-      </div>
+      <div class="stage-grid">
+        <div class="main-column">
+          <section class="primary-viewer" :class="{ 'camera-mode': !detectorSelected }">
+            <div class="source-identity">
+              <span>{{ detectorSelected ? 'ELECTRONIC DETECTOR · 2D' : 'OPTICAL CAMERA · LIVE' }}</span>
+              <b>{{ detectorSelected ? '电子探测仪 01' : (activeCamera ? channelLabel(activeCamera) : '视觉通道') }}</b>
+            </div>
 
-      <div class="feed-field" :class="{ switching }">
-        <button
-          v-for="sensor in sensors"
-          :key="sensor.cameraId"
-          :ref="element => setFeedElement(sensor.cameraId, element)"
-          type="button"
-          class="feed"
-          :class="[
-            slotClass(sensor.cameraId),
-            {
-              focused: sensor.cameraId === focusedCameraId,
-              'runtime-active': sensor.cameraId === focusedCameraId && store.unityBridgeReady && !frames[sensor.cameraId],
-            },
-          ]"
-          :aria-label="`切换到${channelLabel(sensor)}`"
-          @click="switchFocus(sensor.cameraId)"
-        >
-          <div
-            v-if="sensor.cameraId === focusedCameraId && store.unityBridgeReady"
-            class="unity-runtime-anchor"
-            data-unity-runtime-viewport="visual-sensors-live"
-          />
-          <img v-if="frames[sensor.cameraId]" :src="frames[sensor.cameraId]" :alt="channelLabel(sensor)" />
-          <div v-else-if="sensor.cameraId !== focusedCameraId || !store.unityBridgeReady" class="empty">
-            <Radio :size="20" />
-            <span>{{ sensor.cameraId === focusedCameraId ? (store.unityBridgeReady ? '正在连接 Unity 视觉' : '正在加载 ROS 图像') : '等待该通道帧' }}</span>
+            <div v-if="detectorSelected" class="detector-canvas">
+              <template v-if="spectrumActive">
+                <aside class="detector-summary spectrum-summary">
+                  <article><span>扫描频段</span><b>{{ formatGhz(radar?.spectrumStartHz, 2) }} — {{ formatGhz(radar?.spectrumStopHz, 2) }}</b></article>
+                  <article><span>峰值频率</span><b>{{ formatGhz(radar?.spectrumPeakHz) }}</b></article>
+                  <article><span>峰值功率</span><b>{{ radar?.spectrumPeakDbm?.toFixed(1) ?? '--' }} dBm</b></article>
+                  <article><span>设备温度</span><b>{{ radar?.spectrumTemperatureC?.toFixed(1) ?? '--' }} ℃</b></article>
+                </aside>
+                <section class="spectrum-panel">
+                  <header><span>SAN60 · REAL-TIME SPECTRUM</span><b>{{ radar?.spectrumStreamId || radar?.spectrumSensorId || '电子探测仪 01' }} · RBW {{ radar?.spectrumRbwHz ? `${(radar.spectrumRbwHz / 1000).toFixed(0)} kHz` : '--' }}</b></header>
+                  <div class="spectrum-chart">
+                    <svg viewBox="0 0 1000 320" preserveAspectRatio="none" role="img" aria-label="实时二维功率频谱">
+                      <defs><linearGradient id="spectrum-fill" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#5ce0d0" stop-opacity=".46" /><stop offset="1" stop-color="#5ce0d0" stop-opacity="0" /></linearGradient></defs>
+                      <path class="spectrum-area" :d="`M0,300 L${spectrumPolyline.split(' ').join(' L')} L1000,300 Z`" />
+                      <polyline class="spectrum-line" :points="spectrumPolyline" />
+                      <line class="spectrum-peak-line" :x1="spectrumPeakPoint.x" :x2="spectrumPeakPoint.x" y1="20" y2="300" />
+                      <circle class="spectrum-peak-dot" :cx="spectrumPeakPoint.x" :cy="spectrumPeakPoint.y" r="7" />
+                    </svg>
+                    <span class="axis-label y-max">{{ spectrumBounds.max }} dBm</span><span class="axis-label y-min">{{ spectrumBounds.min }} dBm</span>
+                    <span class="axis-label x-start">{{ formatGhz(radar?.spectrumStartHz, 2) }}</span><span class="axis-label x-stop">{{ formatGhz(spectrumAxisStopHz, 2) }}</span>
+                    <span class="peak-label" :style="{ left: `${spectrumPeakPoint.x / 10}%` }">PEAK {{ radar?.spectrumPeakDbm?.toFixed(1) }} dBm</span>
+                  </div>
+                </section>
+              </template>
+              <template v-else>
+                <aside class="detector-summary">
+                  <article><span>扫描方位</span><b>000° — 360°</b></article>
+                  <article><span>有效半径</span><b>{{ (radarRange / 1000).toFixed(1) }} km</b></article>
+                  <article><span>发现目标</span><b>{{ String(detectorCount).padStart(2, '0') }}</b></article>
+                </aside>
+                <div class="radar-wrap"><div class="radar-scope" :class="{ offline: !radar?.connected }">
+                  <span class="bearing north">N · 000°</span><span class="bearing east">090°</span><span class="bearing south">180°</span><span class="bearing west">270°</span><i class="radar-sweep" />
+                  <button v-for="point in radarPoints" :key="`${point.item.deviceId}-${point.item.id}`" class="radar-point" type="button" :style="point.style" :title="`${point.label} · ${point.item.range?.toFixed(1) ?? '--'} m`"><span>{{ point.label }}</span></button>
+                  <div v-if="!radar?.connected || !radarPoints.length" class="radar-empty"><Radio :size="22" /><b>{{ radar?.connected ? '等待电子探测目标' : '等待电子探测数据' }}</b><small>等待二维电子探测数据</small></div>
+                </div></div>
+                <aside v-if="radar?.latestTargetId" class="target-alert"><span>目标告警 · TRACKING</span><b>{{ radar.latestTargetId }}</b><small>实时电子探测目标</small></aside>
+              </template>
+            </div>
+
+            <div v-else class="camera-canvas">
+              <div v-if="store.unityBridgeReady" class="unity-runtime-anchor" data-unity-runtime-viewport="visual-sensors-live" />
+              <img v-else-if="activeCamera && frames[activeCamera.cameraId]" :src="frames[activeCamera.cameraId]" :alt="channelLabel(activeCamera)" />
+              <div v-else class="camera-empty"><Radio :size="24" /><b>{{ store.unityBridgeReady ? '正在加载 Unity 实时画面' : '正在连接视觉通道' }}</b><small>{{ activeCamera?.displayName || '等待选择摄像头' }}</small></div>
+              <div class="camera-reticle" aria-hidden="true" />
+              <div class="camera-telemetry"><span>{{ activeCamera?.source || 'ROS / UNITY' }}</span><span>{{ activeCamera?.width || '--' }} × {{ activeCamera?.height || '--' }}</span><span>{{ activeCamera?.viewType === 'DOWN' ? '下视' : '前视' }}</span></div>
+            </div>
+          </section>
+
+          <footer class="source-metrics">
+            <article><span class="metric-icon"><ScanLine :size="15" /></span><p><small>当前信号源</small><b>{{ detectorSelected ? '电子探测仪 01 · 2D' : activeCamera?.displayName }}</b></p></article>
+            <article><span class="metric-icon"><Radio :size="15" /></span><p><small>端到端延迟</small><b>{{ detectorSelected ? detectorUpdatedAgo : `${activeCamera?.latencyMs?.toFixed(0) || '--'} ms` }}</b></p></article>
+            <article><span class="metric-icon"><Zap :size="15" /></span><p><small>数据刷新率</small><b>{{ detectorSelected ? (radar?.connected ? '实时数据' : '-- Hz') : `${activeCamera?.fps?.toFixed(1) || stats?.measuredFps?.toFixed(1) || '--'} FPS` }}</b></p></article>
+            <article><span class="metric-icon"><Crosshair :size="15" /></span><p><small>接收状态</small><b>{{ detectorSelected ? (radar?.connected ? '电子探测在线' : '等待数据') : (activeCamera?.status === 'ONLINE' ? '实时接收中' : '等待画面') }}</b></p></article>
+          </footer>
+        </div>
+
+        <aside class="source-rail">
+          <header><b>七路信号源</b><span>点击切换主屏</span></header>
+          <div class="source-grid">
+            <button class="source-card detector-card" :class="{ active: detectorSelected }" type="button" @click="selectSource(DETECTOR_ID)">
+              <span class="card-tag"><i :class="{ online: radar?.connected }" />新增信号源 · 电子探测 2D</span><span class="mini-radar"><i /></span>
+              <footer><span><b>电子探测仪 01</b><small>{{ spectrumActive ? `${formatGhz(radar?.spectrumPeakHz)} · ${radar?.spectrumPeakDbm?.toFixed(1)} dBm` : `${detectorCount} 个目标 · ${radar?.connected ? '正在扫描' : '等待数据'}` }}</small></span><em>{{ radar?.connected ? 'ONLINE' : 'OFFLINE' }}</em></footer>
+            </button>
+            <button v-for="sensor in sensors" :key="sensor.cameraId" class="source-card camera-card" :class="{ active: activeSourceId === sensor.cameraId }" type="button" @click="selectSource(sensor.cameraId)">
+              <img v-if="frames[sensor.cameraId]" :src="frames[sensor.cameraId]" :alt="channelLabel(sensor)" /><span v-else class="camera-grid-placeholder" />
+              <span class="card-tag"><i :class="{ online: sensor.status === 'ONLINE' }" />{{ channelLabel(sensor) }}</span>
+              <footer><span><b>{{ shortDeviceLabel(sensor) }}</b><small>{{ sensor.viewType === 'DOWN' ? '吊舱相机' : '船艏相机' }} · {{ sensor.status === 'ONLINE' ? '实时' : '等待' }}</small></span><em>{{ sensor.fps ? `${sensor.fps.toFixed(0)} FPS` : '-- FPS' }}</em></footer>
+            </button>
           </div>
-          <div v-else class="focus-status"><span>Unity GPU 实时画面</span></div>
-
-          <span class="feed-label">
-            <b v-if="sensor.cameraId === focusedCameraId">当前关注</b>
-            {{ channelLabel(sensor) }}
-            <i :class="{ online: sensor.status === 'ONLINE' }" />
-          </span>
-
-          <aside v-if="sensor.cameraId === focusedCameraId && detection" class="detection">
-            <span>智能识别 · TARGET DETECTED</span>
-            <b>{{ detection.id }}</b>
-            <small>真实检测事件 · 累计 {{ detection.count }}</small>
-          </aside>
-        </button>
+          <footer class="rail-status"><span>当前选择</span><b>{{ detectorSelected ? '电子探测仪 01' : (activeCamera ? channelLabel(activeCamera) : '--') }}</b></footer>
+        </aside>
       </div>
-
-      <footer class="stream-metrics">
-        <article><span>实时帧率</span><b>{{ (stats?.measuredFps || focused?.fps)?.toFixed(1) || '--' }} FPS</b></article>
-        <article><span>帧新鲜度</span><b>{{ focused && focused.latencyMs >= 0 ? focused.latencyMs.toFixed(0) : '--' }} ms</b></article>
-        <article><span>在线通道</span><b>{{ overview.onlineCount }}/{{ overview.totalCount }}</b></article>
-        <article><span>当前链路</span><b>{{ overview.gatewayDetail }}</b></article>
-      </footer>
     </section>
   </ConsoleLayout>
 </template>
 
 <style scoped>
 .top-chip{display:flex;align-items:center;gap:6px;padding:8px 10px;border:1px solid #24505a;border-radius:6px;color:#82a6aa;font-size:11px}.top-chip.online{color:#55e5b2}
-.optical-stage{position:relative;height:calc(100dvh - 174px);min-height:610px;overflow:hidden;border:1px solid #17424d;border-radius:12px;background:radial-gradient(circle at 45% 40%,#092630 0,#041820 46%,#020d13 82%);box-shadow:inset 0 0 90px #0008;color:#e9fbfa}
-.stage-title{position:absolute;z-index:8;left:22px;top:18px;display:grid;gap:3px}.stage-title span{color:#51d7e8;font-size:9px;letter-spacing:.17em}.stage-title b{font-size:18px}.stage-title small{color:#70969b}
-.quality{position:absolute;z-index:8;right:20px;top:18px;display:flex;padding:3px;border:1px solid #24505a;border-radius:7px;background:#04151c}.quality button{padding:7px 13px;border:0;border-radius:5px;background:transparent;color:#73989d;cursor:pointer}.quality button.active{background:#61dccf;color:#001216;font-weight:800}
-.feed-field{position:absolute;z-index:4;inset:88px 22px 82px;display:grid;grid-template-columns:repeat(12,minmax(0,1fr));grid-template-rows:repeat(10,minmax(0,1fr));gap:10px;min-width:0;min-height:0;isolation:isolate}.feed-field.switching{pointer-events:none}
-.feed{position:relative;min-width:0;min-height:0;overflow:hidden;padding:0;border:1px solid #286270;border-radius:8px;background:#061821;box-shadow:0 12px 28px #0007;cursor:pointer;contain:layout paint;will-change:transform}.feed:hover{border-color:#59dcd2}.feed.focused{border-color:#58ddd1;box-shadow:0 18px 44px #000a,0 0 0 1px #58ddd133}.feed.runtime-active{background:transparent}
-.feed.focus{grid-column:1/7;grid-row:1/7}.feed.slot-1{grid-column:7/13;grid-row:1/4}.feed.slot-2{grid-column:7/13;grid-row:4/7}.feed.slot-3{grid-column:1/5;grid-row:7/11}.feed.slot-4{grid-column:5/9;grid-row:7/11}.feed.slot-5{grid-column:9/13;grid-row:7/11}
-.feed img,.unity-runtime-anchor{position:absolute;inset:0;width:100%;height:100%}.feed img{z-index:2;object-fit:cover}.unity-runtime-anchor{z-index:0;pointer-events:none}.empty{position:absolute;z-index:2;inset:0;display:grid;place-content:center;justify-items:center;gap:7px;color:#668c91;background:linear-gradient(145deg,#092630,#041820)}.focus-status{position:absolute;z-index:3;right:10px;bottom:9px;padding:5px 8px;color:#68dcd2;border:1px solid #245762;border-radius:4px;background:#03161dcc;font-size:9px}
-.feed-label{position:absolute;z-index:5;left:9px;top:8px;display:flex;align-items:center;gap:6px;padding:5px 8px;color:#e5f7f5;border:1px solid #2a5963;border-radius:5px;background:#03151ddd;font-size:10px}.feed-label b{color:#58e0d4}.feed-label i{width:6px;height:6px;border-radius:50%;background:#5b7377}.feed-label i.online{background:#52e5ae;box-shadow:0 0 7px #52e5ae}
-.detection{position:absolute;z-index:5;left:14px;bottom:14px;display:grid;gap:4px;max-width:230px;padding:10px 13px;color:#fff;border:1px solid #ba8d32;border-radius:6px;background:#171407e8;text-align:left}.detection span{color:#ffc64e;font-size:8px;letter-spacing:.08em}.detection small{color:#bba56f;font-size:9px}
-.stream-metrics{position:absolute;z-index:8;right:22px;bottom:14px;left:22px;display:grid;grid-template-columns:.75fr .75fr .65fr 1.8fr;gap:8px}.stream-metrics article{display:grid;grid-template-columns:auto 1fr;align-items:center;gap:4px 12px;min-width:0;padding:8px 12px;border:1px solid #1e4b56;border-radius:6px;background:#041820dd}.stream-metrics span{color:#70979c;font-size:9px}.stream-metrics b{overflow:hidden;color:#dff7f4;font-size:11px;white-space:nowrap;text-overflow:ellipsis}
-@media(max-width:1280px){.feed-field{inset:84px 16px 78px;gap:8px}.feed.focus{grid-column:1/7}.stream-metrics{right:16px;left:16px}.stage-title{left:16px}.quality{right:16px}}
-@media(max-width:900px){.optical-stage{height:auto;min-height:900px}.feed-field{grid-template-columns:repeat(2,minmax(0,1fr));grid-template-rows:repeat(8,100px)}.feed.focus{grid-column:1/3;grid-row:1/4}.feed.slot-1{grid-column:1;grid-row:4/6}.feed.slot-2{grid-column:2;grid-row:4/6}.feed.slot-3{grid-column:1;grid-row:6/8}.feed.slot-4{grid-column:2;grid-row:6/8}.feed.slot-5{grid-column:1/3;grid-row:8/9}.stream-metrics{grid-template-columns:1fr 1fr}}
-@media(prefers-reduced-motion:reduce){.feed{will-change:auto}}
-/* Keep all six feeds in document flow on narrow workspaces. */
-.optical-stage { height: max(480px, calc(100dvh - 156px)); min-height: 480px; }
-@container workspace (max-width: 900px) {
-  .optical-stage { display: flex; flex-direction: column; gap: 12px; height: auto; min-height: 0; padding: 14px; }
-  .stage-title, .quality, .feed-field, .stream-metrics { position: relative; inset: auto; }
-  .quality { align-self: flex-start; }
-  .feed-field { grid-template-columns: repeat(2, minmax(0, 1fr)); grid-template-rows: none; grid-auto-rows: 180px; gap: 8px; }
-  .feed.focus { grid-column: 1 / -1; grid-row: auto; }
-  .feed.slot-1, .feed.slot-2, .feed.slot-3, .feed.slot-4, .feed.slot-5 { grid-column: auto; grid-row: auto; }
-  .stream-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-}
-@container workspace (max-width: 460px) {
-  .feed-field, .stream-metrics { grid-template-columns: minmax(0, 1fr); }
-  .quality { flex-wrap: wrap; }
-}
+.vision-stage{height:max(590px,calc(100dvh - 160px));overflow:hidden;border:1px solid #17424d;border-radius:12px;background:#031319ed;box-shadow:inset 0 0 90px #0006,0 14px 50px #0005;color:#e9fbfa}.stage-header{display:flex;height:70px;align-items:center;justify-content:space-between;gap:18px;padding:0 18px 0 20px;border-bottom:1px solid #123a43}.stage-heading{display:flex;min-width:0;align-items:center;gap:14px}.stage-icon{display:grid;width:38px;height:38px;flex:0 0 auto;place-items:center;border:1px solid #347078;border-radius:9px;background:#0a292e;color:#5ce0d0}.stage-heading b{display:block;font-size:16px}.stage-heading small{display:block;margin-top:4px;color:#72989c;font-size:11px}.stage-actions{display:flex;align-items:center;gap:8px}.dimension-switch{display:flex;padding:3px;border:1px solid #204d55;border-radius:7px;background:#04151a}.dimension-switch button{height:30px;padding:0 13px;border:0;border-radius:5px;background:transparent;color:#789da1;font-size:11px;font-weight:800}.dimension-switch button.active{background:#5ce0d0;color:#03181c}.dimension-switch button:disabled{opacity:.42}.fullscreen-button{display:flex;height:36px;align-items:center;gap:6px;padding:0 11px;border:1px solid #24505a;border-radius:7px;background:#06171b;color:#a7c4c6;cursor:pointer;font-size:11px}.fullscreen-button:hover{border-color:#5ce0d0;color:#fff}
+.stage-grid{display:grid;grid-template-columns:minmax(0,1fr) 430px;gap:12px;height:calc(100% - 70px);padding:12px}.main-column{display:grid;grid-template-rows:minmax(0,1fr) 88px;gap:10px;min-width:0;min-height:0}.primary-viewer{position:relative;min-width:0;min-height:0;overflow:hidden;border:1px solid #28616c;border-radius:9px;background:radial-gradient(circle at 50% 45%,#092f35,#041920 62%,#021015);isolation:isolate}.primary-viewer::after{position:absolute;z-index:20;inset:0;border:1px solid #57ded01d;box-shadow:inset 0 0 70px #000a;content:"";pointer-events:none}.primary-viewer:fullscreen{width:100vw;height:100vh;border:0;border-radius:0}.source-identity{position:absolute;z-index:30;top:14px;left:14px;display:flex;align-items:center;gap:9px;padding:7px 10px;border:1px solid #31636a;border-radius:6px;background:#031317e8}.source-identity span{color:#5ce0d0;font-size:9px;font-weight:900;letter-spacing:.08em}.source-identity b{font-size:12px}
+.detector-canvas,.camera-canvas{position:absolute;inset:0}.detector-summary{position:absolute;z-index:8;top:80px;left:18px;display:grid;gap:8px;width:158px}.detector-summary article{padding:9px 10px;border-left:2px solid #5ce0d0;background:#04171dcf}.detector-summary span{display:block;color:#72979a;font-size:9px}.detector-summary b{display:block;margin-top:3px;font:12px ui-monospace,Consolas,monospace}.radar-wrap{position:absolute;inset:54px 58px 22px;display:grid;place-items:center}.radar-scope{position:relative;height:min(68vh,680px);max-width:96%;max-height:96%;aspect-ratio:1;overflow:hidden;border:1px solid #3f8990;border-radius:50%;background:repeating-radial-gradient(circle,transparent 0 20%,#3b8f8d55 20.2% 20.6%,transparent 20.8% 40%),linear-gradient(90deg,transparent 49.8%,#4ca4a266 50%,transparent 50.2%),linear-gradient(transparent 49.8%,#4ca4a266 50%,transparent 50.2%),radial-gradient(circle,#0b3839 0,#061d25 69%,#031218 100%);box-shadow:0 0 55px #0c777138,inset 0 0 30px #0009}.radar-scope.offline .radar-sweep{opacity:.25;animation-play-state:paused}.radar-sweep{position:absolute;inset:0;border-radius:50%;background:conic-gradient(from 285deg,transparent 0 315deg,#59dfd344 343deg,#82fff688 357deg,transparent 360deg);animation:sweep 4s linear infinite}.bearing{position:absolute;z-index:3;color:#75a8aa;font:9px ui-monospace,monospace}.bearing.north{top:12px;left:50%;transform:translateX(-50%)}.bearing.east{top:50%;right:12px}.bearing.south{bottom:12px;left:50%;transform:translateX(-50%)}.bearing.west{top:50%;left:12px}.radar-point{position:absolute;z-index:5;width:9px;height:9px;padding:0;transform:translate(-50%,-50%);border:2px solid #ffbd4a;border-radius:50%;background:#352b0c;box-shadow:0 0 0 7px #ffbd4a18,0 0 10px #ffbd4a;cursor:pointer}.radar-point span{position:absolute;top:-18px;left:9px;color:#ffd47f;white-space:nowrap;font:9px ui-monospace,monospace}.radar-empty{position:absolute;z-index:6;top:50%;left:50%;display:grid;width:260px;transform:translate(-50%,-50%);place-items:center;gap:7px;padding:18px;color:#7aa4a6;background:#04181bd9;text-align:center}.radar-empty b{color:#b7d2d1;font-size:13px}.radar-empty small{font-size:9px}.target-alert{position:absolute;z-index:8;right:18px;bottom:18px;width:190px;padding:11px;border:1px solid #9a7130;border-radius:7px;background:#171407e8}.target-alert span{color:#ffbd4a;font-size:9px;font-weight:900}.target-alert b{display:block;margin-top:5px;font-size:13px}.target-alert small{color:#b9a172;font-size:9px}
+.spectrum-summary{top:82px;width:210px}.spectrum-summary article:first-child b{font-size:10px}.spectrum-panel{position:absolute;inset:72px 28px 28px 250px;display:grid;grid-template-rows:auto minmax(0,1fr);gap:12px;padding:18px;border:1px solid #245b65;border-radius:10px;background:linear-gradient(145deg,#06252cdd,#031319f2);box-shadow:inset 0 0 48px #0a777021}.spectrum-panel>header{display:flex;align-items:center;justify-content:space-between;color:#79aaa9;font:10px ui-monospace,Consolas,monospace;letter-spacing:.07em}.spectrum-panel>header b{color:#d5efed;font-size:12px;letter-spacing:0}.spectrum-chart{position:relative;min-height:0;overflow:hidden;border:1px solid #1e4c55;border-radius:7px;background:linear-gradient(#54c8c81f 1px,transparent 1px),linear-gradient(90deg,#54c8c81f 1px,transparent 1px),radial-gradient(circle at 52% 44%,#0c3a3e,#04191f 68%);background-size:100% 20%,10% 100%,auto}.spectrum-chart svg{position:absolute;inset:24px 22px 32px 54px;width:calc(100% - 76px);height:calc(100% - 56px);overflow:visible}.spectrum-area{fill:url(#spectrum-fill)}.spectrum-line{fill:none;stroke:#65eadc;stroke-width:2;vector-effect:non-scaling-stroke;filter:drop-shadow(0 0 4px #55e5d7aa)}.spectrum-peak-line{stroke:#ffbd4a;stroke-width:1;stroke-dasharray:6 5;vector-effect:non-scaling-stroke}.spectrum-peak-dot{fill:#ffbd4a;stroke:#fff1bd;stroke-width:2;vector-effect:non-scaling-stroke;filter:drop-shadow(0 0 6px #ffbd4a)}.axis-label{position:absolute;color:#759b9e;font:9px ui-monospace,Consolas,monospace}.axis-label.y-max{top:10px;left:8px}.axis-label.y-min{bottom:27px;left:8px}.axis-label.x-start{bottom:9px;left:54px}.axis-label.x-stop{right:18px;bottom:9px}.peak-label{position:absolute;top:8px;max-width:150px;transform:translateX(-50%);padding:4px 6px;border:1px solid #8a662b;border-radius:4px;background:#181506e8;color:#ffd073;white-space:nowrap;font:9px ui-monospace,Consolas,monospace}
+.camera-canvas{background:radial-gradient(circle at 55% 45%,#174450 0,#0a2b35 37%,#04171e 78%)}.camera-canvas::before{position:absolute;inset:0;opacity:.18;background:linear-gradient(#73aab0 1px,transparent 1px),linear-gradient(90deg,#73aab0 1px,transparent 1px);background-size:60px 60px;content:""}.unity-runtime-anchor,.camera-canvas>img{position:absolute;z-index:2;inset:0;width:100%;height:100%}.camera-canvas>img{object-fit:cover}.camera-empty{position:absolute;z-index:3;inset:0;display:grid;place-content:center;justify-items:center;gap:7px;color:#6e979b}.camera-empty b{color:#bad1d2;font-size:13px}.camera-empty small{font-size:10px}.camera-reticle{position:absolute;z-index:8;top:50%;left:50%;width:70px;height:70px;transform:translate(-50%,-50%);border:1px solid #bcece977;border-radius:50%;pointer-events:none}.camera-reticle::before,.camera-reticle::after{position:absolute;background:#bcece977;content:""}.camera-reticle::before{top:50%;left:-24px;width:118px;height:1px}.camera-reticle::after{top:-24px;left:50%;width:1px;height:118px}.camera-telemetry{position:absolute;z-index:10;bottom:16px;left:16px;display:flex;gap:6px}.camera-telemetry span{padding:6px 8px;border:1px solid #315b63;border-radius:4px;background:#03151bdc;color:#bad3d4;font:9px ui-monospace,monospace}
+.source-metrics{display:grid;grid-template-columns:1.3fr 1fr 1fr 1fr;gap:8px}.source-metrics article{display:flex;min-width:0;align-items:center;gap:10px;padding:0 12px;border:1px solid #1b4650;border-radius:7px;background:#06191f}.metric-icon{display:grid;width:30px;height:30px;flex:0 0 auto;place-items:center;border-radius:6px;background:#0b2a31;color:#5ce0d0}.source-metrics p{min-width:0;margin:0}.source-metrics small{display:block;color:#70969b;font-size:9px}.source-metrics b{display:block;overflow:hidden;margin-top:3px;font-size:11px;white-space:nowrap;text-overflow:ellipsis}
+.source-rail{display:grid;grid-template-rows:auto minmax(0,1fr) 50px;min-width:0;min-height:0;border:1px solid #1d4a55;border-radius:9px;background:#04161c}.source-rail>header{display:flex;align-items:center;justify-content:space-between;padding:13px 14px 10px}.source-rail>header b{font-size:14px}.source-rail>header span{color:#70979c;font-size:10px}.source-grid{display:grid;grid-template-columns:1fr 1fr;grid-template-rows:1.08fr repeat(3,minmax(0,1fr));gap:7px;min-height:0;padding:0 10px 10px}.source-card{position:relative;min-width:0;min-height:0;overflow:hidden;padding:0;border:1px solid #285a64;border-radius:7px;background:#082029;color:#e9fbfa;cursor:pointer;text-align:left;transition:border-color .2s ease,transform .2s ease,box-shadow .2s ease}.source-card:hover{transform:translateY(-1px);border-color:#50bdb6}.source-card.active{border-color:#5ce0d0;box-shadow:0 0 0 1px #5ce0d055,0 10px 22px #0008}.detector-card{grid-column:1/-1;background:#08272c}.mini-radar{position:absolute;inset:-42% 8% -54% 34%;border:1px solid #58b7b544;border-radius:50%;background:repeating-radial-gradient(circle,transparent 0 19%,#58b7b533 20% 20.8%,transparent 21% 39%),linear-gradient(90deg,transparent 49.6%,#5fc9c555 50%,transparent 50.4%),linear-gradient(transparent 49.6%,#5fc9c555 50%,transparent 50.4%)}.mini-radar i{position:absolute;top:38%;left:68%;width:7px;height:7px;border-radius:50%;background:#ffbd4a;box-shadow:0 0 9px #ffbd4a}.camera-card>img,.camera-grid-placeholder{position:absolute;inset:0;width:100%;height:100%}.camera-card>img{object-fit:cover}.camera-grid-placeholder{opacity:.7;background:radial-gradient(circle at 60% 35%,#1f4b57,#071d25 63%),linear-gradient(#7ab0b744 1px,transparent 1px),linear-gradient(90deg,#7ab0b744 1px,transparent 1px);background-size:auto,34px 34px,34px 34px}.card-tag{position:absolute;z-index:3;top:7px;left:7px;display:flex;align-items:center;gap:5px;padding:4px 6px;border:1px solid #35636b;border-radius:4px;background:#03151cdd;font-size:9px}.card-tag i{width:5px;height:5px;border-radius:50%;background:#607b7e}.card-tag i.online{background:#54d8a3;box-shadow:0 0 7px #54d8a3}.source-card footer{position:absolute;z-index:3;right:0;bottom:0;left:0;display:flex;align-items:flex-end;justify-content:space-between;padding:20px 8px 7px;background:linear-gradient(transparent,#021116ee)}.source-card footer b{display:block;font-size:10px}.source-card footer small{display:block;margin-top:2px;color:#7ba0a4;font-size:8px}.source-card footer em{color:#88b0b2;font:normal 8px ui-monospace,monospace}.rail-status{display:flex;align-items:center;justify-content:space-between;padding:0 13px;border-top:1px solid #173e47;color:#779a9e;font-size:9px}.rail-status b{color:#cae1e0;font-size:10px}
+@keyframes sweep{to{transform:rotate(360deg)}}
+@media(max-width:1420px){.stage-grid{grid-template-columns:minmax(0,1fr) 365px}.detector-summary{width:140px}.spectrum-summary{width:170px}.spectrum-panel{left:208px}.source-metrics{grid-template-columns:1.2fr 1fr 1fr 1fr}.metric-icon{display:none}}
+@media(max-height:820px){.vision-stage{height:max(540px,calc(100dvh - 146px))}.stage-header{height:58px}.stage-grid{height:calc(100% - 58px)}.main-column{grid-template-rows:minmax(0,1fr) 70px}.detector-summary{top:68px}.spectrum-panel{top:60px}.radar-wrap{inset:48px 50px 16px}}
+@container workspace (max-width:900px){.vision-stage{height:auto;min-height:0;overflow:visible}.stage-header{height:auto;min-height:70px;flex-wrap:wrap;padding-block:10px}.stage-grid{grid-template-columns:1fr;height:auto}.main-column{grid-template-rows:520px auto}.source-metrics{grid-template-columns:1fr 1fr}.source-rail{grid-template-rows:auto 650px 50px}.radar-wrap{inset:70px 36px 20px}.spectrum-summary{top:68px;left:12px;width:150px}.spectrum-panel{inset:62px 18px 20px 180px;padding:12px}}
+@media(prefers-reduced-motion:reduce){.radar-sweep{animation:none}.source-card{transition:none}}
 </style>

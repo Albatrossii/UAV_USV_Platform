@@ -4,6 +4,8 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.uavusv.platform.module.sensor.dto.RadarItemResponse;
 import com.uavusv.platform.module.sensor.dto.RadarOverviewResponse;
 import org.springframework.stereotype.Service;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
@@ -19,9 +21,11 @@ import java.util.Map;
 public class SensorRuntimeService {
 
     private static final long FRESH_RADAR_MILLIS = 30_000;
+    private static final Logger log = LoggerFactory.getLogger(SensorRuntimeService.class);
 
     private final Clock clock;
     private final Map<String, RadarState> radars = new LinkedHashMap<>();
+    private final Map<String, SpectrumState> spectra = new LinkedHashMap<>();
 
     public SensorRuntimeService() {
         this(Clock.systemUTC());
@@ -61,6 +65,63 @@ public class SensorRuntimeService {
         radars.put(scan.sensorId(), new RadarState(now, timestampMs, List.of(), points));
     }
 
+    public synchronized void observeSpectrumFrame(JsonNode frame) {
+        JsonNode data = frame.has("data") && frame.path("data").isObject()
+                ? frame.path("data")
+                : frame;
+        JsonNode powersNode = data.path("powers_dbm");
+        if (!powersNode.isArray() || powersNode.isEmpty()) {
+            return;
+        }
+        String vehicleId = text(data, "vehicle_id", "");
+        String streamId = text(data, "stream_id", "");
+        if (vehicleId.isBlank() || streamId.isBlank()) {
+            return;
+        }
+        List<Double> powers = new ArrayList<>(powersNode.size());
+        for (JsonNode power : powersNode) {
+            if (!power.isNumber() || !Double.isFinite(power.asDouble())) {
+                return;
+            }
+            powers.add(power.asDouble());
+        }
+        long now = clock.millis();
+        Double capturedAt = optionalNumber(data, "captured_at");
+        long timestampMs = capturedAt == null
+                ? timestampMs(frame, now)
+                : epochMillis(capturedAt);
+        String cacheKey = vehicleId + "\u0000" + streamId;
+        boolean firstFrame = !spectra.containsKey(cacheKey);
+        SpectrumState state = new SpectrumState(
+                now,
+                timestampMs,
+                vehicleId,
+                text(data, "sensor_id", text(data, "stream_id", "electronic_detector")),
+                streamId,
+                optionalLong(frame, "sequence"),
+                optionalLong(data, "sequence"),
+                capturedAt,
+                optionalNumber(data, "start_hz"),
+                optionalNumber(data, "stop_hz"),
+                optionalNumber(data, "bin_hz"),
+                optionalNumber(data, "rbw_hz"),
+                optionalNumber(data, "ref_level_dbm"),
+                optionalNumber(data, "peak_hz"),
+                optionalNumber(data, "peak_dbm"),
+                optionalNumber(data, "temperature_c"),
+                List.copyOf(powers)
+        );
+        spectra.put(cacheKey, state);
+        if (firstFrame) {
+            log.info(
+                    "SAN60 spectrum stream online vehicle={} sensor={} stream={} gatewaySeq={} san60Seq={} points={} bandHz={}-{} binHz={} peakHz={} peakDbm={} tempC={}",
+                    state.vehicleId, state.sensorId, state.streamId, state.gatewaySequence, state.sequence,
+                    state.powersDbm.size(), state.startHz, state.stopHz, state.binHz,
+                    state.peakHz, state.peakDbm, state.temperatureC
+            );
+        }
+    }
+
     public synchronized RadarOverviewResponse radarOverview() {
         long now = clock.millis();
         List<RadarState> freshStates = radars.values().stream()
@@ -85,16 +146,41 @@ public class SensorRuntimeService {
                 .mapToLong(state -> state.timestampMs)
                 .max()
                 .orElse(0);
+        List<SpectrumState> freshSpectra = spectra.values().stream()
+                .filter(state -> now - state.receivedAtMs <= FRESH_RADAR_MILLIS)
+                .toList();
+        SpectrumState freshSpectrum = freshSpectra.stream()
+                .max(Comparator.comparingLong(state -> state.receivedAtMs))
+                .orElse(null);
+        if (freshSpectrum != null) {
+            updatedAt = Math.max(updatedAt, freshSpectrum.timestampMs);
+        }
         return new RadarOverviewResponse(
-                !freshStates.isEmpty(),
-                freshStates.size(),
-                radars.size(),
+                !freshStates.isEmpty() || freshSpectrum != null,
+                freshStates.size() + freshSpectra.size(),
+                radars.size() + spectra.size(),
                 updatedAt,
                 (int) items.stream().filter(item -> "OBSTACLE".equals(item.kind())).count(),
                 (int) items.stream().filter(item -> "DETECTION".equals(item.kind()) || "POINTCLOUD".equals(item.kind())).count(),
                 nearest,
                 latestTargetId,
-                items
+                items,
+                freshSpectrum != null,
+                freshSpectrum == null ? "" : freshSpectrum.vehicleId,
+                freshSpectrum == null ? "" : freshSpectrum.sensorId,
+                freshSpectrum == null ? "" : freshSpectrum.streamId,
+                freshSpectrum == null ? null : freshSpectrum.gatewaySequence,
+                freshSpectrum == null ? null : freshSpectrum.sequence,
+                freshSpectrum == null ? null : freshSpectrum.capturedAt,
+                freshSpectrum == null ? null : freshSpectrum.startHz,
+                freshSpectrum == null ? null : freshSpectrum.stopHz,
+                freshSpectrum == null ? null : freshSpectrum.binHz,
+                freshSpectrum == null ? null : freshSpectrum.rbwHz,
+                freshSpectrum == null ? null : freshSpectrum.refLevelDbm,
+                freshSpectrum == null ? null : freshSpectrum.peakHz,
+                freshSpectrum == null ? null : freshSpectrum.peakDbm,
+                freshSpectrum == null ? null : freshSpectrum.temperatureC,
+                freshSpectrum == null ? List.of() : freshSpectrum.powersDbm
         );
     }
 
@@ -214,7 +300,10 @@ public class SensorRuntimeService {
 
     private static long timestampMs(JsonNode node, Number fallback) {
         Number value = number(node, "timestamp_ms", number(node, "timestampMs", number(node, "timestamp", fallback)));
-        double timestamp = value.doubleValue();
+        return epochMillis(value.doubleValue());
+    }
+
+    private static long epochMillis(double timestamp) {
         return timestamp < 10_000_000_000D ? Math.round(timestamp * 1000D) : Math.round(timestamp);
     }
 
@@ -223,11 +312,37 @@ public class SensorRuntimeService {
         return value.isNumber() ? value.asDouble() : null;
     }
 
+    private static Long optionalLong(JsonNode node, String field) {
+        JsonNode value = node.path(field);
+        return value.isIntegralNumber() ? value.asLong() : null;
+    }
+
     private record RadarState(
             long receivedAtMs,
             long timestampMs,
             List<RadarItemResponse> obstacles,
             List<RadarItemResponse> detections
+    ) {
+    }
+
+    private record SpectrumState(
+            long receivedAtMs,
+            long timestampMs,
+            String vehicleId,
+            String sensorId,
+            String streamId,
+            Long gatewaySequence,
+            Long sequence,
+            Double capturedAt,
+            Double startHz,
+            Double stopHz,
+            Double binHz,
+            Double rbwHz,
+            Double refLevelDbm,
+            Double peakHz,
+            Double peakDbm,
+            Double temperatureC,
+            List<Double> powersDbm
     ) {
     }
 }

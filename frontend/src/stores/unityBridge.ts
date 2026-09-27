@@ -348,6 +348,12 @@ export const useUnityBridgeStore = defineStore('unityBridge', {
         )
         if (String(channel.scenarioReadyRunId ?? '') !== runId) return requestId
       }
+      if (type === 'spectrumFrame') {
+        // A hidden or loading WebGL runtime only needs the newest SAN60 frame.
+        channel.outbox = channel.outbox.filter(
+          queued => queued.type !== 'spectrumFrame',
+        )
+      }
       channel.outbox.push(message)
       return requestId
     },

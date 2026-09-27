@@ -155,10 +155,25 @@ function handleWindowMessage(event: MessageEvent) {
     if (message.payload?.ready !== true) {
       markError('系统总览 Unity platformBridgeReady.ready 不是 true')
     } else {
+      bridge.setPlatformCapabilitiesFor(RUNTIME_SCOPE, {
+        ready: true,
+        controlsReady: message.payload.controlsReady !== false,
+        cameraReady: message.payload.cameraReady !== false,
+        algorithmReady: message.payload.algorithmReady !== false,
+        visualSensorReady: message.payload.visualSensorReady === true,
+        buildId: String(message.payload.buildId ?? 'unity-overview-platform'),
+        capabilities: Array.isArray(message.payload.capabilities)
+          ? message.payload.capabilities
+          : [],
+      })
+      bridge.setConnectedFor(RUNTIME_SCOPE, true)
       // The overview build is not usable until its wrapper reports that
-      // InitializePlatform completed. Do not flush commands at bridge-ready.
-      loading.value = true
-      loadHint.value = 'Unity 桥已连接，正在初始化系统总览平台'
+      // InitializePlatform completed. A later compatibility-bridge readiness
+      // event only enriches capabilities and must not reopen the loading mask.
+      if (!ready.value) {
+        loading.value = true
+        loadHint.value = 'Unity 桥已连接，正在初始化系统总览平台'
+      }
     }
   } else if (message.type === 'platformInitialized') {
     if (message.payload?.success !== true) {

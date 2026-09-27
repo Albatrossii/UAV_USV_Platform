@@ -97,6 +97,7 @@ public class RosPoseWebSocketClient implements WebSocket.Listener {
                     connecting.set(false);
                     if (error != null) {
                         if (stateAuthority) runtimeStateService.observeRosConnection(false, "无法连接 " + endpoint);
+                        visualSensorService.observeGateway(false, "无法连接 " + endpoint);
                         log.warn("ROS WebSocket connection failed for {}: {}", endpoint, error.getMessage());
                         scheduleConnect(2);
                     }
@@ -107,6 +108,7 @@ public class RosPoseWebSocketClient implements WebSocket.Listener {
     public void onOpen(WebSocket webSocket) {
         socket = webSocket;
         if (stateAuthority) runtimeStateService.observeRosConnection(true, "已连接 " + endpoint);
+        visualSensorService.observeGateway(true, "视觉传感器网关在线");
         log.info("Connected to ROS pose WebSocket {}", endpoint);
         webSocket.request(1);
     }
@@ -215,18 +217,15 @@ public class RosPoseWebSocketClient implements WebSocket.Listener {
             return;
         }
         if ("camera_frame".equals(type)) {
-            visualSensorService.observeJpegFrame(
-                    root.path("camera_id").asText(),
-                    root.path("jpeg_base64").asText(),
-                    root.path("width").asInt(),
-                    root.path("height").asInt(),
-                    root.path("timestamp_ms").asLong(),
-                    root.path("age_seconds").asDouble(-1)
-            );
+            visualSensorService.observeFrame(root);
             return;
         }
         if ("radar_frame".equals(type)) {
             sensorRuntimeService.observeRadarFrame(root.has("frame") ? root.path("frame") : root);
+            return;
+        }
+        if ("spectrum_frame".equals(type)) {
+            sensorRuntimeService.observeSpectrumFrame(root);
             return;
         }
         if ("pointcloud_frame".equals(type) || "lidar_frame".equals(type)) {
@@ -245,6 +244,7 @@ public class RosPoseWebSocketClient implements WebSocket.Listener {
     private void handleDisconnect(String detail) {
         socket = null;
         if (stateAuthority) runtimeStateService.observeRosConnection(false, detail);
+        visualSensorService.observeGateway(false, detail);
         if (!shuttingDown) {
             log.info("ROS pose WebSocket disconnected, retrying: {}", detail);
             scheduleConnect(2);

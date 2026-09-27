@@ -11,7 +11,7 @@ const store=useRadarSensorStore(),experiment=useActiveExperimentStore(),selected
 let timer:number|undefined
 const clockNow = ref(Date.now())
 let freshnessTimer: number | undefined
-const overview=computed<RadarOverview>(()=>store.overview??({connected:false,onlineCount:0,totalCount:0,updatedAt:0,obstacleCount:0,detectionCount:0,nearestObstacleRange:null,latestTargetId:'',items:[]}))
+const overview=computed<RadarOverview>(()=>store.overview??({connected:false,onlineCount:0,totalCount:0,updatedAt:0,obstacleCount:0,detectionCount:0,nearestObstacleRange:null,latestTargetId:'',items:[],spectrumConnected:false,spectrumVehicleId:'',spectrumSensorId:'',spectrumStreamId:'',spectrumGatewaySequence:null,spectrumSequence:null,spectrumCapturedAt:null,spectrumStartHz:null,spectrumStopHz:null,spectrumBinHz:null,spectrumRbwHz:null,spectrumRefLevelDbm:null,spectrumPeakHz:null,spectrumPeakDbm:null,spectrumTemperatureC:null,spectrumPowersDbm:[]}))
 const freshness=computed(()=>overview.value.updatedAt?Math.max(0,clockNow.value-overview.value.updatedAt):null)
 watch(() => overview.value.items, (items) => {
   const previous = selected.value

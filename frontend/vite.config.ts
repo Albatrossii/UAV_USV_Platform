@@ -42,17 +42,17 @@ function unityWebglHeaders(): Plugin {
   }
 }
 
-export default defineConfig({
+export default defineConfig(({ command }) => ({
   plugins: [
     vue(),
     unityWebglHeaders(),
     AutoImport({
       resolvers: [ElementPlusResolver()],
-      dts: 'src/auto-imports.d.ts',
+      dts: command === 'serve' ? 'src/auto-imports.d.ts' : false,
     }),
     Components({
       resolvers: [ElementPlusResolver()],
-      dts: 'src/components.d.ts',
+      dts: command === 'serve' ? 'src/components.d.ts' : false,
     }),
   ],
   resolve: {
@@ -91,4 +91,4 @@ export default defineConfig({
       },
     },
   },
-})
+}))
