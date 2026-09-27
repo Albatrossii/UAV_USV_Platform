@@ -166,6 +166,46 @@ class AlgorithmRuntimeManagerTests {
     }
 
     @Test
+    void shouldRouteSingleDeviceCommandToStandalonePythonRuntime() throws Exception {
+        long runId = 92501L;
+        MissionRunRepository runRepository = mock(MissionRunRepository.class);
+        AlgorithmCatalogService catalogService = mock(AlgorithmCatalogService.class);
+        when(catalogService.requireEnabled("ESCORT_GUARD"))
+                .thenReturn(mock(AlgorithmDefinition.class));
+        AlgorithmRuntimeManager manager = manager(runRepository, catalogService);
+        Map<String, Object> config = Map.of(
+                "standaloneVirtualSimulation", true,
+                "adaptiveMultiTarget", true,
+                "uavCount", 3,
+                "usvCount", 3
+        );
+        try {
+            AlgorithmRuntimeStatusResponse prepared = manager.prepare(
+                    runId, "ESCORT_GUARD_SINGLE_DEVICE", config);
+            assertEquals("ESCORT_GUARD_SINGLE_DEVICE", prepared.algorithmCode());
+            assertTrue(manager.isStandaloneSingleDeviceRun(runId));
+            manager.controlDevice(runId, "UAV-001", "UAV_HOVER");
+
+            long after = prepared.latestSequence();
+            JsonNode controlled = null;
+            for (int attempt = 0; attempt < 50; attempt++) {
+                Thread.sleep(100);
+                JsonNode candidate = manager.latestFrame(runId, after);
+                if (candidate != null
+                        && candidate.path("metrics")
+                                .path("operatorControlledDeviceCount").asInt() == 1) {
+                    controlled = candidate;
+                    break;
+                }
+            }
+            assertNotNull(controlled);
+            assertEquals("HOLDING", controlled.path("agents").get(0).path("status").asText());
+        } finally {
+            manager.close();
+        }
+    }
+
+    @Test
     void unityNativeResponseKeepsLegacyFieldsAndEmptyVoiceMetadata() {
         var manager = manager(mock(MissionRunRepository.class), mock(AlgorithmCatalogService.class));
         var response = manager.prepare(93001L, "UNITY_SIMPLE_ENCIRCLEMENT",

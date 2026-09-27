@@ -29,6 +29,8 @@ import {
   fetchAlgorithmRunStatus,
   prepareAlgorithmRun,
 } from '@/api/algorithm'
+import { type VehicleCommandType } from '@/api/runtimeControl'
+import { issueSingleDeviceCommand } from '@/services/singleDeviceControl'
 import { useAuthStore } from '@/stores/auth'
 import { useVoiceControlStore } from '@/stores/voiceControl'
 import type { AlgorithmRuntimeFrame } from '@/types/mission'
@@ -111,7 +113,7 @@ type CaptureGroupMetric = {
   triggerReason?: string
 }
 
-type InspectorTab = 'status' | 'voice' | 'protocol' | 'logs'
+type InspectorTab = 'status' | 'voice' | 'protocol' | 'logs' | 'single'
 
 type TacticalEvent = SimulationTacticalNotice
 
@@ -183,6 +185,8 @@ const algorithmPrepared = ref(restoredRuntime !== null)
 const algorithmPrepareError = ref('')
 const algorithmPreparing = ref(false)
 const missionActionMessage = ref('')
+const singleDeviceCommandPending = ref(false)
+const singleDeviceCommandMessage = ref('')
 const webglExpanded = ref(false)
 const leftPanelCollapsed = ref(false)
 const rightPanelCollapsed = ref(false)
@@ -205,12 +209,15 @@ const sceneLocked = computed(() => (
   || state.mission === 'COMPLETING'
 ))
 const scenarioPlan = computed(() => deriveAdaptiveScenarioPlan(state.uavCount, state.usvCount))
+const isCaptureAlgorithm = computed(() => state.algorithm.startsWith('GB_SFLA_CS'))
+const isEscortAlgorithm = computed(() => state.algorithm.startsWith('ESCORT_GUARD'))
+const isSingleDeviceAlgorithm = computed(() => state.algorithm.endsWith('_SINGLE_DEVICE'))
 const configuredTargetCount = computed(() => (
-  state.algorithm === 'GB_SFLA_CS'
+  isCaptureAlgorithm.value
     ? scenarioPlan.value.threatCount
     : scenarioPlan.value.targetCount
 ))
-const stageCompositionLabel = computed(() => state.algorithm === 'GB_SFLA_CS'
+const stageCompositionLabel = computed(() => isCaptureAlgorithm.value
   ? `${state.uavCount} UAV · ${state.usvCount} USV · ${scenarioPlan.value.threatCount} 敌船`
   : `${state.uavCount} UAV · ${state.usvCount} USV · ${scenarioPlan.value.protectedCount} 护航目标 · ${scenarioPlan.value.threatCount} 敌船`)
 const missionPhase = computed(() => String(
@@ -389,7 +396,7 @@ function handleWorkbenchTransitionCancel(event: TransitionEvent) {
 }
 const displayCaptureStage = (stage: unknown) => {
   const value = Number(stage ?? 0)
-  if (state.algorithm === 'GB_SFLA_CS') {
+  if (isCaptureAlgorithm.value) {
     // The capture adapter already exposes its user-facing stages as 1/2/3.
     return Math.min(3, Math.max(1, value || 1))
   }
@@ -412,14 +419,24 @@ const selectedFrameItem = computed(() => {
     ?? currentAlgorithmFrame.value.targets.find(item => item.code === selectedDevice.value)
     ?? null
 })
-const phaseSteps = computed(() => state.algorithm === 'ESCORT_GUARD'
+const controllableAgents = computed(() => currentAlgorithmFrame.value?.agents ?? [])
+const selectedControlAgent = computed(() => (
+  controllableAgents.value.find(item => item.code === selectedDevice.value) ?? null
+))
+const selectedControlState = computed(() => {
+  if (!selectedDevice.value) return null
+  const states = missionMetrics.value.deviceControlStates
+  if (!states || typeof states !== 'object') return null
+  return (states as Record<string, { controlAuthority?: string; motionState?: string }>)[selectedDevice.value] ?? null
+})
+const phaseSteps = computed(() => isEscortAlgorithm.value
   ? ['编队护航', '意图识别', '分向守卫', '协同拦截', '追逃压制', '动态围捕', '稳定闭环', '完成']
   : ['目标逃逸', '协同追击', '截击部署', '动态围捕', '稳定闭环', '完成'])
 const activePhaseIndex = computed(() => {
   const phase = missionPhase.value.toUpperCase()
   if (state.mission === 'COMPLETED') return phaseSteps.value.length - 1
   if (phase === 'COMPLETED') {
-    if (state.algorithm !== 'GB_SFLA_CS') return phaseSteps.value.length - 1
+    if (!isCaptureAlgorithm.value) return phaseSteps.value.length - 1
     const rawProgress = Number(missionMetrics.value.missionProgress ?? missionMetrics.value.progress ?? 0)
     const capturedTargets = Number(missionMetrics.value.capturedTargetCount ?? 0)
     // Defensive consistency gate: a stale aggregate stage must never light
@@ -429,7 +446,7 @@ const activePhaseIndex = computed(() => {
     }
     return phaseSteps.value.length - 2
   }
-  if (state.algorithm === 'ESCORT_GUARD') {
+  if (isEscortAlgorithm.value) {
     if (phase === 'COMPLETED') return 7
     if (phase === 'SAFE_GATE_TRANSIT' || phase === 'STABLE_CONTAINMENT') return 6
     if (phase === 'GAP_REPAIR' || phase === 'ENCIRCLEMENT') return 5
@@ -576,9 +593,14 @@ const voiceUnitySession = computed(() => ({
   sceneRevision: presentationSceneRevision.value,
 }))
 
-const algorithmDescription = computed(() => state.algorithm === 'GB_SFLA_CS'
-  ? '算法负责目标分配、围捕航点、设备速度方向和捕获状态。'
-  : '算法负责护航编队、意图识别、掩护撤离、协同拦截与动态围控。')
+const algorithmDescription = computed(() => {
+  const base = isCaptureAlgorithm.value
+    ? '算法负责目标分配、围捕航点、设备速度方向和捕获状态。'
+    : '算法负责护航编队、意图识别、掩护撤离、协同拦截与动态围控。'
+  return isSingleDeviceAlgorithm.value
+    ? `${base} 当前模式支持单设备临时接管与安全归队。`
+    : base
+})
 
 const speedValid = computed(() =>
   state.uavSpeed >= 0
@@ -974,7 +996,7 @@ async function generateScenario() {
     fleetOrigin: fleetOriginEnu,
     uavSpeedMps: state.uavSpeed,
     usvSpeedMps: state.usvSpeed,
-    captureMode: state.algorithm === 'GB_SFLA_CS',
+    captureMode: isCaptureAlgorithm.value,
     scenarioId: state.runId,
   })
   initialScenarioPoses.value = plannedScenarioPoses.value
@@ -982,7 +1004,7 @@ async function generateScenario() {
   scenarioLoading.value = true
   const generationRunId = state.runId
 
-  if (state.algorithm === 'ESCORT_GUARD') {
+  if (isEscortAlgorithm.value) {
     addLog(`authoritative escort preview pending: runId=${state.runId}`)
     const prepared = await prepareExternalAlgorithm(true, [])
     if (state.runId !== generationRunId) return
@@ -1033,10 +1055,10 @@ async function generateScenario() {
     uavCount: state.uavCount,
     usvCount: state.usvCount,
     targetCount: configuredTargetCount.value,
-    layoutVersion: state.algorithm === 'ESCORT_GUARD' ? 'ADAPTIVE_MULTI_TARGET_V2' : 'ADAPTIVE_MULTI_CAPTURE_V2',
+    layoutVersion: isEscortAlgorithm.value ? 'ADAPTIVE_MULTI_TARGET_V2' : 'ADAPTIVE_MULTI_CAPTURE_V2',
     initialPosesCoordinateFrame: 'GLOBAL_ENU',
     initialPoses: plannedScenarioPoses.value,
-    initialSpeedMps: state.algorithm === 'GB_SFLA_CS' ? state.uavSpeed : state.usvSpeed,
+    initialSpeedMps: isCaptureAlgorithm.value ? state.uavSpeed : state.usvSpeed,
   })
 }
 
@@ -1045,12 +1067,13 @@ function buildAlgorithmPrepareConfig(initialPoses: ScenarioInitialPose[]) {
     uavCount: state.uavCount,
     usvCount: state.usvCount,
     targetCount: configuredTargetCount.value,
-    protectedCount: state.algorithm === 'ESCORT_GUARD' ? scenarioPlan.value.protectedCount : 0,
+    protectedCount: isEscortAlgorithm.value ? scenarioPlan.value.protectedCount : 0,
     threatCount: scenarioPlan.value.threatCount,
     simultaneousThreats: scenarioPlan.value.simultaneousThreats,
     worldWidth: scenarioPlan.value.worldWidth,
     worldHeight: scenarioPlan.value.worldHeight,
-    adaptiveMultiTarget: state.algorithm === 'ESCORT_GUARD',
+    adaptiveMultiTarget: isEscortAlgorithm.value,
+    singleDeviceControlEnabled: isSingleDeviceAlgorithm.value,
     uavSpeedMps: state.uavSpeed,
     usvSpeedMps: state.usvSpeed,
     coordinateFrame: 'FLEET_LOCAL_ENU',
@@ -1058,8 +1081,8 @@ function buildAlgorithmPrepareConfig(initialPoses: ScenarioInitialPose[]) {
     fleetOrigin: fleetOriginEnu,
     initialPoses,
     targetBehavior: 'MOVING',
-    previewEnabled: state.algorithm === 'GB_SFLA_CS',
-    threatMinDistanceM: state.algorithm === 'GB_SFLA_CS' ? 90 : 170,
+    previewEnabled: isCaptureAlgorithm.value,
+    threatMinDistanceM: isCaptureAlgorithm.value ? 90 : 170,
     standaloneVirtualSimulation: true,
   }
 }
@@ -1089,7 +1112,7 @@ function prepareExternalAlgorithm(
       // skipping directly to the latest sequence number reported by status.
       state.sequence = 0
       addLog(`algorithm prepared: ${state.algorithm} runId=${prepareRunId}`)
-      if (state.algorithm === 'GB_SFLA_CS') startAlgorithmPolling()
+      if (isCaptureAlgorithm.value) startAlgorithmPolling()
       return true
     } catch (error) {
       algorithmPrepared.value = false
@@ -1334,7 +1357,7 @@ async function pollAlgorithmFrame() {
     algorithmPollInFlight
     || (
       state.mission !== 'RUNNING'
-      && !(state.algorithm === 'GB_SFLA_CS' && state.mission === 'STOPPED')
+      && !(isCaptureAlgorithm.value && state.mission === 'STOPPED')
     )
     || !algorithmPrepared.value
     || !unityReady.value
@@ -1383,6 +1406,74 @@ function followSelectedDevice() {
     deviceCode: selectedDevice.value,
   })
 }
+
+function selectDeviceForControl(deviceCode: string) {
+  selectedDevice.value = deviceCode
+  if (!deviceCode || !unityReady.value) return
+  send('selectDevice', { deviceCode })
+}
+
+function handleControlDeviceSelection(event: Event) {
+  selectDeviceForControl((event.target as HTMLSelectElement).value)
+}
+
+function resolveSingleDeviceCommand(
+  action: 'hold' | 'stop' | 'return' | 'rejoin',
+): VehicleCommandType | null {
+  const agent = selectedControlAgent.value
+  if (!agent) return null
+  if (agent.type === 'UAV') {
+    return ({
+      hold: 'UAV_HOVER',
+      stop: 'UAV_LAND',
+      return: 'UAV_RETURN',
+      rejoin: 'UAV_RESUME',
+    } as const)[action]
+  }
+  return ({
+    hold: 'USV_HOLD',
+    stop: 'USV_STOP',
+    return: 'USV_RETURN',
+    rejoin: 'USV_RESUME',
+  } as const)[action]
+}
+
+async function submitSingleDeviceCommand(action: 'hold' | 'stop' | 'return' | 'rejoin') {
+  if (!isSingleDeviceAlgorithm.value || singleDeviceCommandPending.value) return
+  const commandType = resolveSingleDeviceCommand(action)
+  if (!commandType || !selectedDevice.value) {
+    singleDeviceCommandMessage.value = '请先选择一台 UAV 或 USV。'
+    return
+  }
+  singleDeviceCommandPending.value = true
+  singleDeviceCommandMessage.value = ''
+  try {
+    const result = await issueSingleDeviceCommand({
+      commandType,
+      deviceCode: selectedDevice.value,
+      runId: state.runId,
+      runtimeScope: 'MISSION_CENTER',
+      runtimeInstanceId: `ALGORITHM_RUN:${state.runId}`,
+      detail: 'VirtualFleet 单设备控制',
+    })
+    if (result.status !== 'SUCCEEDED') {
+      throw new Error(result.detail || result.errorCode || `指令状态：${result.status}`)
+    }
+    singleDeviceCommandMessage.value = `${selectedDevice.value}：${commandType} 已由 Python 算法接收。`
+    addLog(`singleDeviceCommand: ${selectedDevice.value} ${commandType} ${result.status}`)
+    await pollAlgorithmFrame()
+  } catch (error) {
+    singleDeviceCommandMessage.value = error instanceof Error ? error.message : String(error)
+    addLog(`singleDeviceCommand failed: ${singleDeviceCommandMessage.value}`)
+  } finally {
+    singleDeviceCommandPending.value = false
+  }
+}
+
+watch(isSingleDeviceAlgorithm, (enabled) => {
+  if (!enabled && inspectorTab.value === 'single') inspectorTab.value = 'status'
+  if (!enabled) singleDeviceCommandMessage.value = ''
+})
 
 // Registration lasts as long as the cached business view, not its activation.
 simulationRuntime.events = { ready: onUnityReady, loading: onUnityLoading, message: onUnityMessage, error: onUnityError }
@@ -1493,15 +1584,17 @@ onBeforeUnmount(() => {
             <label>算法
               <select v-model="state.algorithm" :disabled="sceneLocked">
                 <option value="ESCORT_GUARD" title="智能粒球仿真护航算法">智能粒球仿真护航</option>
+                <option value="ESCORT_GUARD_SINGLE_DEVICE">智能粒球仿真护航（单设备控制）</option>
                 <option value="GB_SFLA_CS">GB-SFLA-CS 协同围捕（模拟）</option>
+                <option value="GB_SFLA_CS_SINGLE_DEVICE">GB-SFLA-CS 协同围捕（单设备控制）</option>
               </select>
             </label>
             <p class="vf-description">{{ algorithmDescription }}</p>
             <div class="vf-plan-summary">
-              <strong v-if="state.algorithm === 'ESCORT_GUARD'">{{ scenarioPlan.protectedCount }} 护航目标 · {{ scenarioPlan.threatCount }} 敌船</strong>
+              <strong v-if="isEscortAlgorithm">{{ scenarioPlan.protectedCount }} 护航目标 · {{ scenarioPlan.threatCount }} 敌船</strong>
               <strong v-else>{{ scenarioPlan.threatCount }} 艘围捕目标敌船</strong>
               <span>{{ state.uavCount }} UAV · {{ state.usvCount }} USV · 世界 {{ scenarioPlan.worldWidth }}×{{ scenarioPlan.worldHeight }} m</span>
-              <small v-if="state.algorithm === 'ESCORT_GUARD'">规划预览 · 同时来袭 {{ scenarioPlan.simultaneousThreats }} 艘 · {{ scenarioPlan.realtimeTier === 'PHASE_TWO_REALTIME' ? '实时仿真' : '容量模式' }}</small>
+              <small v-if="isEscortAlgorithm">规划预览 · 同时来袭 {{ scenarioPlan.simultaneousThreats }} 艘 · {{ scenarioPlan.realtimeTier === 'PHASE_TWO_REALTIME' ? '实时仿真' : '容量模式' }}</small>
               <small v-else>规划预览 · 自动拆分协同围捕编组 · {{ scenarioPlan.realtimeTier === 'PHASE_TWO_REALTIME' ? '实时仿真' : '容量模式' }}</small>
             </div>
             <div class="vf-two-col">
@@ -1555,9 +1648,9 @@ onBeforeUnmount(() => {
             <span><i></i>阶段 <strong>{{ missionPhaseLabel }}</strong></span>
             <span>综合进度 <strong>{{ displayMissionProgress }}%</strong></span>
             <span>可见目标 <strong>{{ visibleTargetCount }}</strong></span>
-            <span v-if="state.algorithm === 'GB_SFLA_CS'">行动距离 <strong>{{ Number(missionMetrics.targetTravelDistanceM ?? 0).toFixed(0) }} m</strong></span>
+            <span v-if="isCaptureAlgorithm">行动距离 <strong>{{ Number(missionMetrics.targetTravelDistanceM ?? 0).toFixed(0) }} m</strong></span>
             <span v-else>已捕获 <strong>{{ Number(missionMetrics.capturedThreatCount ?? 0) }}/{{ scenarioPlan.threatCount }}</strong></span>
-            <span v-if="state.algorithm !== 'GB_SFLA_CS' && postMissionFormationRequiredCount > 0">
+            <span v-if="!isCaptureAlgorithm && postMissionFormationRequiredCount > 0">
               机动余量归队 <strong>{{ postMissionFormationReadyCount }}/{{ postMissionFormationRequiredCount }}</strong>
             </span>
             <span>仿真时长 <strong>{{ simulationElapsedLabel }}</strong></span>
@@ -1612,6 +1705,7 @@ onBeforeUnmount(() => {
               <button :class="{ active: inspectorTab === 'status' }" type="button" @click="inspectorTab = 'status'">任务态势</button>
               <button :class="{ active: inspectorTab === 'protocol' }" type="button" @click="inspectorTab = 'protocol'">协议状态</button>
               <button :class="{ active: inspectorTab === 'logs' }" type="button" @click="inspectorTab = 'logs'">运行日志</button>
+              <button v-if="isSingleDeviceAlgorithm" :class="{ active: inspectorTab === 'single' }" type="button" @click="inspectorTab = 'single'">单机控制</button>
               <button class="collapse" type="button" title="收起检查区" @click="setRightPanelCollapsed(true)"><ChevronRight :size="17" /></button>
             </div>
 
@@ -1639,7 +1733,7 @@ onBeforeUnmount(() => {
                 <dl class="vf-metric-list">
                   <div><dt>综合进度</dt><dd>{{ displayMissionProgress }}%</dd></div>
                   <div><dt>可见目标</dt><dd>{{ visibleTargetCount }}</dd></div>
-                  <template v-if="state.algorithm === 'GB_SFLA_CS'">
+                  <template v-if="isCaptureAlgorithm">
                     <div><dt>行动距离</dt><dd>{{ Number(missionMetrics.targetTravelDistanceM ?? 0).toFixed(0) }} m</dd></div>
                     <div><dt>闭环置信</dt><dd>{{ Math.round(Number(missionMetrics.containmentConfidence ?? 0) * 100) }}%</dd></div>
                     <div><dt>敌船速度</dt><dd>{{ Number(missionMetrics.targetSpeedMps ?? 0).toFixed(1) }} m/s</dd></div>
@@ -1709,7 +1803,7 @@ onBeforeUnmount(() => {
                       · 规划槽位缺口 {{ Number(group.maxAngularGapDeg ?? 360).toFixed(0) }}°
                     </small>
                     <small>稳定闭环 {{ group.holdFrames ?? 0 }}/{{ group.holdRequiredFrames ?? 25 }}</small>
-                    <small v-if="state.algorithm === 'GB_SFLA_CS'">
+                    <small v-if="isCaptureAlgorithm">
                       实际闭环 {{ group.postGlobalContainmentReady ? '是' : '否' }}
                       · 执行环缺口 {{ Number(group.postGlobalMaxGapDeg ?? 0).toFixed(0) }}°（阈值 ≤ {{ Number(group.postGlobalMaxAllowedGapDeg ?? 0).toFixed(0) }}°）
                       · 分组避障 {{ Number(group.globalAvoidanceCount ?? 0) }}
@@ -1743,6 +1837,46 @@ onBeforeUnmount(() => {
               <ol v-else>
                 <li v-for="entry in logEntries" :key="entry">{{ entry }}</li>
               </ol>
+            </div>
+
+            <div v-else-if="inspectorTab === 'single'" class="vf-inspector-content vf-single-device-control">
+              <article class="vf-status-card">
+                <span>单设备控制</span>
+                <strong>{{ selectedDevice || '未选择' }}</strong>
+                <small>Python 权威运动 · 其他设备继续执行当前群体算法</small>
+              </article>
+              <section class="vf-inspector-section">
+                <h4>选择设备 <span>{{ controllableAgents.length }} ONLINE</span></h4>
+                <select
+                  :value="selectedDevice"
+                  :disabled="singleDeviceCommandPending || !controllableAgents.length"
+                  @change="handleControlDeviceSelection"
+                >
+                  <option value="">请选择 UAV 或 USV</option>
+                  <option v-for="agent in controllableAgents" :key="agent.code" :value="agent.code">
+                    {{ agent.code }} · {{ agent.type }} · {{ agent.status || 'ACTIVE' }}
+                  </option>
+                </select>
+                <div class="vf-control-authority">
+                  <span>控制权</span>
+                  <strong :class="{ operator: selectedControlState }">
+                    {{ selectedControlState?.controlAuthority || 'ALGORITHM' }}
+                  </strong>
+                  <span>运动状态</span>
+                  <strong>{{ selectedControlState?.motionState || selectedControlAgent?.status || 'ACTIVE' }}</strong>
+                </div>
+                <div class="vf-single-command-grid">
+                  <button class="vf-button capture" type="button" :disabled="!selectedDevice || singleDeviceCommandPending" @click="submitSingleDeviceCommand('hold')">悬停 / 驻留</button>
+                  <button class="vf-button danger" type="button" :disabled="!selectedDevice || singleDeviceCommandPending" @click="submitSingleDeviceCommand('stop')">单机停止</button>
+                  <button class="vf-button" type="button" :disabled="!selectedDevice || singleDeviceCommandPending" @click="submitSingleDeviceCommand('return')">独立返航</button>
+                  <button class="vf-button success" type="button" :disabled="!selectedDevice || singleDeviceCommandPending" @click="submitSingleDeviceCommand('rejoin')">安全归队</button>
+                </div>
+                <p v-if="singleDeviceCommandMessage" class="vf-action-message">{{ singleDeviceCommandMessage }}</p>
+              </section>
+              <section class="vf-inspector-section">
+                <h4>控制规则</h4>
+                <p class="vf-note">被接管设备暂时退出当前任务输出，仍保留在场景和避碰域中；安全归队完成后，控制权自动交还群体算法。</p>
+              </section>
             </div>
 
             <div v-else class="vf-inspector-content">
@@ -1909,6 +2043,12 @@ onBeforeUnmount(() => {
 .vf-runtime-log { padding: 12px; }
 .vf-runtime-log ol { display: grid; max-height: 650px; overflow: auto; margin: 0; padding: 0; gap: 5px; list-style: none; }
 .vf-runtime-log li { padding: 7px 8px; color: #86aaa7; background: rgba(3,16,20,.55); border-left: 2px solid rgba(108,228,213,.25); font: 9px/1.45 Consolas, monospace; word-break: break-all; }
+.vf-single-device-control select { width: 100%; min-height: 36px; padding: 0 9px; color: #eafffb; background: #07171c; border: 1px solid #28515a; border-radius: 4px; }
+.vf-control-authority { display: grid; margin-top: 10px; padding: 9px; align-items: center; gap: 7px 10px; color: #789c99; background: rgba(3,16,20,.58); border: 1px solid rgba(108,228,213,.12); border-radius: 4px; grid-template-columns: 1fr auto; font-size: 10px; }
+.vf-control-authority strong { color: #dff8f4; font-size: 9px; }
+.vf-control-authority strong.operator { color: #ffcf72; }
+.vf-single-command-grid { display: grid; margin-top: 10px; gap: 7px; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.vf-single-command-grid .vf-button { width: 100%; }
 @media (max-width: 1500px) {
   .vf-workbench { --vf-left-width: 220px; --vf-right-width: 232px; gap: 9px; }
   .vf-workbench.left-collapsed { --vf-current-left: 42px; }

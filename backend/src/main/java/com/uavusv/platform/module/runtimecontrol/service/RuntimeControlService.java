@@ -6,6 +6,7 @@ import com.uavusv.platform.module.device.entity.Device;
 import com.uavusv.platform.module.device.entity.DeviceType;
 import com.uavusv.platform.module.device.repository.DeviceRepository;
 import com.uavusv.platform.module.mission.repository.MissionRunRepository;
+import com.uavusv.platform.module.mission.service.AlgorithmRuntimeManager;
 import com.uavusv.platform.module.monitoring.service.RuntimeStateService;
 import com.uavusv.platform.module.runtimecontrol.dispatch.CommandDispatchResult;
 import com.uavusv.platform.module.runtimecontrol.dispatch.RuntimeCommandDispatcher;
@@ -29,6 +30,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.context.event.ApplicationReadyEvent;
 import org.springframework.context.event.EventListener;
 import org.springframework.context.ApplicationEventPublisher;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -92,6 +94,8 @@ public class RuntimeControlService {
     private final String commandDispatchMode;
     private final long commandAckTimeoutSeconds;
     private final long commandResultTimeoutSeconds;
+    @Autowired(required = false)
+    private AlgorithmRuntimeManager algorithmRuntimeManager;
 
     public RuntimeControlService(
             RuntimeStateService runtimeStateService,
@@ -308,6 +312,12 @@ public class RuntimeControlService {
                     "Command SELECT_DEVICE is not a ROS control command"
             );
         }
+        if (algorithmRuntimeManager != null
+                && request.runId() != null
+                && (UAV_COMMANDS.contains(request.commandType()) || USV_COMMANDS.contains(request.commandType()))
+                && algorithmRuntimeManager.isStandaloneSingleDeviceRun(request.runId())) {
+            return issueStandaloneAlgorithmCommand(request, username);
+        }
         long startedAt = System.currentTimeMillis();
         long stageStartedAt = startedAt;
         log.info("[issueCommand] start commandType={} deviceCode={} runId={} scope={} instance={}",
@@ -429,6 +439,44 @@ public class RuntimeControlService {
                 System.currentTimeMillis() - stageStartedAt, command.getId(), command.getStatus());
         log.info("[issueCommand] before return total ms={} commandId={} status={}",
                 System.currentTimeMillis() - startedAt, command.getId(), command.getStatus());
+        return RuntimeCommandResponse.from(command);
+    }
+
+    private RuntimeCommandResponse issueStandaloneAlgorithmCommand(
+            RuntimeCommandRequest request, String username) {
+        RuntimeScope scope = request.runtimeScope() == null
+                ? RuntimeScope.MISSION_CENTER : request.runtimeScope();
+        if (scope != RuntimeScope.MISSION_CENTER) {
+            throw new BusinessException(
+                    ErrorCode.BAD_REQUEST, "算法仿真的单设备指令必须使用任务中心运行范围");
+        }
+        String runtimeInstanceId = request.runtimeInstanceId() == null
+                || request.runtimeInstanceId().isBlank()
+                ? "ALGORITHM_RUN:" + request.runId()
+                : request.runtimeInstanceId();
+        ControlCommand command = commandRepository.save(new ControlCommand(
+                null,
+                null,
+                null,
+                request.commandType(),
+                request.payload(),
+                username,
+                scope,
+                runtimeInstanceId
+        ));
+        command.dispatch(buildCommandDetail(request));
+        commandRepository.save(command);
+        try {
+            algorithmRuntimeManager.controlDevice(
+                    request.runId(), request.deviceCode(), request.commandType().name());
+            command.succeedResult("单设备指令已由 Python 权威算法运行时接收");
+        } catch (BusinessException exception) {
+            command.reject("ALGORITHM_DEVICE_COMMAND_REJECTED", exception.getMessage());
+        } catch (RuntimeException exception) {
+            command.fail("ALGORITHM_DEVICE_COMMAND_FAILED", exception.getMessage());
+        }
+        command = commandRepository.save(command);
+        publishTerminalCommandStatus(command);
         return RuntimeCommandResponse.from(command);
     }
 
