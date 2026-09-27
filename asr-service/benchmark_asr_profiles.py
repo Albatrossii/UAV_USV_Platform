@@ -28,7 +28,7 @@ SUPPORTED_BEAMS = (1, 2, 3, 5)
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Run the same local audio through several beam sizes; emit timings and text fingerprints only."
+        description="Run the same local audio through several beam sizes; emit timings and text comparison flags only."
     )
     parser.add_argument("audio", type=Path, help="Local audio file; it is read once and never copied or uploaded.")
     parser.add_argument("--model-path", type=Path, default=os.environ.get("ASR_MODEL_PATH"))

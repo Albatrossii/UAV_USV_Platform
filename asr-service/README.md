@@ -82,7 +82,7 @@ $candidate | Select-Object ProcessId,ExecutablePath,CommandLine
 
 ## 同一录音解码档位对比
 
-在拿到可复用的短录音后，可在本目录运行 `benchmark_asr_profiles.py`。它只在内存中解码一次，再用同一个模型实例顺序测试 beam 5 与 beam 2；不会启动控制链路、上传文件、写出识别文字或保存音频。输出仅包含音频时长、解码/推理耗时、转写长度、转写指纹及是否与 beam 5 相同。
+在拿到可复用的短录音后，可在本目录运行 `benchmark_asr_profiles.py`。它只在内存中解码一次，再用同一个模型实例顺序测试 beam 5 与 beam 2；不会启动控制链路、上传文件、写出识别文字或保存音频。输出仅包含音频时长、解码/推理耗时、转写长度及是否与 beam 5 相同。
 
 ```powershell
 $env:ASR_MODEL_PATH = (Resolve-Path '.\models\whisper-small').Path
