@@ -80,6 +80,17 @@ $candidate | Select-Object ProcessId,ExecutablePath,CommandLine
 - Python只做本机单槽保护，不持久化业务幂等；Java负责同键恢复、登录、权限、CSRF和缓存。
 - 最多8个HTTP处理线程、读头10秒、请求体6MiB、解码960000采样点上限。D1无独立进程内存硬配额；原生解码卡死按人工恢复流程处理，不把线程timeout当成强制终止。
 
+## 同一录音解码档位对比
+
+在拿到可复用的短录音后，可在本目录运行 `benchmark_asr_profiles.py`。它只在内存中解码一次，再用同一个模型实例顺序测试 beam 5 与 beam 2；不会启动控制链路、上传文件、写出识别文字或保存音频。输出仅包含音频时长、解码/推理耗时、转写长度、转写指纹及是否与 beam 5 相同。
+
+```powershell
+$env:ASR_MODEL_PATH = (Resolve-Path '.\models\whisper-small').Path
+& .\.venv\Scripts\python.exe .\benchmark_asr_profiles.py '<本地录音.mp3>' --threads 6 --beams 5,2
+```
+
+beam 5 是对照基线；“结果与 beam 5 相同”不能代替人工确认识别内容正确。只有在音频样本覆盖和准确率核对后，才讨论更改服务默认值。
+
 ## 前端
 
 仅在前端本地环境或部署环境设置 `VITE_VOICE_ASR_ONLY=true`，重启Vite/重新构建。默认false不变。
