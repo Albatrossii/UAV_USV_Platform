@@ -10,7 +10,7 @@
 | 工作线 | 本地分支 | 允许的主要改动 |
 | --- | --- | --- |
 | 本地 ASR 提速 | `codex/asr-latency-optimization` | `asr-service/` 的解码、性能日志和同录音基准工具；仅在需要呈现计时指标时修改 ASR 结果展示 |
-| 单设备控制 | `codex/single-device-control` | `frontend/src/components/control/` 的单设备选择/控制体验、`backend/src/main/java/com/uavusv/platform/module/runtimecontrol/` 的定向校验与回执适配、对应文档 |
+| 单设备控制 | `codex/single-device-control` | `frontend/src/components/control/`、专用单设备命令适配器，以及现有视图中的设备命令提交调用点；必要时 `backend/.../runtimecontrol/` 的定向校验与回执适配 |
 
 ## ASR 接口契约
 
@@ -25,6 +25,7 @@
 - 前端继续通过既有 `POST /api/runtime-control/commands` 发出命令；请求沿用 `RuntimeCommandRequest` 的 `commandType`、单一 `deviceCode`、运行范围和运行实例标识，返回沿用 `RuntimeCommandResponse` 的 `commandKey` 与命令状态。
 - 单设备路径必须只带一个有效设备编号。设备类型、在线/遥测新鲜度、运行实例和动作允许状态由后端控制服务校验；执行成功以现有 Gateway/Unity 命令回执为准，不能以 HTTP 接收成功冒充设备执行成功。
 - 设备控制工作线不新增绕过 `RuntimeControlService` 的直接 ROS/WebSocket 控制链路，不改语音转写/解析入口，不改任务状态机或任务生命周期 API。
+- `DashboardView` 和 `MissionExecutionView` 中允许调整单设备命令提交这一小段调用适配；不得修改任务创建、开始、暂停、恢复、完成等状态流转。
 - 任务状态仍由现有任务与运行时服务维护；单设备控制只提交定向设备命令并读取其回执，不直接写任务状态。
 
 ## 集成规则

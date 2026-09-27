@@ -11,6 +11,7 @@ import { controlAlgorithmRun, fetchAlgorithmFrames, placeEscortThreat, prepareAl
 import type { MissionAction } from '@/api/mission'
 import { issueRuntimeCommand } from '@/api/runtimeControl'
 import type { RuntimeCommandStatus, RuntimeCommandType } from '@/api/runtimeControl'
+import { issueSingleDeviceCommand } from '@/services/singleDeviceControl'
 import { useMissionTrajectorySessionStore } from '@/stores/missionTrajectorySession'
 import { useMonitoringStore } from '@/stores/monitoring'
 import { useRealtimeStore } from '@/stores/realtime'
@@ -473,7 +474,7 @@ async function sendVehicleCommand(command: VehicleQuickCommand) {
       const key = code.toLowerCase()
       commandFeedback.value = { ...commandFeedback.value, [key]: 'PENDING' }
       try {
-        const result = await issueRuntimeCommand({
+        const result = await issueSingleDeviceCommand({
           commandType: command.commandType,
           runId: detail.value.currentRun.id,
           deviceCode: key,

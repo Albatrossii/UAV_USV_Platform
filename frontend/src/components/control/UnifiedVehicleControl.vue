@@ -3,7 +3,7 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { Anchor, CirclePause, CircleStop, Navigation, PlaneLanding, PlaneTakeoff, Play, RotateCcw, ShieldAlert } from '@lucide/vue'
 import type { Component } from 'vue'
 
-import type { RuntimeCommandStatus, RuntimeCommandType } from '@/api/runtimeControl'
+import type { RuntimeCommandStatus, VehicleCommandType } from '@/api/runtimeControl'
 import type { RuntimeNode } from '@/types/monitoring'
 import type { VehicleQuickCommand } from './VehicleQuickControl.vue'
 import VehicleGlyph from './VehicleGlyph.vue'
@@ -42,7 +42,7 @@ const stateLabel = computed(() => {
   return labels[state.value] ?? state.value
 })
 
-type Action = { label: string; commandType: RuntimeCommandType; icon: Component; danger?: boolean }
+type Action = { label: string; commandType: VehicleCommandType; icon: Component; danger?: boolean }
 const actions = computed<Action[]>(() => selected.value?.type === 'USV'
   ? [
       { label: '离泊', commandType: 'USV_DEPART', icon: Navigation },

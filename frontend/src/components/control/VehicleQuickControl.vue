@@ -13,7 +13,7 @@ import {
   ShipWheel,
 } from '@lucide/vue'
 
-import type { RuntimeCommandStatus, RuntimeCommandType } from '@/api/runtimeControl'
+import type { RuntimeCommandStatus, RuntimeCommandType, VehicleCommandType } from '@/api/runtimeControl'
 import VehicleGlyph from '@/components/control/VehicleGlyph.vue'
 import { normalizeOperationalState } from '@/utils/runtimeOperationalState'
 
@@ -29,7 +29,7 @@ export type QuickControlDevice = {
 }
 
 export type VehicleQuickCommand = {
-  commandType: RuntimeCommandType
+  commandType: VehicleCommandType
   deviceCodes: string[]
   label: string
 }
@@ -80,7 +80,7 @@ const hasActiveDevices = computed(() =>
 )
 const mixedHoldAndActive = computed(() => groupMode.value && shouldResume.value && hasActiveDevices.value)
 
-type QuickAction = { label: string; commandType: RuntimeCommandType; tone?: string; allowedStates: string[] }
+type QuickAction = { label: string; commandType: VehicleCommandType; tone?: string; allowedStates: string[] }
 
 const actions = computed<QuickAction[]>(() => {
   if (props.vehicleType === 'UAV') {

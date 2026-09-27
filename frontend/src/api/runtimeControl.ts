@@ -32,6 +32,20 @@ export type RuntimeCommandType =
   | 'SWITCH_CAMERA'
   | 'TOGGLE_TRAJECTORY'
 
+export type VehicleCommandType =
+  | 'UAV_TAKEOFF'
+  | 'UAV_HOVER'
+  | 'UAV_RESUME'
+  | 'UAV_RETURN'
+  | 'UAV_LAND'
+  | 'UAV_EMERGENCY_LAND'
+  | 'USV_DEPART'
+  | 'USV_HOLD'
+  | 'USV_RESUME'
+  | 'USV_RETURN'
+  | 'USV_STOP'
+  | 'USV_EMERGENCY_STOP'
+
 export interface RuntimeCommandPayload {
   commandType: RuntimeCommandType
   runId?: number

@@ -21,6 +21,7 @@ import { executeMissionAction, fetchMission, fetchMissions } from '@/api/mission
 import type { MissionAction } from '@/api/mission'
 import { issueRuntimeCommand } from '@/api/runtimeControl'
 import type { RuntimeCommandStatus, RuntimeCommandType } from '@/api/runtimeControl'
+import { issueSingleDeviceCommand } from '@/services/singleDeviceControl'
 import { useMonitoringStore } from '@/stores/monitoring'
 import { useRealtimeStore } from '@/stores/realtime'
 import { useActiveExperimentStore } from '@/stores/activeExperiment'
@@ -964,11 +965,14 @@ async function sendVehicleCommand(
         const key = normalizeDeviceCode(deviceCode)
         commandFeedback.value = { ...commandFeedback.value, [key]: 'PENDING' }
         try {
-          const result = await recordRuntimeCommand(
-            command.commandType,
-            `${command.label} / ${deviceCode}`,
-            key,
-          )
+          const result = await issueSingleDeviceCommand({
+            commandType: command.commandType,
+            deviceCode: key,
+            payload: JSON.stringify({ source: 'SYSTEM_OVERVIEW' }),
+            detail: `${command.label} / ${deviceCode}`,
+            runtimeScope: 'SYSTEM_OVERVIEW',
+            runtimeInstanceId: unityInstanceId,
+          })
           if (result.status === 'FAILED' || result.status === 'TIMEOUT') {
             commandFeedback.value = { ...commandFeedback.value, [key]: result.status }
             return result.status
