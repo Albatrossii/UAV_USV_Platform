@@ -5,10 +5,10 @@
 ## 部署约束
 
 - 首轮目标：mxy i5-10500 / 约16GB，Java、Python、浏览器同机。
-- Python：Windows x64 / 3.13.15，独立venv。small / CPU INT8 / 默认6线程 / beam size 5；`requirements-lock-win-py313.txt` 为nly已验证环境，mxy需重新安装核验。
+- Python：Windows x64 / 3.13.15，独立venv。small / CPU INT8 / 默认6线程 / beam size 2；`requirements-lock-win-py313.txt` 为nly已验证环境，mxy需重新安装核验。
 - 服务的模型指纹计算使用分块SHA256，可在mxy现有Python 3.9诊断环境运行；这不表示3.9依赖已锁定。正式部署仍以本目录Python 3.13锁文件为准。
 - 模型：`Systran/faster-whisper-small` revision `536b0662742c02347bc0e980a01041f333bce120`。4个文件SHA256写在 `asr_server.py` 的 `MODEL_FILES`，启动逐一检查；没有模型时不下载，ready保持503。
-- 解码配置版本包含模型 revision 和 beam size；改变 beam size 会改变服务 revision，Java 必须同步预期版本。支持 1、2、3、5 四档，默认为5。对比档位时应使用相同录音，并同时比较识别文本。
+- 解码配置版本包含模型 revision 和 beam size；改变 beam size 会改变服务 revision，Java 必须同步预期版本。支持 1、2、3、5 四档，默认为2。对比档位时应使用相同录音，并同时比较识别文本。
 - 只监听127.0.0.1；不提供CORS、查询、取消、意图或控制接口。浏览器只访问Java。
 - 模型缓存允许落盘；在线音频只使用内存。无multipart临时文件，日志仅ID/状态/阶段耗时、音频时长与字节数/PID/是否提交worker，不记录音频或文字。
 - ASR超时不会强行取消计算；单槽直到实际worker结束才释放。D1卡死可由mxy人工停止本服务进程；不要终止Runner。
@@ -38,7 +38,7 @@ py -3.13 -m venv .venv
 ```powershell
 $env:ASR_MODEL_PATH = (Resolve-Path '.\models\whisper-small').Path
 $env:ASR_CPU_THREADS = '6'
-$env:ASR_BEAM_SIZE = '5'
+$env:ASR_BEAM_SIZE = '2'
 $env:ASR_PORT = '18082'
 # 从双方约定的私密配置取得同一随机凭据。请勿把值写入仓库、聊天或命令行参数。
 $privateToken = Read-Host '输入Java和ASR共用的内部随机凭据（至少32个ASCII字符）' -AsSecureString
@@ -79,6 +79,17 @@ $candidate | Select-Object ProcessId,ExecutablePath,CommandLine
 - 实际时长按完整解码并重采样的采样数向上取整；严格拒绝损坏包，不像离线冒烟脚本自动跳过坏包。E1 接受单音频轨、最多2声道、48kHz的 WebM/Opus、Ogg/Opus、MP4/AAC、WAV/PCM 与 MP3；容器、codec 和 MIME 必须一致。
 - Python只做本机单槽保护，不持久化业务幂等；Java负责同键恢复、登录、权限、CSRF和缓存。
 - 最多8个HTTP处理线程、读头10秒、请求体6MiB、解码960000采样点上限。D1无独立进程内存硬配额；原生解码卡死按人工恢复流程处理，不把线程timeout当成强制终止。
+
+## 同一录音解码档位对比
+
+在拿到可复用的短录音后，可在本目录运行 `benchmark_asr_profiles.py`。它只在内存中解码一次，比较 CPU 线程数与 beam 档位；同一线程档位下会交错不同 beam 的运行顺序并重复测量，以降低先后顺序和热缓存造成的偏差。不会启动控制链路、上传文件、写出识别文字或保存音频。输出包含音频时长、解码耗时、各次推理耗时、中位数、转写字符数及与 beam 5 的一致标记；转写只在内存中短暂使用，比较采用摘要值，不写入输出。
+
+```powershell
+$env:ASR_MODEL_PATH = (Resolve-Path '.\models\whisper-small').Path
+& .\.venv\Scripts\python.exe .\benchmark_asr_profiles.py '<本地录音.mp3>' --threads 4,6 --beams 5,2 --repeats 1
+```
+
+beam 5 是对照基线；“结果与 beam 5 相同”不能代替人工确认识别内容正确。多线程档位会依次重新加载模型，推理重复次数为线程候选数 × beam 数 × repeats，耗时可能较长。先用 `--repeats 1` 快速筛选，再对候选配置用 `--repeats 2` 复测，并用多条典型中文命令核对准确率。已用同一条 10.24 秒录音覆盖“开始、暂停、继续、停止任务”四个指令；beam 2 两次测量中位数 12.287 秒，beam 5 为 15.860 秒，beam 2 对这四条的顺序识别与人工给定内容一致（忽略标点），约快 23%。服务默认已改为 beam 2 / 6线程。若改回 beam 5，需同步模型版本号。
 
 ## 前端
 

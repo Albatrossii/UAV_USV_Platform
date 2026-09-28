@@ -4,7 +4,7 @@ app:
     enabled: ${D1_ASR_ENABLED:false}
     base-url: http://127.0.0.1:18082
     token: ${D1_ASR_TOKEN:}
-    model-revision: ${D1_ASR_MODEL_REVISION:}
+    model-revision: ${D1_ASR_MODEL_REVISION:536b0662742c02347bc0e980a01041f333bce120+uav-usv-domain-prompt-v1-beam-2}
     model-alias: whisper-small-cpu-int8-r1
     # E1 only: base64-encoded 32-byte AES key. Keep outside source control and ordinary logs.
     result-encryption-key: ${D1_ASR_RESULT_ENCRYPTION_KEY:}

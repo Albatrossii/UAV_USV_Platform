@@ -21,7 +21,7 @@ MAX_AUDIO = 5 * 1024 * 1024
 MAX_BODY = 6 * 1024 * 1024
 MAX_SAMPLES = 960000
 MODEL_REVISION = '536b0662742c02347bc0e980a01041f333bce120'
-BEAM_SIZE = int(os.environ.get('ASR_BEAM_SIZE', '5'))
+BEAM_SIZE = int(os.environ.get('ASR_BEAM_SIZE', '2'))
 if BEAM_SIZE not in (1, 2, 3, 5):
     raise RuntimeError('ASR_BEAM_SIZE must be one of 1, 2, 3, or 5')
 DECODING_PROFILE_REVISION = ('uav-usv-domain-prompt-v1' if BEAM_SIZE == 5
