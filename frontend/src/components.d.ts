@@ -44,6 +44,7 @@ declare module 'vue' {
     RouterView: typeof import('vue-router')['RouterView']
     SimulationRuntimeHost: typeof import('./components/unity/SimulationRuntimeHost.vue')['default']
     SimulationUnityWebglPanel: typeof import('./components/unity/SimulationUnityWebglPanel.vue')['default']
+    SpectrumWaterfall3D: typeof import('./components/vision/SpectrumWaterfall3D.vue')['default']
     UnifiedVehicleControl: typeof import('./components/control/UnifiedVehicleControl.vue')['default']
     UnityRuntimeHost: typeof import('./components/unity/UnityRuntimeHost.vue')['default']
     UnityWebglPanel: typeof import('./components/unity/UnityWebglPanel.vue')['default']
