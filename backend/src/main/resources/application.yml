@@ -35,12 +35,13 @@ management:
 app:
   voicecontrol:
     enabled: ${VOICE_CONTROL_ENABLED:false}
-    poll-ms: 200
+    poll-ms: 100
   ros:
     transport: ${ROS_TRANSPORT:v1}
     state-authority: ${ROS_STATE_AUTHORITY:v1}
   gateway:
     v1:
+      enabled: ${ROS_GATEWAY_V1_ENABLED:false}
       websocket-url: ${ROS_GATEWAY_V1_WEBSOCKET_URL:ws://127.0.0.1:8765/uav_usv/v1}
   runtime:
     ros-enabled: ${ROS_ENABLED:false}
@@ -60,7 +61,7 @@ app:
   integration:
     token: ${PLATFORM_INTEGRATION_TOKEN}
   control:
-    command-dispatch-mode: ${COMMAND_DISPATCH_MODE:ros-gateway-v1}
+    command-dispatch-mode: ${COMMAND_DISPATCH_MODE:browser-unity}
     command-ack-timeout-seconds: ${COMMAND_ACK_TIMEOUT_SECONDS:15}
     command-result-timeout-seconds: ${COMMAND_RESULT_TIMEOUT_SECONDS:75}
     wsl-distribution: ${WSL_DISTRIBUTION:Ubuntu22}

@@ -268,6 +268,7 @@ class CaptureAdapter(AlgorithmAdapter):
         self.last_capture_blocker = "PREVIEW_NOT_STARTED"
         self.preview_frame = 0
         self._mission_start_pose_pending = False
+        self._mission_has_started = False
         self.preview_centers: Dict[str, Tuple[float, float, float]] = {}
         uav_no = usv_no = 0
         for raw in self.env.agents:
@@ -288,11 +289,13 @@ class CaptureAdapter(AlgorithmAdapter):
     def set_mission_active(self, active: bool) -> None:
         was_active = self.mission_active
         super().set_mission_active(active)
-        if active and not was_active:
+        if active and not was_active and not self._mission_has_started:
             # PREVIEW has its own continuous loiter/shore-avoidance activity.
             # Mission metrics must describe only the run that starts when the
             # operator presses Start, otherwise the counter can already be in
-            # the thousands before pursuit begins.
+            # the thousands before pursuit begins. A later PAUSE -> RESUME
+            # transition must preserve the current mission progress.
+            self._mission_has_started = True
             self.avoidance_count = 0
             target = self.previous_scene.get(
                 "TARGET",

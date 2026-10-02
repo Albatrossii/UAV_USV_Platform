@@ -50,13 +50,13 @@ P0 不实现 /interpret、/clarify、音频接口、实时 WS 或公共 commandR
 
 ## 4. 请求与不可变计划
 
-ProposalRequest 只允许 runtimeRef、runtimeGeneration、expectedContextVersion、intent。P0 所有动作作用于当前虚拟运行，targetScope 固定 FLEET，由后端生成；不允许用户提供 owner、runId、执行端、设备列表或 requiresConfirmation。
+ProposalRequest 只允许 runtimeRef、runtimeGeneration、expectedContextVersion、intent。整队动作的 targetScope 固定 FLEET，由后端生成；`SINGLE_DEVICE_CONTROL` 仅能引用同一用户当前活动的 `_SINGLE_DEVICE` 仿真实例中、由后端已认证并缓存的单设备候选。请求体不能指定目标设备或命令；候选须匹配用户、请求、运行代次和上下文版本。不允许用户提供 owner、runId、执行端、设备列表或 requiresConfirmation。
 
 ConfirmRequest 和 CancelRequest 只含 expectedPlanVersion、expectedPlanHash；动作和参数完全从持久化提案读取。每个提案只有一个冻结版本（P0 planVersion=1）；修改需求创建新 proposalId，不原地覆盖。
 
 I05 校验顺序：先校验请求 Schema，再校验持久化计划。expectedPlanVersion 必须为 1；传入 2 等不受支持的版本返回 **400 INVALID_REQUEST**。expectedPlanVersion=1 且 expectedPlanHash 为合法的 64 位小写十六进制字符串、但与提案哈希不一致时，返回 **409 PLAN_MISMATCH**。哈希格式错误仍为 400。确认与取消使用相同规则。两种拒绝均不创建 execution/outbox、不发送算法命令、不修改原提案。前端不得将这两类确定性拒绝当作网络未知结果自动重发确认。
 
-计划包含 runtimeRef/generation、contextVersion、stateVersion、action、explicitDeviceCodes、policyVersion。设备数组按已登记 canonical code 去重排序，至少一项；FLEET 表示这个冻结集合，确认时成员集合变更使提案失效。禁止按“UAV 数量”临时重新展开为另一组设备。
+计划包含 runtimeRef/generation、contextVersion、stateVersion、action、explicitDeviceCodes、policyVersion。设备数组按已登记 canonical code 去重排序，至少一项；FLEET 表示这个冻结集合，确认时成员集合变更使提案失效。禁止按“UAV 数量”临时重新展开为另一组设备。单设备计划使用 `DEVICE_COMMAND`，必须只含一个 explicitDeviceCode，并冻结 `targetDeviceCode` 与 `deviceCommandType`；仍需人工确认，确认时复核设备仍属于该运行且具备对应能力。歧义、缺失目标或不支持的指令不得回退成整队动作。
 
 planHash 计算规范：对 Schema 限定的 Plan 对象递归按键名排序，数组顺序保留（explicitDeviceCodes 生成时已排序），字符串采用 JSON Unicode 转义且使用小写十六进制，不添加空白，布尔/null 使用 JSON 标准值，整数用十进制，不允许浮点/NaN；UTF-8 后 SHA-256，返回小写 64 位 hex。不得把时间戳或本地化文案加入 Plan。Java/Python 实现必须通过 fixtures 中同一个黄金哈希样例，不能仅各自自测。
 

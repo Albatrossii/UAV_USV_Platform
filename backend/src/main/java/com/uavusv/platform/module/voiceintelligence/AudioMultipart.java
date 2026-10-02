@@ -7,14 +7,22 @@ import java.util.regex.Pattern;
 /** Bounded in-memory parser: never calls Servlet getParts (which may spool audio). */
 public final class AudioMultipart {
     public static final int MAX_AUDIO = 5 * 1024 * 1024, MAX_BODY = 6 * 1024 * 1024;
+    private static final System.Logger LOG =
+            System.getLogger(AudioMultipart.class.getName());
     public static final Pattern UUID =
             Pattern.compile("[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}");
 
     public static SpeechProvider.Audio parse(String contentType, byte[] body) {
         if (body.length > MAX_BODY) throw new AsrFailure(413, "VOICE_AUDIO_TOO_LARGE");
-        if (contentType == null
-                || !contentType.toLowerCase(Locale.ROOT).startsWith("multipart/form-data;"))
+        String normalizedContentType =
+                contentType == null ? "" : contentType.trim().toLowerCase(Locale.ROOT);
+        if (!normalizedContentType.startsWith("multipart/form-data;")) {
+            LOG.log(
+                    System.Logger.Level.WARNING,
+                    "ASR upload rejected: multipart media type={0}",
+                    normalizedContentType.split(";", 2)[0]);
             throw new AsrFailure(415, "VOICE_AUDIO_FORMAT_UNSUPPORTED");
+        }
         var bm =
                 Pattern.compile(
                                 "(?:^|;)\s*boundary=(?:\"([^\"]+)\"|([^;\s]+))",
@@ -56,11 +64,7 @@ public final class AudioMultipart {
             if (!name.equals("audio") && value.length > 128) throw AsrFailure.invalid();
             fields.put(name, value);
             if (name.equals("audio"))
-                mime =
-                        headers.getOrDefault("content-type", "")
-                                .split(";", 2)[0]
-                                .trim()
-                                .toLowerCase(Locale.ROOT);
+                mime = canonicalMime(headers.getOrDefault("content-type", ""));
             pos = next + 2 + marker.length();
             if (raw.startsWith("--", pos)) {
                 String tail = raw.substring(pos + 2);
@@ -78,8 +82,22 @@ public final class AudioMultipart {
         if (audio.length == 0) throw new AsrFailure(400, "VOICE_AUDIO_EMPTY");
         if (audio.length > MAX_AUDIO) throw new AsrFailure(413, "VOICE_AUDIO_TOO_LARGE");
         if (!Set.of("audio/webm", "audio/ogg", "audio/mp4", "audio/wav", "audio/mpeg")
-                .contains(mime))
+                .contains(mime)) {
+            LOG.log(
+                    System.Logger.Level.WARNING,
+                    "ASR upload rejected: audio media type={0}",
+                    mime);
             throw new AsrFailure(415, "VOICE_AUDIO_FORMAT_UNSUPPORTED");
+        }
         return new SpeechProvider.Audio(id, locale, mime, audio);
+    }
+
+    private static String canonicalMime(String contentType) {
+        String mime = contentType.split(";", 2)[0].trim().toLowerCase(Locale.ROOT);
+        return switch (mime) {
+            case "audio/x-wav", "audio/wave", "audio/vnd.wave", "application/wav", "application/x-wav" -> "audio/wav";
+            case "audio/mp3" -> "audio/mpeg";
+            default -> mime;
+        };
     }
 }

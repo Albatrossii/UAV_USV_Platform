@@ -125,6 +125,190 @@ describe('VoiceIntelligenceInput', () => {
     expect(wrapper.emitted('candidate')).toEqual([['MISSION_PAUSE']])
   })
 
+  it('sends a selected WAV through real speech automation and emits the parsed simulation action', async () => {
+    const transcribe = vi.fn(async input => ({
+      requestId: input.requestId, text: '开始任务', locale: 'zh-CN', durationMs: 2360,
+      provider: 'local-asr', model: 'whisper-small-cpu-int8-r1',
+    }))
+    const parse = vi.fn(async input => ({
+      status: 'CANDIDATE' as const, requestId: input.requestId, action: 'START' as const,
+      intent: 'MISSION_START' as const, normalizedText: input.text, confidence: 1,
+      provider: 'local-llm', model: 'qwen-local',
+    }))
+    const wrapper = mount(VoiceIntelligenceInput, { props: {
+      adapter: { name: 'platform-backend', mode: 'BACKEND', transcribe, parse },
+      allowedActions: ['START'], deviceCodes: ['UAV-001'], operatorScope: 'admin',
+      runtimeContext: { runtimeRef: 'runtime-1', runtimeGeneration: 'generation-1', contextVersion: 1 },
+      autoExecuteSpeech: true,
+    } })
+    const input = wrapper.get('input[type="file"]')
+    Object.defineProperty(input.element, 'files', {
+      configurable: true, value: [new File(['wav-sample'], 'start.wav', { type: 'audio/wav' })],
+    })
+
+    await input.trigger('change')
+    await flushPromises()
+
+    expect(transcribe).toHaveBeenCalledOnce()
+    expect(parse).toHaveBeenCalledOnce()
+    expect((wrapper.get('textarea').element as HTMLTextAreaElement).value).toBe('开始任务')
+    expect(wrapper.emitted('voiceCandidate')).toEqual([['MISSION_START', expect.any(String), expect.objectContaining({
+      startedAt: expect.any(Number), asrRequestMs: expect.any(Number), parseMs: expect.any(Number),
+    })]])
+    wrapper.unmount()
+  })
+
+  it('keeps an LLM-inferred STOP from a short ASR transcript for review instead of auto-executing', async () => {
+    const transcribe = vi.fn(async input => ({
+      requestId: input.requestId, text: '全停', locale: 'zh-CN', durationMs: 2360,
+      provider: 'local-asr', model: 'whisper-small-cpu-int8-r1',
+    }))
+    const parse = vi.fn(async input => ({
+      status: 'CANDIDATE' as const, requestId: input.requestId, action: 'STOP' as const,
+      intent: 'MISSION_STOP' as const, normalizedText: input.text, confidence: 0.99,
+      provider: 'local-llm', model: 'qwen-local',
+    }))
+    const wrapper = mount(VoiceIntelligenceInput, { props: {
+      adapter: { name: 'platform-backend', mode: 'BACKEND', transcribe, parse },
+      allowedActions: ['STOP'], deviceCodes: ['UAV-001'], operatorScope: 'admin',
+      runtimeContext: { runtimeRef: 'runtime-1', runtimeGeneration: 'generation-1', contextVersion: 1 },
+      autoExecuteSpeech: true,
+    } })
+    const input = wrapper.get('input[type="file"]')
+    Object.defineProperty(input.element, 'files', {
+      configurable: true, value: [new File(['wav-sample'], 'uav.wav', { type: 'audio/wav' })],
+    })
+
+    await input.trigger('change')
+    await flushPromises()
+
+    expect((wrapper.get('textarea').element as HTMLTextAreaElement).value).toBe('全停')
+    expect(wrapper.text()).toContain('已阻止自动执行，请核对或修改文字')
+    expect(wrapper.find('.candidate').exists()).toBe(true)
+    expect(wrapper.emitted('voiceCandidate')).toBeUndefined()
+    wrapper.unmount()
+  })
+
+  it('preserves automatic execution for the exact local-rules STOP phrase', async () => {
+    const transcribe = vi.fn(async input => ({
+      requestId: input.requestId, text: '停止任务', locale: 'zh-CN', durationMs: 2360,
+      provider: 'local-asr', model: 'whisper-small-cpu-int8-r1',
+    }))
+    const parse = vi.fn(async input => ({
+      status: 'CANDIDATE' as const, requestId: input.requestId, action: 'STOP' as const,
+      intent: 'MISSION_STOP' as const, normalizedText: input.text, confidence: 1,
+      provider: 'local-rules', model: 'rules-v1',
+    }))
+    const wrapper = mount(VoiceIntelligenceInput, { props: {
+      adapter: { name: 'platform-backend', mode: 'BACKEND', transcribe, parse },
+      allowedActions: ['STOP'], deviceCodes: ['UAV-001'], operatorScope: 'admin',
+      runtimeContext: { runtimeRef: 'runtime-1', runtimeGeneration: 'generation-1', contextVersion: 1 },
+      autoExecuteSpeech: true,
+    } })
+    const input = wrapper.get('input[type="file"]')
+    Object.defineProperty(input.element, 'files', {
+      configurable: true, value: [new File(['wav-sample'], 'stop.wav', { type: 'audio/wav' })],
+    })
+
+    await input.trigger('change')
+    await flushPromises()
+
+    expect(wrapper.emitted('voiceCandidate')).toEqual([['MISSION_STOP', expect.any(String), expect.objectContaining({
+      startedAt: expect.any(Number), asrRequestMs: expect.any(Number), parseMs: expect.any(Number),
+    })]])
+    expect(wrapper.find('.candidate').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('automatically creates a confirmation proposal candidate for a targeted device voice command', async () => {
+    const transcribe = vi.fn(async input => ({
+      requestId: input.requestId, text: 'USV-001 暂停', locale: 'zh-CN', durationMs: 1800,
+      provider: 'local-asr', model: 'whisper-small-cpu-int8-r1',
+    }))
+    const parse = vi.fn(async input => ({
+      status: 'CANDIDATE' as const, requestId: input.requestId, action: 'DEVICE_COMMAND' as const,
+      intent: 'SINGLE_DEVICE_CONTROL' as const, targetDeviceCode: 'USV-001', deviceCommandType: 'USV_HOLD' as const,
+      normalizedText: input.text, confidence: null, provider: 'local-rules', model: 'rules-v1',
+    }))
+    const wrapper = mount(VoiceIntelligenceInput, { props: {
+      adapter: { name: 'platform-backend', mode: 'BACKEND', transcribe, parse },
+      allowedActions: ['START', 'PAUSE', 'RESUME', 'STOP'], deviceCodes: ['UAV-001', 'USV-001'], operatorScope: 'admin',
+      runtimeContext: { runtimeRef: 'runtime-1', runtimeGeneration: 'generation-1', contextVersion: 1 },
+      autoExecuteSpeech: true,
+    } })
+    const input = wrapper.get('input[type="file"]')
+    Object.defineProperty(input.element, 'files', {
+      configurable: true, value: [new File(['wav-sample'], 'single-device.wav', { type: 'audio/wav' })],
+    })
+
+    await input.trigger('change')
+    await flushPromises()
+
+    expect(parse).toHaveBeenCalledOnce()
+    expect(wrapper.emitted('voiceCandidate')).toEqual([['SINGLE_DEVICE_CONTROL', expect.any(String), expect.objectContaining({
+      startedAt: expect.any(Number), asrRequestMs: expect.any(Number), parseMs: expect.any(Number),
+    })]])
+    expect(wrapper.text()).toContain('正在校验目标和动作并自动提交至本地仿真')
+    expect(wrapper.find('.candidate').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('automatically submits a validated single-device text command in local simulation', async () => {
+    const parse = vi.fn(async input => ({
+      status: 'CANDIDATE' as const, requestId: input.requestId, action: 'DEVICE_COMMAND' as const,
+      intent: 'SINGLE_DEVICE_CONTROL' as const, targetDeviceCode: 'UAV-001', deviceCommandType: 'UAV_HOVER' as const,
+      normalizedText: input.text, confidence: 1, provider: 'local-rules', model: 'rules-v1',
+    }))
+    const wrapper = mount(VoiceIntelligenceInput, { props: {
+      adapter: { name: 'platform-backend', mode: 'BACKEND', transcribe: vi.fn(), parse },
+      allowedActions: ['START', 'PAUSE', 'RESUME', 'STOP'], deviceCodes: ['UAV-001'], operatorScope: 'admin',
+      runtimeContext: { runtimeRef: 'runtime-1', runtimeGeneration: 'generation-1', contextVersion: 1 },
+      autoExecuteSpeech: true,
+    } })
+    await wrapper.get('textarea').setValue('一号无人机悬停')
+    await wrapper.findAll('button')[1]!.trigger('click')
+    await flushPromises()
+
+    expect(parse).toHaveBeenCalledOnce()
+    expect(wrapper.emitted('voiceCandidate')).toEqual([['SINGLE_DEVICE_CONTROL', expect.any(String), expect.objectContaining({
+      asrRequestMs: 0, parseMs: expect.any(Number),
+    })]])
+    expect(wrapper.text()).toContain('正在校验目标和动作并自动提交至本地仿真')
+    expect(wrapper.find('.candidate').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('automatically accepts the exact local-rule transcript 执行任务 only for START', async () => {
+    const transcribe = vi.fn(async input => ({
+      requestId: input.requestId, text: '执行任务', locale: 'zh-CN', durationMs: 2360,
+      provider: 'local-asr', model: 'whisper-small-cpu-int8-r1',
+    }))
+    const parse = vi.fn(async input => ({
+      status: 'CANDIDATE' as const, requestId: input.requestId, action: 'START' as const,
+      intent: 'MISSION_START' as const, normalizedText: input.text, confidence: 1,
+      provider: 'local-rules', model: 'rules-v1',
+    }))
+    const wrapper = mount(VoiceIntelligenceInput, { props: {
+      adapter: { name: 'platform-backend', mode: 'BACKEND', transcribe, parse },
+      allowedActions: ['START'], deviceCodes: ['UAV-001'], operatorScope: 'admin',
+      runtimeContext: { runtimeRef: 'runtime-1', runtimeGeneration: 'generation-1', contextVersion: 1 },
+      autoExecuteSpeech: true,
+    } })
+    const input = wrapper.get('input[type="file"]')
+    Object.defineProperty(input.element, 'files', {
+      configurable: true, value: [new File(['wav-sample'], 'start.wav', { type: 'audio/wav' })],
+    })
+
+    await input.trigger('change')
+    await flushPromises()
+
+    expect(parse).toHaveBeenCalledOnce()
+    expect(wrapper.emitted('voiceCandidate')).toEqual([['MISSION_START', expect.any(String), expect.objectContaining({
+      startedAt: expect.any(Number), asrRequestMs: expect.any(Number), parseMs: expect.any(Number),
+    })]])
+    wrapper.unmount()
+  })
+
   it('blocks negated commands before proposal creation', async () => {
     const wrapper = mountInput()
     await wrapper.get('textarea').setValue('不要停止任务')

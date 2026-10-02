@@ -9,6 +9,9 @@
 - 服务的模型指纹计算使用分块SHA256，可在mxy现有Python 3.9诊断环境运行；这不表示3.9依赖已锁定。正式部署仍以本目录Python 3.13锁文件为准。
 - 模型：`Systran/faster-whisper-small` revision `536b0662742c02347bc0e980a01041f333bce120`。4个文件SHA256写在 `asr_server.py` 的 `MODEL_FILES`，启动逐一检查；没有模型时不下载，ready保持503。
 - 解码配置版本包含模型 revision 和 beam size；改变 beam size 会改变服务 revision，Java 必须同步预期版本。支持 1、2、3、5 四档，默认为2。对比档位时应使用相同录音，并同时比较识别文本。
+- 可选 `command-fastpath` 在 Whisper 前尝试 Sherpa-ONNX Zipformer 14M INT8；只有输出与整队任务的一个明确短口令完全匹配时才直接返回，其余文本转交 Whisper beam 2。源码默认仍为 `whisper-small`，本机是否启用由启动环境配置决定。不能把单独 Zipformer 的任意转写用于自动控制：本地 `newrecording.wav` 基准中它漏掉/错认了口令，混合配置因此触发了 Whisper 回退。
+- Zipformer 权重目录按 [model-manifest-zipformer.json](model-manifest-zipformer.json) 固定到上游 commit 和 SHA256；模型目录仍由 `.gitignore` 排除，不应提交权重。
+- 启用 `command-fastpath` 后，后端预期模型 revision 也要同步为服务启动日志中的实际 revision；默认 `whisper-small` 的 beam 2 revision 已在后端示例配置中设置。
 - 只监听127.0.0.1；不提供CORS、查询、取消、意图或控制接口。浏览器只访问Java。
 - 模型缓存允许落盘；在线音频只使用内存。无multipart临时文件，日志仅ID/状态/阶段耗时、音频时长与字节数/PID/是否提交worker，不记录音频或文字。
 - ASR超时不会强行取消计算；单槽直到实际worker结束才释放。D1卡死可由mxy人工停止本服务进程；不要终止Runner。
@@ -28,6 +31,17 @@ py -3.13 -m venv .venv
 ```powershell
 & .\.venv\Scripts\python.exe -c "from huggingface_hub import snapshot_download; print(snapshot_download('Systran/faster-whisper-small', revision='536b0662742c02347bc0e980a01041f333bce120', allow_patterns=['config.json','model.bin','tokenizer.json','vocabulary.txt'], local_dir='models/whisper-small'))"
 ```
+
+要试用快速口令路径，先安装锁定的 `sherpa-onnx` 依赖，然后把清单列出的 INT8 模型文件下载到独立目录：
+
+```powershell
+& .\.venv\Scripts\python.exe -c "from huggingface_hub import snapshot_download; print(snapshot_download('csukuangfj/sherpa-onnx-streaming-zipformer-zh-14M-2023-02-23', revision='204ad334e2e683fd295359930cc16fc0432a23ac', allow_patterns=['tokens.txt','encoder-epoch-99-avg-1.int8.onnx','decoder-epoch-99-avg-1.int8.onnx','joiner-epoch-99-avg-1.int8.onnx'], local_dir='models/sherpa-onnx-streaming-zipformer-zh-14M-2023-02-23'))"
+$env:ASR_ENGINE = 'command-fastpath'
+$env:ASR_MODEL_PATH = (Resolve-Path '.\models\whisper-small').Path
+$env:ASR_ZIPFORMER_MODEL_PATH = (Resolve-Path '.\models\sherpa-onnx-streaming-zipformer-zh-14M-2023-02-23').Path
+```
+
+此档位的 `ASR_READY.modelRevision` 会包含 Zipformer commit、Sherpa 版本、精确口令策略和 Whisper beam 配置；Java 的预期 `model-revision` 必须使用该完整值。测试结果：`start.wav` 通过 Zipformer 快速路径，HTTP 请求约 0.57 秒；`newrecording.wav` 因转写不满足精确口令而回退 Whisper，约 16.9 秒并得到完整四条任务口令。样本很少，尚不足以证明全部说话人、噪声和设备下的识别率；保持默认 Whisper 档位，完成更多真实口令验收后再切换。
 
 支持将已核对的4个模型文件复制到目标目录，服务启动仍会校验SHA256。离线依赖安装需提前准备相同Windows/Python版本的wheel包，不等同于仅缓存模型。
 

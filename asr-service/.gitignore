@@ -6,3 +6,4 @@ models/
 .env
 *.pid
 results/
+.venv-streaming/

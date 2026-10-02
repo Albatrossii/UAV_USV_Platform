@@ -38,3 +38,27 @@ export interface RadarOverview {
   spectrumTemperatureC: number | null
   spectrumPowersDbm: number[]
 }
+
+export interface PointCloudFrame {
+  schema_version: string
+  message_type: 'pointcloud_frame'
+  timestamp: number
+  sequence: number
+  source: string
+  data: {
+    stream_id: string
+    vehicle_id: string
+    frame_id: string
+    timestamp: number
+    point_count: number
+    xyz: number[]
+  }
+}
+
+export interface PointCloudLatest {
+  streamId: string
+  sequence: number | null
+  receivedAtMs: number
+  ageMs: number
+  frame: PointCloudFrame
+}

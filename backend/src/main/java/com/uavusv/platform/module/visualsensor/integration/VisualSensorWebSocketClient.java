@@ -130,7 +130,7 @@ public class VisualSensorWebSocketClient implements WebSocket.Listener {
             visualSensorService.observeJpegFrame(camera, data.path("data_base64").asText(""),
                     data.path("width").asInt(), data.path("height").asInt(), 0, 0);
         } else if ("pointcloud_frame".equals(type)) {
-            sensorRuntimeService.observePointCloudFrame(data);
+            sensorRuntimeService.observePointCloudFrame(root);
         } else if ("radar_frame".equals(type)) {
             sensorRuntimeService.observeRadarFrame(data);
         } else if ("perception_targets".equals(type)) {

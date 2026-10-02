@@ -6,6 +6,7 @@ import org.junit.jupiter.api.Test;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class SensorRuntimeServiceTests {
 
@@ -76,6 +77,38 @@ class SensorRuntimeServiceTests {
         assertThat(overview.items().get(0).y()).isEqualTo(-1.25);
         assertThat(overview.items().get(0).z()).isEqualTo(0.45);
         assertThat(overview.items().get(0).timestampMs()).isEqualTo(1784692800250L);
+    }
+
+    @Test
+    void retainsOnlyTheLatestRawGatewayFramePerStream() throws Exception {
+        SensorRuntimeService service = new SensorRuntimeService();
+        var first = objectMapper.readTree("""
+                {"message_type":"pointcloud_frame","sequence":10,"data":{"stream_id":"usv_01_mid360","vehicle_id":"usv_01","frame_id":"map","point_count":1,"xyz":[1,2,3]}}
+                """);
+        var latest = objectMapper.readTree("""
+                {"message_type":"pointcloud_frame","sequence":11,"data":{"stream_id":"usv_01_mid360","vehicle_id":"usv_01","frame_id":"map","point_count":1,"xyz":[4,5,6]}}
+                """);
+
+        service.observePointCloudFrame(first);
+        service.observePointCloudFrame(latest);
+
+        var cached = service.latestPointCloudFrame("usv_01_mid360").orElseThrow();
+        assertThat(cached.sequence()).isEqualTo(11L);
+        assertThat(cached.frame().path("data").path("xyz").get(0).asDouble()).isEqualTo(4.0);
+        assertThat(service.latestPointCloudFrame("usv_02_mid360")).isEmpty();
+    }
+
+    @Test
+    void rejectsGatewayFrameWithMismatchedPointCount() throws Exception {
+        SensorRuntimeService service = new SensorRuntimeService();
+        var invalid = objectMapper.readTree("""
+                {"message_type":"pointcloud_frame","sequence":10,"data":{"stream_id":"usv_01_mid360","vehicle_id":"usv_01","frame_id":"map","point_count":2,"xyz":[1,2,3]}}
+                """);
+
+        assertThatThrownBy(() -> service.observePointCloudFrame(invalid))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("xyz length");
+        assertThat(service.latestPointCloudFrame("usv_01_mid360")).isEmpty();
     }
 
     @Test

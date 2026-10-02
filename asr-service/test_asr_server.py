@@ -6,7 +6,8 @@ import unittest
 import json
 import io
 
-from asr_server import AsrError, MAX_AUDIO, MAX_BODY, REVISION, Runtime, Server, decode_audio, file_sha256, parse_multipart
+from asr_server import (AsrError, CommandFastPathEngine, MAX_AUDIO, MAX_BODY, REVISION,
+                        Runtime, Server, decode_audio, file_sha256, parse_multipart)
 
 TOKEN = 'test-only-not-a-deployment-secret-12345678'
 ID = '11111111-1111-4111-8111-111111111111'
@@ -38,6 +39,40 @@ class HashTests(unittest.TestCase):
         self.assertEqual(
             file_sha256(io.BytesIO(b'abc')),
             'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad')
+
+
+class CommandFastPathTests(unittest.TestCase):
+    class Stub:
+        def __init__(self, text):
+            self.text = text
+            self.calls = 0
+
+        def transcribe(self, *_):
+            self.calls += 1
+            return self.text, 900
+
+    def engine(self, fast_text):
+        engine = CommandFastPathEngine.__new__(CommandFastPathEngine)
+        engine.fast = self.Stub(fast_text)
+        engine.fallback = self.Stub('fallback')
+        return engine
+
+    def test_explicit_start_variants_do_not_fall_back_to_whisper(self):
+        for phrase in ('开始任务', '请开始任务', '启动当前任务'):
+            engine = self.engine(phrase)
+            self.assertEqual(engine.transcribe(b'audio', 'audio/webm', time.monotonic() + 1)[0], phrase)
+            self.assertEqual(engine.fallback.calls, 0)
+
+    def test_chinese_ordinal_single_device_commands_do_not_fall_back_to_whisper(self):
+        for phrase in ('第一架无人机悬停', '第二架无人机返航', '第一艘无人艇驻留', '第二艘无人艇归队'):
+            engine = self.engine(phrase)
+            self.assertEqual(engine.transcribe(b'audio', 'audio/webm', time.monotonic() + 1)[0], phrase)
+            self.assertEqual(engine.fallback.calls, 0)
+
+    def test_non_exact_text_still_uses_whisper(self):
+        engine = self.engine('不要开始任务')
+        self.assertEqual(engine.transcribe(b'audio', 'audio/webm', time.monotonic() + 1)[0], 'fallback')
+        self.assertEqual(engine.fallback.calls, 1)
 
 
 class HttpTests(unittest.TestCase):

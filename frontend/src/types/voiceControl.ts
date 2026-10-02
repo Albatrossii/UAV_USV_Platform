@@ -3,8 +3,11 @@ export type VoiceIntent =
   | 'MISSION_PAUSE'
   | 'MISSION_RESUME'
   | 'MISSION_STOP'
+  | 'SINGLE_DEVICE_CONTROL'
 
 export type VoiceAction = 'START' | 'PAUSE' | 'RESUME' | 'STOP'
+export type VoicePlanAction = VoiceAction | 'DEVICE_COMMAND'
+export type DeviceCommandType = 'UAV_HOVER' | 'UAV_RESUME' | 'UAV_RETURN' | 'UAV_LAND' | 'USV_HOLD' | 'USV_RESUME' | 'USV_RETURN' | 'USV_STOP'
 export type VoiceRuntimeState =
   | 'PREPARED' | 'PREVIEW' | 'RUNNING' | 'PAUSED' | 'STOPPED'
   | 'CANCELLED' | 'COMPLETED' | 'FAILED' | 'LOST'
@@ -48,7 +51,9 @@ export interface VoiceFrozenPlan {
   runtimeGeneration: string
   contextVersion: number
   stateVersion: number
-  action: VoiceAction
+  action: VoicePlanAction
+  targetDeviceCode?: string
+  deviceCommandType?: DeviceCommandType
   explicitDeviceCodes: string[]
   policyVersion: 'voice-p0.v1'
 }
@@ -77,7 +82,7 @@ export interface VoiceExecution {
   commandId: string
   runtimeRef: string
   runtimeGeneration: string
-  action: VoiceAction
+  action: VoicePlanAction
   state: VoiceExecutionState
   outcome: VoiceExecutionOutcome
   errorCode: string | null

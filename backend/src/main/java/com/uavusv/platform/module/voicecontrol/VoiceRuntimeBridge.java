@@ -27,8 +27,8 @@ public class VoiceRuntimeBridge {
         this.json = json;
     }
 
-    public ObjectNode register(long runId, JsonNode config) {
-        return registry.register(runId, configHash(config));
+    public ObjectNode register(long runId, String algorithmCode, JsonNode config) {
+        return registry.register(runId, algorithmCode, configHash(config));
     }
 
     public String configHash(JsonNode config) {

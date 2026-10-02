@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onDeactivated, ref, shallowRef, watch } from 'vue'
-import { transcribeLocalAudio, VOICE_AUDIO_MAX_BYTES, LOCAL_ASR_TIMEOUT_MS } from '@/api/voiceIntelligence'
+import { transcribeLocalAudio, normalizeVoiceAudioType, VOICE_AUDIO_MAX_BYTES, LOCAL_ASR_TIMEOUT_MS } from '@/api/voiceIntelligence'
 import { voiceRecoveryInfo } from '@/services/voiceIntelligenceRecovery'
 import type { VoiceAudioInput, VoiceTranscript } from '@/types/voiceIntelligence'
 
@@ -224,7 +224,7 @@ function pickFile(event: Event) {
   const file = input.files?.[0]
   input.value = ''
   if (!file || inputLocked.value) return
-  if (!['audio/webm', 'audio/ogg', 'audio/mp4', 'audio/wav', 'audio/mpeg'].includes(file.type)) {
+  if (!['audio/webm', 'audio/ogg', 'audio/mp4', 'audio/wav', 'audio/mpeg'].includes(normalizeVoiceAudioType(file.type))) {
     message.value = '文件测试仅支持WebM/Opus、Ogg/Opus、MP4/AAC、WAV/PCM和MP3。'
     return
   }

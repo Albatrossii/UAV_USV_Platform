@@ -3,3 +3,5 @@ ctranslate2==4.8.2
 av==18.1.0
 numpy==2.5.3
 onnxruntime==1.30.0
+sherpa-onnx==1.13.8
+sherpa-onnx-core==1.13.8

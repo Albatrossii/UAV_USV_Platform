@@ -21,6 +21,16 @@ MAX_AUDIO = 5 * 1024 * 1024
 MAX_BODY = 6 * 1024 * 1024
 MAX_SAMPLES = 960000
 MODEL_REVISION = '536b0662742c02347bc0e980a01041f333bce120'
+ZIPFORMER_REVISION = 'sherpa-onnx-1.13.8+zipformer-zh-14m-204ad334e2e683fd295359930cc16fc0432a23ac-int8-greedy-v1'
+ZIPFORMER_FILES = {
+    'tokens.txt': '8b294db9045d6e5f94647f4c1eec1af4da143a75053c399611444b378ff966ac',
+    'encoder-epoch-99-avg-1.int8.onnx': '1c556ea57cec304e55ec4b72e52c1cc098bb01476ed7d90f3de939fe126487b1',
+    'decoder-epoch-99-avg-1.int8.onnx': '22f123bb8cba9b38974b3df18a3f45e7081f4985ebb2e075d9f21f618c468bbf',
+    'joiner-epoch-99-avg-1.int8.onnx': 'a7cf9d82757bdcf786059454495a9ca95e4bd7347f72473fc08d794475c36169',
+}
+ASR_ENGINE = os.environ.get('ASR_ENGINE', 'whisper-small')
+if ASR_ENGINE not in ('whisper-small', 'zipformer-streaming', 'command-fastpath'):
+    raise RuntimeError('ASR_ENGINE must be whisper-small, zipformer-streaming, or command-fastpath')
 BEAM_SIZE = int(os.environ.get('ASR_BEAM_SIZE', '2'))
 if BEAM_SIZE not in (1, 2, 3, 5):
     raise RuntimeError('ASR_BEAM_SIZE must be one of 1, 2, 3, or 5')
@@ -38,7 +48,8 @@ UUID = re.compile(r'[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\Z')
 DOMAIN_INITIAL_PROMPT = (
     '无人机，无人艇，协同搜索，协同航迹，改进蛙跳算法，粒子群优化，全局最优解，'
     '运行时引用，运行代次，展示绑定，编队控制，动态避障，航向角速度，经纬度，遥测，'
-    '场景就绪，帧应用回执，幂等请求，命令序列，WebGL，实时因子，峰值内存，九十五分位延迟'
+    '场景就绪，帧应用回执，幂等请求，命令序列，WebGL，实时因子，峰值内存，九十五分位延迟，'
+    '第一架无人机悬停，第一架无人机返航，第一架无人机归队，第一艘无人艇驻留，第一艘无人艇返航'
 )
 PRODUCTION_TRANSCRIBE_OPTIONS = {
     'language': 'zh',
@@ -232,6 +243,113 @@ class LocalEngine:
         return text, duration
 
 
+class ZipformerStreamingEngine:
+    revision = ZIPFORMER_REVISION
+
+    def __init__(self, model_path, threads):
+        import numpy as np
+        import sherpa_onnx
+
+        model_path = Path(model_path).resolve(strict=True)
+        for name, expected in ZIPFORMER_FILES.items():
+            with (model_path / name).open('rb') as model_file:
+                if file_sha256(model_file) != expected:
+                    raise ValueError('streaming model checksum mismatch')
+        self.np = np
+        self.recognizer = sherpa_onnx.OnlineRecognizer.from_transducer(
+            tokens=str(model_path / 'tokens.txt'),
+            encoder=str(model_path / 'encoder-epoch-99-avg-1.int8.onnx'),
+            decoder=str(model_path / 'decoder-epoch-99-avg-1.int8.onnx'),
+            joiner=str(model_path / 'joiner-epoch-99-avg-1.int8.onnx'),
+            num_threads=threads,
+            sample_rate=16000,
+            feature_dim=80,
+            decoding_method='greedy_search',
+            enable_endpoint_detection=False,
+            provider='cpu',
+        )
+
+    def transcribe(self, audio, mime, deadline):
+        decode_started = time.monotonic()
+        try:
+            samples, duration = decode_audio(audio, mime, deadline)
+        except Exception:
+            print(json.dumps({'event': 'ASR_STAGE', 'stage': 'decode', 'status': 'failed',
+                              'elapsedMs': round((time.monotonic() - decode_started) * 1000),
+                              'pid': os.getpid()}), flush=True)
+            raise
+        print(json.dumps({'event': 'ASR_STAGE', 'stage': 'decode', 'status': 'ok',
+                          'elapsedMs': round((time.monotonic() - decode_started) * 1000),
+                          'audioDurationMs': duration, 'audioBytes': len(audio),
+                          'pid': os.getpid()}), flush=True)
+        check_deadline(deadline)
+        inference_started = time.monotonic()
+        try:
+            stream = self.recognizer.create_stream()
+            stream.accept_waveform(16000, self.np.asarray(samples, dtype=self.np.float32))
+            stream.accept_waveform(16000, self.np.zeros(8000, dtype=self.np.float32))
+            stream.input_finished()
+            while self.recognizer.is_ready(stream):
+                check_deadline(deadline)
+                self.recognizer.decode_stream(stream)
+            check_deadline(deadline)
+            text = self.recognizer.get_result_all(stream).text.strip()
+            if len(text) > 500:
+                raise AsrError(422, 'ASR_TRANSCRIPT_TOO_LONG', '识别文字超过500字符')
+        except Exception:
+            print(json.dumps({'event': 'ASR_STAGE', 'stage': 'inference', 'status': 'failed',
+                              'elapsedMs': round((time.monotonic() - inference_started) * 1000),
+                              'engine': self.revision, 'pid': os.getpid()}), flush=True)
+            raise
+        print(json.dumps({'event': 'ASR_STAGE', 'stage': 'inference', 'status': 'ok',
+                          'elapsedMs': round((time.monotonic() - inference_started) * 1000),
+                          'engine': self.revision, 'pid': os.getpid()}), flush=True)
+        if not text:
+            raise AsrError(422, 'ASR_NO_SPEECH', '未检测到可识别语音')
+        return text, duration
+
+
+def _single_device_fast_commands():
+    ordinals = ('一', '二', '三', '四', '五', '六', '七', '八', '九', '十')
+    commands = set()
+    for index, ordinal in enumerate(ordinals, start=1):
+        uav_targets = (f'第{ordinal}架无人机', f'{ordinal}号无人机', f'第{index}架无人机', f'{index}号无人机')
+        usv_targets = (f'第{ordinal}艘无人艇', f'{ordinal}号无人艇', f'第{index}艘无人艇', f'{index}号无人艇')
+        for target in uav_targets:
+            commands.update(f'{target}{action}' for action in ('悬停', '暂停', '返航', '返回', '归队', '继续', '停止', '降落'))
+        for target in usv_targets:
+            commands.update(f'{target}{action}' for action in ('驻留', '待命', '保持', '暂停', '返航', '返回', '归队', '继续', '停止', '停船'))
+    return frozenset(commands)
+
+
+class CommandFastPathEngine:
+    """Use the small streaming model only for exact task phrases; defer all else to Whisper."""
+    revision = f'{ZIPFORMER_REVISION}+exact-command-v1+whisper-small-{DECODING_PROFILE_REVISION}'
+    fast_commands = frozenset({
+        '开始任务', '开始执行任务', '执行任务', '请开始任务', '请开始执行任务',
+        '现在开始任务', '开始当前任务', '启动任务', '启动当前任务',
+        '暂停任务', '暂停一下', '暂停当前任务', '暂停一下当前任务', '请暂停任务',
+        '继续任务', '继续执行任务', '恢复任务', '恢复运行', '恢复执行', '请继续任务',
+        '停止任务', '停止执行任务', '结束任务', '停止当前任务', '停止当前运行任务',
+        '结束当前任务', '终止任务', '终止当前任务', '请停止任务', '请停止当前任务',
+        '立即停止任务', '马上停止任务', '请立即停止任务',
+    }) | _single_device_fast_commands()
+
+    def __init__(self, whisper_path, zipformer_path, threads):
+        self.fast = ZipformerStreamingEngine(zipformer_path, threads)
+        self.fallback = LocalEngine(whisper_path, threads)
+
+    def transcribe(self, audio, mime, deadline):
+        text, duration = self.fast.transcribe(audio, mime, deadline)
+        normalized = re.sub(r'[，。！？；,.!?…]+$', '', text.strip())
+        if normalized in self.fast_commands:
+            print(json.dumps({'event': 'ASR_FAST_COMMAND_ACCEPTED', 'pid': os.getpid()}), flush=True)
+            return text, duration
+        print(json.dumps({'event': 'ASR_FAST_PATH_FALLBACK', 'reason': 'not-exact-command',
+                          'pid': os.getpid()}), flush=True)
+        return self.fallback.transcribe(audio, mime, deadline)
+
+
 class Runtime:
     def __init__(self, token, engine=None, audit=False):
         self.token = token
@@ -409,9 +527,13 @@ class Server(ThreadingHTTPServer):
 
 def main():
     token = os.environ.get('ASR_SERVICE_TOKEN', '')
-    model_path = os.environ.get('ASR_MODEL_PATH', '')
-    if len(token) < 32 or not token.isascii() or not model_path:
-        raise SystemExit('Set ASR_SERVICE_TOKEN (32+ ASCII characters) and ASR_MODEL_PATH; no secrets are printed.')
+    whisper_path = os.environ.get('ASR_MODEL_PATH', '')
+    zipformer_path = os.environ.get('ASR_ZIPFORMER_MODEL_PATH', '')
+    if (len(token) < 32 or not token.isascii()
+            or (ASR_ENGINE == 'whisper-small' and not whisper_path)
+            or (ASR_ENGINE == 'zipformer-streaming' and not zipformer_path)
+            or (ASR_ENGINE == 'command-fastpath' and (not whisper_path or not zipformer_path))):
+        raise SystemExit('Set the selected local model paths and ASR_SERVICE_TOKEN; no secrets are printed.')
     threads = int(os.environ.get('ASR_CPU_THREADS', '6'))
     if not 1 <= threads <= 16:
         raise SystemExit('ASR_CPU_THREADS must be 1..16')
@@ -419,14 +541,25 @@ def main():
     server = Server(int(os.environ.get('ASR_PORT', '18082')), runtime)
     def initialize():
         try:
-            runtime.engine = LocalEngine(model_path, threads)
-            print(json.dumps({'event': 'ASR_READY', 'pid': os.getpid(), 'modelRevision': REVISION,
-                              'decodingProfileRevision': DECODING_PROFILE_REVISION,
-                              'threads': threads, 'beamSize': BEAM_SIZE}), flush=True)
+            if ASR_ENGINE == 'zipformer-streaming':
+                runtime.engine = ZipformerStreamingEngine(zipformer_path, threads)
+            elif ASR_ENGINE == 'command-fastpath':
+                runtime.engine = CommandFastPathEngine(whisper_path, zipformer_path, threads)
+            else:
+                runtime.engine = LocalEngine(whisper_path, threads)
+            ready = {'event': 'ASR_READY', 'pid': os.getpid(), 'engine': ASR_ENGINE,
+                     'modelRevision': runtime.engine.revision, 'threads': threads}
+            if ASR_ENGINE == 'whisper-small':
+                ready['decodingProfileRevision'] = DECODING_PROFILE_REVISION
+                ready['beamSize'] = BEAM_SIZE
+            elif ASR_ENGINE == 'command-fastpath':
+                ready['fallbackBeamSize'] = BEAM_SIZE
+            print(json.dumps(ready), flush=True)
         except Exception:
             print(json.dumps({'event': 'ASR_NOT_READY', 'pid': os.getpid()}), flush=True)
     threading.Thread(target=initialize, daemon=True).start()
-    print(json.dumps({'event': 'ASR_STARTING', 'pid': os.getpid(), 'port': server.server_port}), flush=True)
+    print(json.dumps({'event': 'ASR_STARTING', 'pid': os.getpid(), 'port': server.server_port,
+                      'engine': ASR_ENGINE}), flush=True)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

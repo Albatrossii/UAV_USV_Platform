@@ -16,6 +16,7 @@ import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 
 @Service
 public class SensorRuntimeService {
@@ -26,6 +27,7 @@ public class SensorRuntimeService {
     private final Clock clock;
     private final Map<String, RadarState> radars = new LinkedHashMap<>();
     private final Map<String, SpectrumState> spectra = new LinkedHashMap<>();
+    private final Map<String, LatestPointCloudFrame> latestPointCloudFrames = new LinkedHashMap<>();
 
     public SensorRuntimeService() {
         this(Clock.systemUTC());
@@ -54,9 +56,44 @@ public class SensorRuntimeService {
                 text(data, "vehicleId", text(data, "sensor_id", streamId)));
         long now = clock.millis();
         long timestampMs = timestampMs(data, timestampMs(frame, now));
+        if ("pointcloud_frame".equals(text(frame, "message_type", ""))) {
+            validateGatewayPointCloud(data);
+            latestPointCloudFrames.put(streamId, new LatestPointCloudFrame(
+                    streamId,
+                    optionalLong(frame, "sequence"),
+                    now,
+                    frame.deepCopy()
+            ));
+        }
         List<RadarItemResponse> points = parsePointCloud(data, streamId, deviceId, timestampMs);
-        radars.put(deviceId, new RadarState(now, timestampMs, List.of(), points));
+        radars.put("pointcloud:" + streamId, new RadarState(now, timestampMs, List.of(), points));
     }
+
+    public synchronized Optional<LatestPointCloudFrame> latestPointCloudFrame(String streamId) {
+        if (streamId != null && !streamId.isBlank()) {
+            return Optional.ofNullable(latestPointCloudFrames.get(streamId.trim()));
+        }
+        return latestPointCloudFrames.values().stream()
+                .max(Comparator.comparingLong(LatestPointCloudFrame::receivedAtMs));
+    }
+
+    private void validateGatewayPointCloud(JsonNode data) {
+        JsonNode xyz = data.path("xyz");
+        int pointCount = data.path("point_count").asInt(-1);
+        if (!xyz.isArray() || pointCount < 0 || xyz.size() != (long) pointCount * 3L) {
+            throw new IllegalArgumentException("Invalid pointcloud_frame xyz length");
+        }
+        if (text(data, "stream_id", "").isBlank() || text(data, "vehicle_id", "").isBlank()) {
+            throw new IllegalArgumentException("Invalid pointcloud_frame stream identity");
+        }
+        for (JsonNode coordinate : xyz) {
+            if (!coordinate.isNumber() || !Double.isFinite(coordinate.asDouble())) {
+                throw new IllegalArgumentException("Invalid pointcloud_frame coordinate");
+            }
+        }
+    }
+
+    public record LatestPointCloudFrame(String streamId, Long sequence, long receivedAtMs, JsonNode frame) {}
 
     public synchronized void observeRadarScan(RadarScanInput scan) {
         long now = clock.millis();

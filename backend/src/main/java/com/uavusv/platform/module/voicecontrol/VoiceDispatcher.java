@@ -9,11 +9,23 @@ import org.springframework.boot.context.event.ApplicationReadyEvent;
 import org.springframework.context.event.EventListener;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
+import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
+import org.springframework.security.core.authority.AuthorityUtils;
+import org.springframework.security.core.context.SecurityContext;
+import org.springframework.security.core.context.SecurityContextHolder;
+import com.uavusv.platform.module.runtimecontrol.dto.RuntimeCommandRequest;
+import com.uavusv.platform.module.runtimecontrol.entity.CommandType;
+import com.uavusv.platform.module.runtimecontrol.entity.RuntimeScope;
+import com.uavusv.platform.module.runtimecontrol.service.RuntimeControlService;
 
+import java.time.Duration;
 import java.time.Instant;
 import java.util.*;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.CompletableFuture;
 
 @Service
 public class VoiceDispatcher {
@@ -22,6 +34,7 @@ public class VoiceDispatcher {
     private final VoiceJson j;
     private final VoiceTime t;
     private final RuntimeContextRegistry r;
+    private final ObjectProvider<RuntimeControlService> runtimeControls;
     private final Queue<Pending> pending = new ConcurrentLinkedQueue<>();
     private final AtomicInteger pendingCount = new AtomicInteger();
     private volatile boolean storageHealthy = true;
@@ -34,11 +47,19 @@ public class VoiceDispatcher {
             long receivedNanos,
             String receivedAt) {}
 
-    public VoiceDispatcher(VoiceStore s, VoiceJson j, VoiceTime t, RuntimeContextRegistry r) {
+    @Autowired
+    public VoiceDispatcher(
+            VoiceStore s, VoiceJson j, VoiceTime t, RuntimeContextRegistry r,
+            ObjectProvider<RuntimeControlService> runtimeControls) {
         this.s = s;
         this.j = j;
         this.t = t;
         this.r = r;
+        this.runtimeControls = runtimeControls;
+    }
+
+    VoiceDispatcher(VoiceStore s, VoiceJson j, VoiceTime t, RuntimeContextRegistry r) {
+        this(s, j, t, r, null);
     }
 
     @EventListener(ApplicationReadyEvent.class)
@@ -76,7 +97,10 @@ public class VoiceDispatcher {
                 var ch = r.channel(ref);
                 if (ch == null) continue;
                 synchronized (ch.lock) {
-                    if ("QUEUED".equals(e.path("state").asText()))
+                    if ("DEVICE_COMMAND".equals(e.path("action").asText())) {
+                        if ("QUEUED".equals(e.path("state").asText()))
+                            dispatchDeviceCommand(e.path("_id").asText());
+                    } else if ("QUEUED".equals(e.path("state").asText()))
                         dispatch(e.path("_id").asText(), ch);
                     else timeoutAndQuery(e.path("_id").asText(), ch);
                 }
@@ -91,11 +115,13 @@ public class VoiceDispatcher {
 
     private void dispatch(String id, RuntimeContextRegistry.Channel ch) {
         if (!storageHealthy) return;
+        String[] createdAt = {""};
         ObjectNode command =
                 s.locked(
                         () -> {
                             var e = s.get("voice_execution", id);
                             if (!"QUEUED".equals(e.path("state").asText())) return null;
+                            createdAt[0] = e.path("createdAt").asText();
                             var c = s.get("voice_runtime_context", e.path("runtimeRef").asText());
                             try {
                                 if (!t.now()
@@ -159,6 +185,8 @@ public class VoiceDispatcher {
                             return cmd;
                         });
         if (command == null) return;
+        long writeStartedNanos = System.nanoTime();
+        String writeStartedAt = t.stamp();
         try {
             // At this point SENDING is committed. Failure after this point is ambiguous, never
             // resend.
@@ -183,6 +211,12 @@ public class VoiceDispatcher {
                     s.jdbc.update("UPDATE voice_outbox SET status='SENT' WHERE execution_id=?", id);
                     return null;
                 });
+        log.info(
+                "P0 command dispatched executionId={} action={} queueMs={} pipeWriteMs={}",
+                id,
+                command.path("action").asText(),
+                elapsedMillis(createdAt[0], writeStartedAt),
+                (System.nanoTime() - writeStartedNanos) / 1_000_000);
     }
 
     private void timeoutAndQuery(String id, RuntimeContextRegistry.Channel ch) {
@@ -337,7 +371,31 @@ public class VoiceDispatcher {
                                             event.path("stateVersion").asLong());
                                 }
                             }
-                            case "CommandResult" -> result(c, event);
+                            case "CommandResult" -> {
+                                long handlerStartedNanos = System.nanoTime();
+                                result(c, event);
+                                var rows =
+                                        s.query(
+                                                "SELECT data_json FROM voice_execution WHERE command_id=?",
+                                                event.path("commandId").asText());
+                                if (!rows.isEmpty()) {
+                                    var execution = rows.get(0);
+                                    String flushedAt =
+                                            execution.path("_flushedAt")
+                                                    .asText(
+                                                            execution
+                                                                    .path("_sendStartedAt")
+                                                                    .asText());
+                                    log.info(
+                                            "P0 command receipt executionId={} action={} status={}"
+                                                    + " sendToReceiptMs={} receiptHandlerMs={}",
+                                            execution.path("_id").asText(),
+                                            execution.path("action").asText(),
+                                            event.path("status").asText(),
+                                            elapsedMillis(flushedAt, p.receivedAt),
+                                            (System.nanoTime() - handlerStartedNanos) / 1_000_000);
+                                }
+                            }
                             case "StatusReply" -> {
                                 var rows =
                                         s.query(
@@ -384,6 +442,118 @@ public class VoiceDispatcher {
         var ch = r.channel(ref);
         if (ch != null) ch.faulted = true;
         s.audit(ref, "PROTOCOL_ERROR", detail, t.stamp());
+    }
+
+    private void dispatchDeviceCommand(String id) {
+        ObjectNode request = s.locked(() -> {
+            var e = s.get("voice_execution", id);
+            if (e == null || !"QUEUED".equals(e.path("state").asText())) return null;
+            var c = s.get("voice_runtime_context", e.path("runtimeRef").asText());
+            var plan = (ObjectNode) e.path("_plan");
+            String target = plan.path("targetDeviceCode").asText();
+            String commandType = plan.path("deviceCommandType").asText();
+            try {
+                if (!t.now().isBefore(Instant.parse(e.path("createdAt").asText()).plusSeconds(10)))
+                    throw VoiceFailure.conflict("DISPATCH_DEADLINE_EXCEEDED");
+                if (!e.path("runtimeGeneration").equals(c.path("runtimeGeneration")))
+                    throw VoiceFailure.conflict("GENERATION_MISMATCH");
+                if (!VoiceCommandApplicationService.POLICY_VERSION.equals(plan.path("policyVersion").asText())
+                        || !plan.path("contextVersion").equals(c.path("contextVersion"))
+                        || plan.path("explicitDeviceCodes").size() != 1
+                        || !target.equals(plan.path("explicitDeviceCodes").get(0).asText()))
+                    throw VoiceFailure.conflict("CONTEXT_CHANGED");
+                r.checkDevice(c, target, commandType);
+            } catch (RuntimeException failure) {
+                e.put("state", "INVALIDATED").put("outcome", "REJECTED")
+                        .put("errorCode", failure instanceof VoiceFailure vf ? vf.code : "DEVICE_COMMAND_INVALID")
+                        .put("updatedAt", t.stamp());
+                s.save("voice_execution", e);
+                s.jdbc.update("UPDATE voice_outbox SET status='CANCELLED' WHERE execution_id=? AND status='READY'", id);
+                return null;
+            }
+            if (s.jdbc.update("UPDATE voice_outbox SET status='SENDING',claimed_at=? WHERE execution_id=? AND status='READY'", t.stamp(), id) != 1)
+                return null;
+            e.put("state", "DISPATCHED").put("_sendStartedAt", t.stamp()).put("updatedAt", t.stamp());
+            s.save("voice_execution", e);
+            ObjectNode call = j.object();
+            call.put("targetDeviceCode", target).put("deviceCommandType", commandType)
+                    .put("runId", Long.parseLong(c.path("algorithmRunId").asText()))
+                    .put("operatorUserId", e.path("_owner").asLong());
+            return call;
+        });
+        if (request == null) return;
+        CompletableFuture.runAsync(() -> {
+            long operatorId = request.path("operatorUserId").asLong();
+            List<Map<String, Object>> operatorRows;
+            try {
+                operatorRows = s.jdbc.queryForList(
+                        "SELECT username,role,enabled FROM app_user WHERE id=?", operatorId);
+            } catch (RuntimeException failure) {
+                completeDeviceCommand(id, "REJECTED", "OPERATOR_AUTHORIZATION_UNAVAILABLE");
+                log.warn("Single-device voice command rejected before dispatch; operator lookup failed executionId={}", id);
+                return;
+            }
+            if (operatorRows.isEmpty()
+                    || !Boolean.TRUE.equals(operatorRows.get(0).get("enabled"))
+                    || !"ADMIN".equals(String.valueOf(operatorRows.get(0).get("role")))) {
+                completeDeviceCommand(id, "REJECTED", "OPERATOR_NO_LONGER_AUTHORIZED");
+                return;
+            }
+            String username = String.valueOf(operatorRows.get(0).get("username"));
+            SecurityContext previousContext = SecurityContextHolder.getContext();
+            SecurityContext operatorContext = SecurityContextHolder.createEmptyContext();
+            operatorContext.setAuthentication(new UsernamePasswordAuthenticationToken(
+                    username, "", AuthorityUtils.createAuthorityList("ROLE_ADMIN")));
+            SecurityContextHolder.setContext(operatorContext);
+            try {
+                var response = runtimeControls.getObject().issueCommand(
+                        new RuntimeCommandRequest(
+                                CommandType.valueOf(request.path("deviceCommandType").asText()),
+                                request.path("runId").asLong(),
+                                request.path("targetDeviceCode").asText(),
+                                null,
+                                "经操作员确认的单设备语音命令",
+                                RuntimeScope.MISSION_CENTER,
+                                "ALGORITHM_RUN:" + request.path("runId").asText()),
+                        username);
+                completeDeviceCommand(id, response.status().name(), response.errorCode());
+            } catch (RuntimeException failure) {
+                // The runtime may have applied the command before the transport failed. Never retry.
+                completeDeviceCommand(id, "UNKNOWN", "DEVICE_COMMAND_RESULT_UNKNOWN");
+                log.warn("Single-device voice command result is uncertain executionId={} type={}",
+                        id, failure.getClass().getSimpleName());
+            } finally {
+                SecurityContextHolder.setContext(previousContext);
+            }
+        });
+    }
+
+    private void completeDeviceCommand(String id, String commandStatus, String errorCode) {
+        s.locked(() -> {
+            var e = s.get("voice_execution", id);
+            if (e == null || Set.of("SUCCEEDED", "REJECTED", "FAILED", "INVALIDATED", "TIMED_OUT")
+                    .contains(e.path("state").asText())) return null;
+            switch (commandStatus) {
+                case "SUCCEEDED" -> e.put("state", "SUCCEEDED").put("outcome", "SUCCESS").putNull("errorCode");
+                case "REJECTED" -> e.put("state", "REJECTED").put("outcome", "REJECTED").put("errorCode", errorCode == null ? "DEVICE_COMMAND_REJECTED" : errorCode);
+                case "FAILED" -> e.put("state", "FAILED").put("outcome", "FAILED").put("errorCode", errorCode == null ? "DEVICE_COMMAND_FAILED" : errorCode);
+                default -> e.put("state", "TIMED_OUT").put("outcome", "UNKNOWN").put("errorCode", errorCode == null ? "DEVICE_COMMAND_RESULT_UNKNOWN" : errorCode).put("timedOutAt", t.stamp());
+            }
+            e.put("updatedAt", t.stamp());
+            s.save("voice_execution", e);
+            s.jdbc.update("UPDATE voice_outbox SET status=? WHERE execution_id=? AND status='SENDING'",
+                    "UNKNOWN".equals(commandStatus) ? "UNCERTAIN" : "SENT", id);
+            return null;
+        });
+    }
+
+    private long elapsedMillis(String start, String end) {
+        try {
+            return Math.max(
+                    0, Duration.between(Instant.parse(start), Instant.parse(end)).toMillis());
+        } catch (RuntimeException ex) {
+            return -1;
+        }
     }
 
     private void result(ObjectNode c, JsonNode event) {

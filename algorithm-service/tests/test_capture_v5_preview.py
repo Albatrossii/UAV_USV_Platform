@@ -55,6 +55,21 @@ def frontend_capture_config(uav_count=4, usv_count=5):
 
 
 class CaptureV5PreviewTests(unittest.TestCase):
+    def test_resume_preserves_progress_instead_of_reinitializing_the_mission(self):
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            adapter = CaptureAdapter(5100, frontend_capture_config())
+            adapter.set_mission_active(False)
+            adapter.step()
+            adapter.set_mission_active(True)
+            adapter.step()
+            adapter.target_travelled_distance = 42.0
+            adapter.display_progress = 0.37
+            adapter.set_mission_active(False)
+            adapter.set_mission_active(True)
+
+        self.assertEqual(42.0, adapter.target_travelled_distance)
+        self.assertEqual(0.37, adapter.display_progress)
+
     def test_preview_moves_without_consuming_mission_distance(self):
         with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
             adapter = CaptureAdapter(5101, frontend_capture_config())

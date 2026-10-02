@@ -120,7 +120,10 @@ public class VoiceCommandApplicationService {
                     if (c.path("contextVersion").asLong()
                             != body.path("expectedContextVersion").asLong())
                         throw VoiceFailure.conflict("CONTEXT_CHANGED");
-                    String action = body.path("intent").asText().substring(8);
+                    String intent = body.path("intent").asText();
+                    boolean targeted = "SINGLE_DEVICE_CONTROL".equals(intent);
+                    String action = targeted ? "DEVICE_COMMAND" : intent.substring(8);
+                    IntentService.TargetedCandidate target = null;
                     if (interpretationId != null) {
                         if (intents == null) throw VoiceFailure.conflict("VOICE_INTERPRETATION_INVALID");
                         try {
@@ -129,8 +132,21 @@ public class VoiceCommandApplicationService {
                             throw VoiceFailure.conflict(e.code);
                         }
                     }
-                    r.check(c, action, true);
-                    var p = newProposal(c, u, action);
+                    if (targeted) {
+                        if (intents == null || interpretationId == null)
+                            throw VoiceFailure.conflict("VOICE_INTERPRETATION_INVALID");
+                        try {
+                            target = intents.requireTargetedCandidate(u, interpretationId, c);
+                        } catch (com.uavusv.platform.module.voiceintelligence.AsrFailure e) {
+                            throw VoiceFailure.conflict(e.code);
+                        }
+                        r.checkDevice(c, target.deviceCode(), target.commandType());
+                    } else {
+                        r.check(c, action, true);
+                    }
+                    var p = targeted
+                            ? newProposal(c, u, action, target.deviceCode(), target.commandType())
+                            : newProposal(c, u, action);
                     if (interpretationId != null) p.put("interpretationId", interpretationId);
                     s.proposal(p);
                     s.remember(u, "propose", key, hash, p.path("_id").asText());
@@ -162,13 +178,21 @@ public class VoiceCommandApplicationService {
                         invalidate(p);
                         throw VoiceFailure.conflict("GENERATION_MISMATCH");
                     }
+                    boolean targeted = "DEVICE_COMMAND".equals(plan.path("action").asText());
+                    boolean frozenDevicesValid = targeted
+                            ? plan.path("explicitDeviceCodes").size() == 1
+                                && plan.path("explicitDeviceCodes").get(0).asText()
+                                    .equals(plan.path("targetDeviceCode").asText())
+                            : plan.path("explicitDeviceCodes").equals(c.path("_members"));
                     if (!POLICY_VERSION.equals(plan.path("policyVersion").asText())
                             || plan.path("contextVersion").asLong() != c.path("contextVersion").asLong()
-                            || !plan.path("explicitDeviceCodes").equals(c.path("_members"))) {
+                            || !frozenDevicesValid) {
                         invalidate(p);
                         throw VoiceFailure.conflict("CONTEXT_CHANGED");
                     }
-                    r.check(c, plan.path("action").asText(), true);
+                    if (targeted)
+                        r.checkDevice(c, plan.path("targetDeviceCode").asText(), plan.path("deviceCommandType").asText());
+                    else r.check(c, plan.path("action").asText(), true);
                     if (s.busy(c.path("_id").asText()))
                         throw VoiceFailure.conflict("EXECUTION_IN_PROGRESS");
                     enqueue(p, c, false);
@@ -228,13 +252,25 @@ public class VoiceCommandApplicationService {
     }
 
     private ObjectNode newProposal(ObjectNode c, long u, String action) {
+        return newProposal(c, u, action, null, null);
+    }
+
+    private ObjectNode newProposal(
+            ObjectNode c, long u, String action, String targetDeviceCode, String deviceCommandType) {
         var plan = j.object();
         plan.put("runtimeRef", c.path("runtimeRef").asText())
                 .put("runtimeGeneration", c.path("runtimeGeneration").asText());
         plan.set("contextVersion", c.path("contextVersion"));
         plan.set("stateVersion", c.path("stateVersion"));
         plan.put("action", action);
-        plan.set("explicitDeviceCodes", c.path("_members").deepCopy());
+        if ("DEVICE_COMMAND".equals(action)) {
+            plan.put("targetDeviceCode", targetDeviceCode)
+                    .put("deviceCommandType", deviceCommandType);
+            var targetOnly = j.mapper.createArrayNode().add(targetDeviceCode);
+            plan.set("explicitDeviceCodes", targetOnly);
+        } else {
+            plan.set("explicitDeviceCodes", c.path("_members").deepCopy());
+        }
         plan.put("policyVersion", POLICY_VERSION);
         var p = j.object();
         String id = VoiceJson.uuid();

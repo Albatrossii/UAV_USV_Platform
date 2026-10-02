@@ -21,10 +21,11 @@ export const VOICE_PARSE_TIMEOUT_MS = 75_000
 const supportedAudioTypes = new Set(['audio/webm', 'audio/ogg', 'audio/mp4', 'audio/wav', 'audio/mpeg'])
 const actions = new Set(['START', 'PAUSE', 'RESUME', 'STOP'])
 const intents = new Set(['MISSION_START', 'MISSION_PAUSE', 'MISSION_RESUME', 'MISSION_STOP'])
+const deviceCommands = new Set(['UAV_HOVER', 'UAV_RESUME', 'UAV_RETURN', 'UAV_LAND', 'USV_HOLD', 'USV_RESUME', 'USV_RETURN', 'USV_STOP'])
 const statuses = new Set(['NEEDS_CLARIFICATION', 'UNSUPPORTED', 'NOT_ACTIONABLE'])
 const reasons = new Set([
   'AMBIGUOUS_ACTION', 'NEGATED_ACTION', 'NO_SUPPORTED_ACTION',
-  'UNSUPPORTED_CAPABILITY', 'UNSUPPORTED_TARGETING',
+  'UNSUPPORTED_CAPABILITY', 'UNSUPPORTED_TARGETING', 'AMBIGUOUS_TARGET',
 ])
 const intentForAction: Record<string, string> = {
   START: 'MISSION_START', PAUSE: 'MISSION_PAUSE', RESUME: 'MISSION_RESUME', STOP: 'MISSION_STOP',
@@ -46,7 +47,14 @@ function boundedString(value: unknown, min: number, max: number): value is strin
 }
 
 function audioType(blob: Blob) {
-  return blob.type.toLowerCase().split(';', 1)[0] ?? ''
+  return normalizeVoiceAudioType(blob.type)
+}
+
+export function normalizeVoiceAudioType(type: string) {
+  const mime = type.toLowerCase().split(';', 1)[0]?.trim() ?? ''
+  if (['audio/x-wav', 'audio/wave', 'audio/vnd.wave', 'application/wav', 'application/x-wav'].includes(mime)) return 'audio/wav'
+  if (mime === 'audio/mp3') return 'audio/mpeg'
+  return mime
 }
 
 function assertRequestActive(signal?: AbortSignal) {
@@ -83,6 +91,15 @@ function isCandidate(value: unknown): value is VoiceIntentCandidate {
     && typeof item.intent === 'string' && intents.has(item.intent)
     && intentForAction[item.action] === item.intent
     && (item.confidence === null || (typeof item.confidence === 'number' && item.confidence >= 0 && item.confidence <= 1))
+    || commonResult(value) && (() => {
+      const targeted = value as unknown as Record<string, unknown>
+      return hasOnlyKeys(targeted, ['status', 'requestId', 'intent', 'action', 'targetDeviceCode', 'deviceCommandType', 'normalizedText', 'confidence', 'provider', 'model'])
+        && targeted.status === 'CANDIDATE' && targeted.intent === 'SINGLE_DEVICE_CONTROL' && targeted.action === 'DEVICE_COMMAND'
+        && boundedString(targeted.targetDeviceCode, 1, 96) && typeof targeted.deviceCommandType === 'string'
+        && deviceCommands.has(targeted.deviceCommandType)
+        && (targeted.deviceCommandType.startsWith('UAV_') === String(targeted.targetDeviceCode).toUpperCase().startsWith('UAV'))
+        && (targeted.confidence === null || (typeof targeted.confidence === 'number' && targeted.confidence >= 0 && targeted.confidence <= 1))
+    })()
 }
 
 function isNotReady(value: unknown): value is VoiceIntentNotReady {
@@ -91,7 +108,8 @@ function isNotReady(value: unknown): value is VoiceIntentNotReady {
   return hasOnlyKeys(item, ['status', 'requestId', 'reason', 'message', 'normalizedText', 'provider', 'model'])
     && typeof item.status === 'string' && statuses.has(item.status)
     && typeof item.reason === 'string' && reasons.has(item.reason)
-    && reasonsForStatus[item.status]?.has(item.reason) === true
+    && (reasonsForStatus[item.status]?.has(item.reason) === true
+      || item.status === 'NEEDS_CLARIFICATION' && item.reason === 'AMBIGUOUS_TARGET')
     && boundedString(item.message, 1, 256)
 }
 
@@ -122,6 +140,14 @@ async function writeHeaders(requestId: string) {
 }
 
 export async function transcribeVoiceAudio(input: VoiceAudioInput, timeoutMs = VOICE_TRANSCRIPTION_TIMEOUT_MS): Promise<VoiceTranscript> {
+  return transcribeVoiceAudioRequest(input, timeoutMs, false)
+}
+
+async function transcribeVoiceAudioRequest(
+  input: VoiceAudioInput,
+  timeoutMs: number,
+  requireSuccessEnvelope: boolean,
+): Promise<VoiceTranscript> {
   assertRequestActive(input.signal)
   if (!uuidPattern.test(input.requestId) || input.locale !== 'zh-CN') {
     throw new VoiceIntelligenceError('语音识别请求标识或区域无效。', 'VOICE_INVALID_REQUEST')
@@ -144,7 +170,7 @@ export async function transcribeVoiceAudio(input: VoiceAudioInput, timeoutMs = V
     const response = await http.post<ApiResponse<VoiceTranscript>>('/voice/intelligence/transcriptions', form, {
       headers, signal: input.signal, timeout: timeoutMs,
     })
-    if (timeoutMs === LOCAL_ASR_TIMEOUT_MS && response.data.code !== 'SUCCESS') {
+    if (requireSuccessEnvelope && response.data.code !== 'SUCCESS') {
       throw new VoiceIntelligenceError('本地识别未返回成功响应。', 'VOICE_MALFORMED_RESPONSE')
     }
     if (!isTranscript(response.data.data) || response.data.data.requestId !== input.requestId) {
@@ -161,7 +187,7 @@ export function transcribeLocalAudio(input: VoiceAudioInput) {
   if (!supportedAudioTypes.has(audioType(input.audio))) {
     return Promise.reject(new VoiceIntelligenceError('仅支持WebM/Opus、Ogg/Opus、MP4/AAC、WAV/PCM和MP3。', 'VOICE_AUDIO_FORMAT_UNSUPPORTED'))
   }
-  return transcribeVoiceAudio(input, LOCAL_ASR_TIMEOUT_MS)
+  return transcribeVoiceAudioRequest(input, LOCAL_ASR_TIMEOUT_MS, true)
 }
 
 export async function interpretVoiceText(input: VoiceParseRequest): Promise<VoiceParseResult> {

@@ -37,6 +37,10 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeoutException;
 
 @Service
 public class AlgorithmRuntimeManager {
@@ -48,6 +52,14 @@ public class AlgorithmRuntimeManager {
     private final String pythonCommand;
     private final Path runnerPath;
     private final Map<Long, RuntimeHandle> handles = new ConcurrentHashMap<>();
+    private static final List<String> EXTERNAL_ALGORITHMS = List.of(
+            "GB_SFLA_CS", "ESCORT_GUARD",
+            "GB_SFLA_CS_SINGLE_DEVICE", "ESCORT_GUARD_SINGLE_DEVICE"
+    );
+    private static final List<String> SINGLE_DEVICE_COMMANDS = List.of(
+            "UAV_HOVER", "UAV_RETURN", "UAV_RESUME", "UAV_LAND",
+            "USV_HOLD", "USV_RETURN", "USV_RESUME", "USV_STOP"
+    );
     @Autowired(required = false)
     private VoiceRuntimeBridge voiceBridge;
 
@@ -78,12 +90,12 @@ public class AlgorithmRuntimeManager {
             MissionRun run = requireMatchingRun(runId, algorithmCode);
             algorithmCatalogService.requireEnabled(run.getAlgorithmCode());
         } else {
-            algorithmCatalogService.requireEnabled(algorithmCode);
+            algorithmCatalogService.requireEnabled(baseAlgorithmCode(algorithmCode));
         }
         if ("UNITY_SIMPLE_ENCIRCLEMENT".equals(algorithmCode)) {
             return new AlgorithmRuntimeStatusResponse(runId, algorithmCode, "UNITY_NATIVE", 0, null, null);
         }
-        if (!List.of("GB_SFLA_CS", "ESCORT_GUARD").contains(algorithmCode)) {
+        if (!EXTERNAL_ALGORITHMS.contains(algorithmCode)) {
             throw new BusinessException(ErrorCode.BAD_REQUEST, "不支持的外部算法：" + algorithmCode);
         }
         RuntimeHandle existing = handles.get(runId);
@@ -112,7 +124,7 @@ public class AlgorithmRuntimeManager {
         }
         Path configFile = null;
         ObjectNode voiceContext = standaloneVirtualSimulation && voiceBridge != null
-                ? voiceBridge.register(runId, objectMapper.valueToTree(runtimeConfig)) : null;
+                ? voiceBridge.register(runId, algorithmCode, objectMapper.valueToTree(runtimeConfig)) : null;
         try {
             configFile = Files.createTempFile("uav-usv-algorithm-", ".json");
             Files.write(configFile, objectMapper.writeValueAsBytes(runtimeConfig));
@@ -200,11 +212,93 @@ public class AlgorithmRuntimeManager {
         return status(runId);
     }
 
+    public boolean isStandaloneSingleDeviceRun(Long runId) {
+        RuntimeHandle handle = runId == null ? null : handles.get(runId);
+        return handle != null
+                && handle.standaloneVirtualSimulation
+                && handle.process.isAlive()
+                && handle.algorithmCode.endsWith("_SINGLE_DEVICE");
+    }
+
+    public AlgorithmRuntimeStatusResponse controlDevice(
+            Long runId, String deviceCode, String commandType) {
+        RuntimeHandle handle = requireHandle(runId);
+        if (!handle.standaloneVirtualSimulation
+                || !handle.algorithmCode.endsWith("_SINGLE_DEVICE")) {
+            throw new BusinessException(
+                    ErrorCode.BAD_REQUEST, "当前算法运行未启用单设备控制");
+        }
+        String code = deviceCode == null
+                ? "" : deviceCode.trim().toUpperCase().replace('_', '-');
+        String command = commandType == null ? "" : commandType.trim().toUpperCase();
+        if (!SINGLE_DEVICE_COMMANDS.contains(command)) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "不支持的单设备控制指令：" + command);
+        }
+        if ((command.startsWith("UAV_") && !code.startsWith("UAV-"))
+                || (command.startsWith("USV_") && !code.startsWith("USV-"))) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "控制指令与目标设备类型不匹配");
+        }
+        JsonNode frame = handle.latestFrame.get();
+        boolean known = frame != null && frame.path("agents").isArray();
+        if (known) {
+            known = false;
+            for (JsonNode agent : frame.path("agents")) {
+                String frameCode = agent.path("deviceCode").asText(agent.path("code").asText());
+                if (code.equalsIgnoreCase(frameCode)) {
+                    known = true;
+                    break;
+                }
+            }
+        }
+        if (!known) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "算法运行中不存在设备：" + code);
+        }
+        if (voiceBridge != null && handle.voiceContext != null) {
+            voiceBridge.guard(handle.voiceContext);
+        }
+        String requestId = UUID.randomUUID().toString();
+        PendingDeviceCommand pending = new PendingDeviceCommand(code, command);
+        handle.pendingDeviceCommands.put(requestId, pending);
+        try {
+            send(handle, Map.of(
+                    "kind", "DEVICE_COMMAND",
+                    "action", "DEVICE_COMMAND",
+                    "requestId", requestId,
+                    "deviceCode", code,
+                    "commandType", command
+            ));
+            JsonNode receipt = pending.receipt.get(8, TimeUnit.SECONDS);
+            if (!receipt.path("success").asBoolean()) {
+                throw new BusinessException(
+                        ErrorCode.BAD_REQUEST,
+                        receipt.path("detail").asText("算法拒绝单设备指令"));
+            }
+        } catch (TimeoutException exception) {
+            throw new DeviceCommandTimeoutException(
+                    "单设备命令已发送，但未在 8 秒内收到权威帧回执；结果未知，不应自动重发");
+        } catch (InterruptedException exception) {
+            Thread.currentThread().interrupt();
+            throw new DeviceCommandTimeoutException("等待单设备命令回执时被中断；结果未知");
+        } catch (ExecutionException exception) {
+            if (exception.getCause() instanceof DeviceCommandTimeoutException timeout) throw timeout;
+            throw new BusinessException(
+                    ErrorCode.BAD_REQUEST,
+                    "单设备命令回执校验失败：" + exception.getCause().getMessage());
+        } finally {
+            handle.pendingDeviceCommands.remove(requestId, pending);
+        }
+        return status(runId);
+    }
+
+    public static final class DeviceCommandTimeoutException extends RuntimeException {
+        public DeviceCommandTimeoutException(String message) { super(message); }
+    }
+
     public AlgorithmRuntimeStatusResponse placeThreat(Long runId, double x, double y) {
         RuntimeHandle handle = requireHandle(runId);
         if (voiceBridge != null && voiceBridge.v1(handle.voiceContext)) throw new VoiceFailure(422, "UNSUPPORTED_CAPABILITY");
         if (voiceBridge != null && handle.voiceContext != null) voiceBridge.guard(handle.voiceContext);
-        if (!"ESCORT_GUARD".equals(handle.algorithmCode)) {
+        if (!"ESCORT_GUARD".equals(baseAlgorithmCode(handle.algorithmCode))) {
             throw new BusinessException(ErrorCode.BAD_REQUEST, "只有护航守卫算法支持动态放置威胁目标");
         }
         send(handle, Map.of("action", "PLACE_THREAT", "x", x, "y", y));
@@ -215,7 +309,7 @@ public class AlgorithmRuntimeManager {
         RuntimeHandle handle = requireHandle(runId);
         if (voiceBridge != null && voiceBridge.v1(handle.voiceContext)) throw new VoiceFailure(422, "UNSUPPORTED_CAPABILITY");
         if (voiceBridge != null && handle.voiceContext != null) voiceBridge.guard(handle.voiceContext);
-        if (!"ESCORT_GUARD".equals(handle.algorithmCode)) {
+        if (!"ESCORT_GUARD".equals(baseAlgorithmCode(handle.algorithmCode))) {
             throw new BusinessException(ErrorCode.BAD_REQUEST, "只有护航守卫算法支持主动围捕");
         }
         Map<String, Object> command = new java.util.HashMap<>();
@@ -284,6 +378,13 @@ public class AlgorithmRuntimeManager {
         return run;
     }
 
+    private static String baseAlgorithmCode(String algorithmCode) {
+        if (algorithmCode == null) return "";
+        return algorithmCode.endsWith("_SINGLE_DEVICE")
+                ? algorithmCode.substring(0, algorithmCode.length() - "_SINGLE_DEVICE".length())
+                : algorithmCode;
+    }
+
     private void signalProcessFailure(RuntimeHandle handle, String fallback) {
         String stderr = stderrTail(handle);
         String detail = stderr.isBlank() ? fallback : fallback + "; stderr tail:\n" + stderr;
@@ -350,6 +451,8 @@ public class AlgorithmRuntimeManager {
                                         handle.runId, handle.process.pid(), sequence);
                             }
                         }
+                    } else if ("deviceCommandResult".equals(eventType)) {
+                        handleDeviceCommandReceipt(handle, event);
                     } else if ("stateChanged".equals(eventType) || "runtimeStopped".equals(eventType)) {
                         if (voiceBridge != null && voiceBridge.v1(handle.voiceContext)) continue;
                         handle.state.set(event.path("state").asText(handle.state.get()));
@@ -369,6 +472,11 @@ public class AlgorithmRuntimeManager {
             } catch (Exception exception) {
                 signalProcessFailure(handle, "algorithm stdout reader failed: " + exception.getMessage());
             } finally {
+                handle.pendingDeviceCommands.forEach((requestId, pending) ->
+                        pending.receipt.completeExceptionally(
+                                new DeviceCommandTimeoutException(
+                                        "算法运行已结束，未收到单设备权威帧回执；执行结果未知")));
+                handle.pendingDeviceCommands.clear();
                 if (voiceBridge != null) voiceBridge.ended(handle.voiceContext);
             }
         }, "algorithm-out-" + handle.runId);
@@ -395,6 +503,39 @@ public class AlgorithmRuntimeManager {
         }, "algorithm-err-" + handle.runId);
         errorThread.setDaemon(true);
         errorThread.start();
+    }
+
+    private void handleDeviceCommandReceipt(RuntimeHandle handle, JsonNode event) {
+        String requestId = event.path("requestId").asText();
+        PendingDeviceCommand pending = handle.pendingDeviceCommands.get(requestId);
+        if (pending == null
+                || event.path("runId").asLong(-1) != handle.runId
+                || !pending.deviceCode.equalsIgnoreCase(event.path("deviceCode").asText())
+                || !pending.commandType.equals(event.path("commandType").asText())) {
+            log.warn("Ignoring unmatched single-device receipt: runId={} requestId={}", handle.runId, requestId);
+            return;
+        }
+        if (event.path("success").asBoolean()) {
+            long frameSequence = event.path("frameSequence").asLong(-1);
+            JsonNode frame = handle.latestFrame.get();
+            boolean targetStatusMatches = false;
+            if (frame != null && frame.path("sequence").asLong(-1) >= frameSequence) {
+                for (JsonNode agent : frame.path("agents")) {
+                    String code = agent.path("deviceCode").asText(agent.path("code").asText());
+                    if (pending.deviceCode.equalsIgnoreCase(code)
+                            && event.path("deviceStatus").asText().equals(agent.path("status").asText())) {
+                        targetStatusMatches = true;
+                        break;
+                    }
+                }
+            }
+            if (frameSequence < 1 || !targetStatusMatches) {
+                pending.receipt.completeExceptionally(
+                        new IllegalStateException("回执未与目标设备的最新权威帧匹配"));
+                return;
+            }
+        }
+        pending.receipt.complete(event.deepCopy());
     }
 
     private void send(RuntimeHandle handle, Map<String, Object> payload) {
@@ -512,6 +653,7 @@ public class AlgorithmRuntimeManager {
         final AtomicLong latestSequence = new AtomicLong();
         final Deque<JsonNode> frameBuffer = new ArrayDeque<>();
         final Deque<String> stderrTail = new ArrayDeque<>();
+        final Map<String, PendingDeviceCommand> pendingDeviceCommands = new ConcurrentHashMap<>();
 
         RuntimeHandle(
                 Long runId,
@@ -525,6 +667,17 @@ public class AlgorithmRuntimeManager {
             this.standaloneVirtualSimulation = standaloneVirtualSimulation;
             this.process = process;
             this.writer = writer;
+        }
+    }
+
+    private static final class PendingDeviceCommand {
+        final String deviceCode;
+        final String commandType;
+        final CompletableFuture<JsonNode> receipt = new CompletableFuture<>();
+
+        PendingDeviceCommand(String deviceCode, String commandType) {
+            this.deviceCode = deviceCode;
+            this.commandType = commandType;
         }
     }
 }

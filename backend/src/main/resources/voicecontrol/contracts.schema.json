@@ -27,7 +27,8 @@
             "MISSION_START",
             "MISSION_PAUSE",
             "MISSION_RESUME",
-            "MISSION_STOP"
+            "MISSION_STOP",
+            "SINGLE_DEVICE_CONTROL"
           ]
         }
       },
@@ -86,8 +87,19 @@
             "START",
             "PAUSE",
             "RESUME",
-            "STOP"
+            "STOP",
+            "DEVICE_COMMAND"
           ]
+        },
+        "targetDeviceCode": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 96,
+          "pattern": "^[A-Za-z0-9_.:-]+$"
+        },
+        "deviceCommandType": {
+          "type": "string",
+          "enum": ["UAV_HOVER", "UAV_RESUME", "UAV_RETURN", "UAV_LAND", "USV_HOLD", "USV_RESUME", "USV_RETURN", "USV_STOP"]
         },
         "explicitDeviceCodes": {
           "type": "array",
@@ -113,6 +125,15 @@
         "action",
         "explicitDeviceCodes",
         "policyVersion"
+      ],
+      "allOf": [
+        {
+          "if": { "properties": { "action": { "const": "DEVICE_COMMAND" } } },
+          "then": {
+            "required": ["targetDeviceCode", "deviceCommandType"],
+            "properties": { "explicitDeviceCodes": { "minItems": 1, "maxItems": 1 } }
+          }
+        }
       ]
     },
     "RuntimeContext": {
@@ -347,7 +368,8 @@
             "START",
             "PAUSE",
             "RESUME",
-            "STOP"
+            "STOP",
+            "DEVICE_COMMAND"
           ]
         },
         "state": {

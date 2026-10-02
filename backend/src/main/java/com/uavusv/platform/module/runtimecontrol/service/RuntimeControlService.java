@@ -6,6 +6,7 @@ import com.uavusv.platform.module.device.entity.Device;
 import com.uavusv.platform.module.device.entity.DeviceType;
 import com.uavusv.platform.module.device.repository.DeviceRepository;
 import com.uavusv.platform.module.mission.repository.MissionRunRepository;
+import com.uavusv.platform.module.mission.service.AlgorithmRuntimeManager;
 import com.uavusv.platform.module.monitoring.service.RuntimeStateService;
 import com.uavusv.platform.module.runtimecontrol.dispatch.CommandDispatchResult;
 import com.uavusv.platform.module.runtimecontrol.dispatch.RuntimeCommandDispatcher;
@@ -29,6 +30,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.context.event.ApplicationReadyEvent;
 import org.springframework.context.event.EventListener;
 import org.springframework.context.ApplicationEventPublisher;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -41,8 +43,11 @@ import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.EnumSet;
+import java.util.Locale;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 @Service
 public class RuntimeControlService {
@@ -75,6 +80,7 @@ public class RuntimeControlService {
             CommandStatus.PENDING, CommandStatus.DISPATCHED,
             CommandStatus.ACCEPTED, CommandStatus.EXECUTING
     );
+    private static final Pattern SIMULATION_DEVICE_CODE = Pattern.compile("^(UAV|USV)-0*(\\d+)$");
 
     private final RuntimeStateService runtimeStateService;
     private final SimulationSessionRepository sessionRepository;
@@ -92,6 +98,8 @@ public class RuntimeControlService {
     private final String commandDispatchMode;
     private final long commandAckTimeoutSeconds;
     private final long commandResultTimeoutSeconds;
+    @Autowired(required = false)
+    private AlgorithmRuntimeManager algorithmRuntimeManager;
 
     public RuntimeControlService(
             RuntimeStateService runtimeStateService,
@@ -308,6 +316,24 @@ public class RuntimeControlService {
                     "Command SELECT_DEVICE is not a ROS control command"
             );
         }
+        // An explicit algorithm-run identity must never fall through to the physical ROS/Gateway
+        // dispatcher if the local simulation exits between confirmation and dispatch.
+        if (request.runtimeInstanceId() != null
+                && request.runtimeInstanceId().startsWith("ALGORITHM_RUN:")) {
+            if (algorithmRuntimeManager == null
+                    || request.runId() == null
+                    || !algorithmRuntimeManager.isStandaloneSingleDeviceRun(request.runId())) {
+                throw new BusinessException(
+                        ErrorCode.BAD_REQUEST, "指定的单设备仿真运行不可用；未向 Gateway 转发指令");
+            }
+            return issueStandaloneAlgorithmCommand(request, username);
+        }
+        if (algorithmRuntimeManager != null
+                && request.runId() != null
+                && (UAV_COMMANDS.contains(request.commandType()) || USV_COMMANDS.contains(request.commandType()))
+                && algorithmRuntimeManager.isStandaloneSingleDeviceRun(request.runId())) {
+            return issueStandaloneAlgorithmCommand(request, username);
+        }
         long startedAt = System.currentTimeMillis();
         long stageStartedAt = startedAt;
         log.info("[issueCommand] start commandType={} deviceCode={} runId={} scope={} instance={}",
@@ -430,6 +456,76 @@ public class RuntimeControlService {
         log.info("[issueCommand] before return total ms={} commandId={} status={}",
                 System.currentTimeMillis() - startedAt, command.getId(), command.getStatus());
         return RuntimeCommandResponse.from(command);
+    }
+
+    private RuntimeCommandResponse issueStandaloneAlgorithmCommand(
+            RuntimeCommandRequest request, String username) {
+        RuntimeScope scope = request.runtimeScope() == null
+                ? RuntimeScope.MISSION_CENTER : request.runtimeScope();
+        if (scope != RuntimeScope.MISSION_CENTER) {
+            throw new BusinessException(
+                    ErrorCode.BAD_REQUEST, "算法仿真的单设备指令必须使用任务中心运行范围");
+        }
+        String runtimeInstanceId = request.runtimeInstanceId() == null
+                || request.runtimeInstanceId().isBlank()
+                ? "ALGORITHM_RUN:" + request.runId()
+                : request.runtimeInstanceId();
+        if (!runtimeInstanceId.equals("ALGORITHM_RUN:" + request.runId())) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "算法运行实例标识与运行批次不一致");
+        }
+        Device targetDevice = resolveStandaloneSimulationDevice(request.deviceCode());
+        validateCommandTarget(request.commandType(), targetDevice);
+        ControlCommand command = commandRepository.save(new ControlCommand(
+                null,
+                null,
+                targetDevice.getId(),
+                request.commandType(),
+                request.payload(),
+                username,
+                scope,
+                runtimeInstanceId
+        ));
+        command.dispatch(buildCommandDetail(request));
+        commandRepository.save(command);
+        try {
+            algorithmRuntimeManager.controlDevice(
+                    request.runId(), request.deviceCode(), request.commandType().name());
+            command.succeedResult("目标设备状态已由 Python 权威帧确认");
+        } catch (AlgorithmRuntimeManager.DeviceCommandTimeoutException exception) {
+            command.timeout("ALGORITHM_DEVICE_COMMAND_TIMEOUT", exception.getMessage());
+        } catch (BusinessException exception) {
+            command.reject("ALGORITHM_DEVICE_COMMAND_REJECTED", exception.getMessage());
+        } catch (RuntimeException exception) {
+            command.fail("ALGORITHM_DEVICE_COMMAND_FAILED", exception.getMessage());
+        }
+        command = commandRepository.save(command);
+        publishTerminalCommandStatus(command);
+        return RuntimeCommandResponse.from(command);
+    }
+
+    private Device resolveStandaloneSimulationDevice(String deviceCode) {
+        if (deviceCode == null || deviceCode.isBlank()) {
+            throw new BusinessException(ErrorCode.DEVICE_NOT_FOUND);
+        }
+        Device exact = deviceRepository.findByCode(deviceCode)
+                .filter(device -> !device.isDeleted())
+                .orElse(null);
+        if (exact != null) return exact;
+
+        Matcher matcher = SIMULATION_DEVICE_CODE.matcher(
+                deviceCode.trim().toUpperCase(Locale.ROOT).replace('_', '-'));
+        if (!matcher.matches()) throw new BusinessException(ErrorCode.DEVICE_NOT_FOUND);
+        int number;
+        try {
+            number = Integer.parseInt(matcher.group(2));
+        } catch (NumberFormatException exception) {
+            throw new BusinessException(ErrorCode.DEVICE_NOT_FOUND);
+        }
+        String registryCode = matcher.group(1).toLowerCase(Locale.ROOT)
+                + "-" + String.format(Locale.ROOT, "%02d", number);
+        return deviceRepository.findByCode(registryCode)
+                .filter(device -> !device.isDeleted())
+                .orElseThrow(() -> new BusinessException(ErrorCode.DEVICE_NOT_FOUND));
     }
 
     @Transactional

@@ -79,6 +79,7 @@ export const useVoiceControlStore = defineStore('voiceControl', {
     recoveryAvailable: true,
     responseUnknown: false,
     contextRequestVersion: 0,
+    executionPollInFlight: false,
   }),
   getters: {
     context(state): VoiceRuntimeContext | null {
@@ -179,6 +180,19 @@ export const useVoiceControlStore = defineStore('voiceControl', {
       if (this.expectedAlgorithmRunId !== algorithmRunId) {
         this.expectedAlgorithmRunId = algorithmRunId
         this.selectedRuntimeRef = ''
+        // A Pinia store survives scenario regeneration. Never carry an old
+        // proposal/execution into the newly selected algorithm runtime: its
+        // presentation challenge belongs to the old runtime generation and
+        // can keep the new scene stuck in automatic resynchronization.
+        this.proposal = null
+        this.execution = null
+        this.presentationBinding = null
+        this.presentationChallenge = null
+        this.responseUnknown = false
+        this.recoveryPending = false
+        this.error = ''
+        this.errorCode = ''
+        try { localStorage.removeItem(this.activeKey()) } catch { this.recoveryAvailable = false }
       }
       return this.refreshContexts(algorithmRunId)
     },
@@ -199,6 +213,13 @@ export const useVoiceControlStore = defineStore('voiceControl', {
       } catch { this.recoveryAvailable = false }
       await this.refreshContexts()
       let journal = this.loadJournal()
+      if (journal && (!this.context
+        || journal.runtimeRef !== this.context.runtimeRef
+        || journal.runtimeGeneration !== this.context.runtimeGeneration)) {
+        // Do not replay an unknown-result write against a different runtime.
+        try { localStorage.removeItem(this.journalKey()) } catch { this.recoveryAvailable = false }
+        journal = null
+      }
       if (journal && presentationJournalKinds.has(journal.kind)) {
         this.saveJournal(journal)
         try { localStorage.removeItem(this.journalKey()) } catch { this.recoveryAvailable = false }
@@ -236,8 +257,25 @@ export const useVoiceControlStore = defineStore('voiceControl', {
         const raw = localStorage.getItem(this.activeKey())
         if (!raw) return
         const saved = JSON.parse(raw) as RecoveryState
-        if (saved.proposalId) this.proposal = await fetchVoiceProposal(saved.proposalId)
-        if (saved.executionId) this.execution = await fetchVoiceExecution(saved.executionId)
+        if (saved.proposalId) {
+          const recoveredProposal = await fetchVoiceProposal(saved.proposalId)
+          if (this.context
+            && recoveredProposal.plan.runtimeRef === this.context.runtimeRef
+            && recoveredProposal.plan.runtimeGeneration === this.context.runtimeGeneration) {
+            this.proposal = recoveredProposal
+          }
+        }
+        if (saved.executionId) {
+          const recoveredExecution = await fetchVoiceExecution(saved.executionId)
+          if (this.context
+            && recoveredExecution.runtimeRef === this.context.runtimeRef
+            && recoveredExecution.runtimeGeneration === this.context.runtimeGeneration) {
+            this.execution = recoveredExecution
+          }
+        }
+        if ((!this.proposal && !this.execution) && (saved.proposalId || saved.executionId)) {
+          localStorage.removeItem(this.activeKey())
+        }
       } catch (error) { this.captureError(error, '恢复上次指令状态失败') }
     },
     async replayJournal(journal: OperationJournal) {
@@ -291,10 +329,10 @@ export const useVoiceControlStore = defineStore('voiceControl', {
       if (!this.context || !this.userScope()) return null
       const presentation = presentationJournalKinds.has(kind)
       let previous = this.loadJournal(presentation)
-      if (presentation && previous
+      if (previous
         && (previous.runtimeRef !== this.context.runtimeRef
           || previous.runtimeGeneration !== this.context.runtimeGeneration)) {
-        try { localStorage.removeItem(this.journalKey(true)) } catch { this.recoveryAvailable = false }
+        try { localStorage.removeItem(this.journalKey(presentation)) } catch { this.recoveryAvailable = false }
         previous = null
       }
       if (previous && ['PREPARED', 'RESPONSE_UNKNOWN'].includes(previous.phase)) {
@@ -317,8 +355,14 @@ export const useVoiceControlStore = defineStore('voiceControl', {
       this.loading = true
       this.error = ''
       try {
-        if (!await this.refreshContexts()) return
-        if (!this.context) return
+        // The server validates this cached context against the authoritative runtime,
+        // generation, context version, state and heartbeat before persisting a proposal.
+        // Avoid a serial GET immediately before the proposal POST on the voice path.
+        if (!this.context || this.context.algorithmRunId !== this.expectedAlgorithmRunId) {
+          this.errorCode = 'RUNTIME_CONTEXT_NOT_FOUND'
+          this.error = '没有当前算法运行对应的控制上下文，请刷新运行状态后重试。'
+          return
+        }
         const body: VoiceProposalRequest = {
           runtimeRef: this.context.runtimeRef, runtimeGeneration: this.context.runtimeGeneration,
           expectedContextVersion: this.context.contextVersion, intent,
@@ -449,6 +493,8 @@ export const useVoiceControlStore = defineStore('voiceControl', {
       }
     },
     async poll() {
+      if (this.executionPollInFlight) return
+      this.executionPollInFlight = true
       try {
         if (this.execution) {
           // Algorithm success and Unity presentation completion are separate.
@@ -463,6 +509,7 @@ export const useVoiceControlStore = defineStore('voiceControl', {
           this.persist()
         }
       } catch (error) { this.captureError(error, '刷新指令状态失败') }
+      finally { this.executionPollInFlight = false }
     },
   },
 })

@@ -14,7 +14,13 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
 
-from app.adapters import AdaptiveCaptureAdapter, AdaptiveEscortAdapter, CaptureAdapter, EscortAdapter
+from app.adapters import (
+    AdaptiveCaptureAdapter,
+    AdaptiveEscortAdapter,
+    CaptureAdapter,
+    EscortAdapter,
+    SingleDeviceControlAdapter,
+)
 
 
 PROTOCOL_VERSION = "algorithm.command.v1"
@@ -124,6 +130,58 @@ def _device_codes(frame: dict) -> list[str]:
                    if isinstance(a, dict) and str(a.get("deviceCode", "")).strip()})
 
 
+def _apply_device_command(adapter, command: dict) -> tuple[bool, str]:
+    try:
+        mode = adapter.control_device(
+            str(command.get("deviceCode", "")),
+            str(command.get("commandType", "")),
+        )
+        return True, mode
+    except (AttributeError, TypeError, ValueError) as error:
+        return False, str(error)
+
+
+def _device_command_receipt(adapter, command: dict) -> dict:
+    success, detail = _apply_device_command(adapter, command)
+    frame = None
+    device_status = ""
+    frame_sequence = 0
+    if success:
+        frame = _normalize_frame_device_codes(adapter.step().to_dict())
+        frame_sequence = int(frame.get("sequence", 0))
+        code = str(command.get("deviceCode", "")).strip().upper().replace("_", "-")
+        agent = next(
+            (
+                item for item in frame.get("agents", [])
+                if isinstance(item, dict)
+                and code == str(item.get("deviceCode", item.get("code", ""))).strip().upper().replace("_", "-")
+            ),
+            None,
+        )
+        device_status = str(agent.get("status", "")).upper() if agent else ""
+        command_type = str(command.get("commandType", "")).upper()
+        expected_statuses = {
+            "UAV_HOVER": {"HOLDING"},
+            "USV_HOLD": {"HOLDING"},
+            "UAV_RETURN": {"RETURNING", "RETURNED"},
+            "USV_RETURN": {"RETURNING", "RETURNED"},
+            "UAV_RESUME": {"REJOINING", "ACTIVE"},
+            "USV_RESUME": {"REJOINING", "ACTIVE"},
+            "UAV_LAND": {"STOPPED"},
+            "USV_STOP": {"STOPPED"},
+        }
+        success = device_status in expected_statuses.get(command_type, set())
+        if not success:
+            detail = f"目标设备未在权威帧进入预期状态：{device_status or 'UNKNOWN'}"
+    return {
+        "success": success,
+        "detail": detail,
+        "frame": frame,
+        "frameSequence": frame_sequence,
+        "deviceStatus": device_status,
+    }
+
+
 def v1_main(args: argparse.Namespace, adapter, config: dict) -> int:
     """Run the production command protocol around the existing adapter.
 
@@ -146,9 +204,12 @@ def v1_main(args: argparse.Namespace, adapter, config: dict) -> int:
     frame = _normalize_frame_device_codes(adapter.step().to_dict())
     last_frame_sequence = int(frame.get("sequence", 0))
     adapter.set_mission_active(False)
+    capabilities = ["START", "PAUSE", "RESUME", "STOP"]
+    if hasattr(adapter, "control_device"):
+        capabilities.append("DEVICE_COMMAND")
     emit_v1({"runtimeRef": runtime_ref, "runtimeGeneration": generation,
              "kind": "RUNTIME_READY", "adapterId": adapter.code,
-             "capabilities": ["START", "PAUSE", "RESUME", "STOP"],
+             "capabilities": capabilities,
              "state": state, "stateVersion": state_version})
     emit({"event": "frame", "payload": frame})
     frame_interval = 1.0 / max(1.0, args.fps)
@@ -186,6 +247,23 @@ def v1_main(args: argparse.Namespace, adapter, config: dict) -> int:
         if command is not None:
             if isinstance(command, MalformedProtocolInput):
                 protocol_error("MALFORMED_MESSAGE", command.detail)
+            elif isinstance(command, dict) and command.get("kind") == "DEVICE_COMMAND":
+                receipt = _device_command_receipt(adapter, command)
+                if receipt["frame"] is not None:
+                    frame = receipt["frame"]
+                    last_frame_sequence = receipt["frameSequence"]
+                    emit({"event": "frame", "payload": frame})
+                emit({
+                    "event": "deviceCommandResult",
+                    "requestId": str(command.get("requestId", "")),
+                    "runId": args.run_id,
+                    "deviceCode": str(command.get("deviceCode", "")),
+                    "commandType": str(command.get("commandType", "")),
+                    "success": receipt["success"],
+                    "detail": receipt["detail"],
+                    "frameSequence": receipt["frameSequence"],
+                    "deviceStatus": receipt["deviceStatus"],
+                })
             elif isinstance(command, dict) and command.get("kind") == "STATUS_QUERY":
                 cid = str(command.get("commandId", ""))
                 shape_error = _status_query_shape_error(command)
@@ -285,7 +363,14 @@ def main() -> int:
     if hasattr(sys.stderr, "reconfigure"):
         sys.stderr.reconfigure(encoding="utf-8")
     parser = argparse.ArgumentParser()
-    parser.add_argument("--algorithm", choices=("GB_SFLA_CS", "ESCORT_GUARD"), required=True)
+    parser.add_argument(
+        "--algorithm",
+        choices=(
+            "GB_SFLA_CS", "ESCORT_GUARD",
+            "GB_SFLA_CS_SINGLE_DEVICE", "ESCORT_GUARD_SINGLE_DEVICE",
+        ),
+        required=True,
+    )
     parser.add_argument("--run-id", type=int, required=True)
     parser.add_argument("--config", default="{}")
     parser.add_argument("--config-base64", default="")
@@ -301,7 +386,8 @@ def main() -> int:
     else:
         config_text = base64.b64decode(args.config_base64).decode("utf-8") if args.config_base64 else args.config
     config = json.loads(config_text)
-    if args.algorithm == "GB_SFLA_CS":
+    base_algorithm = args.algorithm.removesuffix("_SINGLE_DEVICE")
+    if base_algorithm == "GB_SFLA_CS":
         adapter = (
             AdaptiveCaptureAdapter(args.run_id, config)
             if int(config.get("targetCount", 1)) > 1
@@ -311,6 +397,8 @@ def main() -> int:
         adapter = AdaptiveEscortAdapter(args.run_id, config)
     else:
         adapter = EscortAdapter(args.run_id, config)
+    if args.algorithm.endswith("_SINGLE_DEVICE"):
+        adapter = SingleDeviceControlAdapter(adapter, args.algorithm)
     if args.command_protocol == "v1":
         if not args.runtime_ref or not args.runtime_generation:
             parser.error("--runtime-ref and --runtime-generation are required with --command-protocol v1")
@@ -361,6 +449,21 @@ def main() -> int:
                     "action": action,
                     "success": True,
                     "selectedThreatCode": selected,
+                })
+            elif action == "DEVICE_COMMAND":
+                receipt = _device_command_receipt(adapter, command)
+                if receipt["frame"] is not None:
+                    emit({"event": "frame", "payload": receipt["frame"]})
+                emit({
+                    "event": "deviceCommandResult",
+                    "requestId": str(command.get("requestId", "")),
+                    "runId": args.run_id,
+                    "deviceCode": str(command.get("deviceCode", "")),
+                    "commandType": str(command.get("commandType", "")),
+                    "success": receipt["success"],
+                    "detail": receipt["detail"],
+                    "frameSequence": receipt["frameSequence"],
+                    "deviceStatus": receipt["deviceStatus"],
                 })
             emit({"event": "stateChanged", "runId": args.run_id, "state": state})
         if input_closed.is_set() and commands.empty():

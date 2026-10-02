@@ -6,6 +6,7 @@ import { useTrajectoryStore } from '@/stores/trajectory'
 import { useUnityBridgeStore } from '@/stores/unityBridge'
 import { useVisualSensorStore } from '@/stores/visualSensor'
 import type { UnityBridgeMessage } from '@/stores/unityBridge'
+import type { PointCloudLatest } from '@/types/sensor'
 import {
   appendUnityRuntimeParams,
   cloneUnityPayload,
@@ -28,12 +29,15 @@ const controlsReady = ref(false)
 const errorMessage = ref('')
 const loadHint = ref('正在加载系统总览 Unity WebGL')
 const reloadToken = ref(Date.now())
+const pointCloudBridgeReady = ref(false)
 
 let probeTimer: number | null = null
 let heartbeatTimer: number | null = null
 let readyEmitted = false
 let heartbeatInFlight = false
 let pendingHeartbeat: { state: 'ONLINE' | 'OFFLINE' | 'FAILED'; detail: string } | null = null
+let latestPointCloudFrame: PointCloudLatest | null = null
+let lastPointCloudSentAtMs = 0
 let viewportResizeObserver: ResizeObserver | null = null
 let lockedViewportWidth = 0
 let lockedViewportHeight = 0
@@ -123,6 +127,59 @@ function markReady(payload: Record<string, unknown>) {
     readyEmitted = true
     emit('unityReady')
   }
+  if (!pointCloudBridgeReady.value) publishPointCloudCapability(false)
+  sendLatestPointCloudFrame()
+}
+
+function publishPointCloudCapability(supported: boolean, detail = '') {
+  window.dispatchEvent(new CustomEvent('uav-usv:unity-pointcloud-capability', {
+    detail: { supported, detail },
+  }))
+}
+
+function sendLatestPointCloudFrame() {
+  const value = latestPointCloudFrame
+  const target = iframeRef.value?.contentWindow
+  if (!value || !target || !ready.value || !pointCloudBridgeReady.value) return
+  if (value.receivedAtMs <= lastPointCloudSentAtMs) return
+
+  const requestId = `pointCloudFrame:${value.sequence ?? 'none'}:${value.receivedAtMs}`
+  const message = {
+    type: 'pointCloudFrame',
+    requestId,
+    timestamp: Date.now(),
+    payload: {
+      receivedAtMs: value.receivedAtMs,
+      frame: JSON.parse(JSON.stringify(value.frame)),
+    },
+  }
+  const summary = {
+    type: message.type,
+    requestId,
+    timestamp: message.timestamp,
+    payload: {
+      streamId: value.streamId,
+      sequence: value.sequence,
+      pointCount: value.frame.data.point_count,
+    },
+  }
+  target.postMessage({
+    source: 'vue-console',
+    runtimeScope: RUNTIME_SCOPE,
+    runtimeInstanceId: RUNTIME_INSTANCE_ID,
+    message,
+  }, window.location.origin)
+  bridge.noteOutgoingFor(RUNTIME_SCOPE, summary)
+  emit('unityCommand', summary)
+  lastPointCloudSentAtMs = value.receivedAtMs
+}
+
+function handlePointCloudFrame(event: Event) {
+  const value = (event as CustomEvent<PointCloudLatest>).detail
+  if (!value?.frame || value.streamId !== 'usv_01_mid360') return
+  if (latestPointCloudFrame && value.receivedAtMs <= latestPointCloudFrame.receivedAtMs) return
+  latestPointCloudFrame = value
+  sendLatestPointCloudFrame()
 }
 
 function markError(message: string) {
@@ -181,6 +238,15 @@ function handleWindowMessage(event: MessageEvent) {
     } else {
       markReady(message.payload)
     }
+  } else if (message.type === 'pointCloudBridgeReady') {
+    pointCloudBridgeReady.value = message.payload?.ready === true
+      && message.payload?.protocol === 'mid360-pointcloud-v1'
+    publishPointCloudCapability(pointCloudBridgeReady.value, String(message.payload?.status ?? ''))
+    if (pointCloudBridgeReady.value) sendLatestPointCloudFrame()
+  } else if (message.type === 'pointCloudFrameApplied' && message.payload) {
+    window.dispatchEvent(new CustomEvent('uav-usv:unity-pointcloud-ack', {
+      detail: { ...message.payload, requestId: message.requestId ?? '' },
+    }))
   } else if (message.type === 'trajectoryFrame' && message.payload) {
     trajectory.ingestFor(RUNTIME_SCOPE, message.payload)
   } else if (message.type === 'visualSensorBridgeReady') {
@@ -330,6 +396,8 @@ function reload() {
   bridge.setConnectedFor(RUNTIME_SCOPE, false)
   loading.value = true
   ready.value = false
+  pointCloudBridgeReady.value = false
+  lastPointCloudSentAtMs = 0
   controlsReady.value = false
   readyEmitted = false
   errorMessage.value = ''
@@ -358,6 +426,7 @@ watch(visualContext, context => visualSensor.bindRuntime(context), { immediate: 
 
 onMounted(() => {
   window.addEventListener('message', handleWindowMessage)
+  window.addEventListener('uav-usv:pointcloud-frame', handlePointCloudFrame)
   window.addEventListener('uav-usv:viewport-transition-start', beginViewportTransition)
   window.addEventListener('uav-usv:viewport-transition-end', endViewportTransition)
   heartbeatTimer = window.setInterval(() => {
@@ -367,6 +436,7 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   window.removeEventListener('message', handleWindowMessage)
+  window.removeEventListener('uav-usv:pointcloud-frame', handlePointCloudFrame)
   window.removeEventListener('uav-usv:viewport-transition-start', beginViewportTransition)
   window.removeEventListener('uav-usv:viewport-transition-end', endViewportTransition)
   viewportResizeObserver?.disconnect()

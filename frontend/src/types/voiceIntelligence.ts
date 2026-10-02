@@ -1,4 +1,4 @@
-import type { VoiceAction, VoiceIntent } from './voiceControl'
+import type { DeviceCommandType, VoiceAction, VoiceIntent } from './voiceControl'
 
 export type VoiceInputStage =
   | 'IDLE'
@@ -16,6 +16,7 @@ export type VoiceParseReason =
   | 'AMBIGUOUS_ACTION'
   | 'NEGATED_ACTION'
   | 'NO_SUPPORTED_ACTION'
+  | 'AMBIGUOUS_TARGET'
   | 'UNSUPPORTED_CAPABILITY'
   | 'UNSUPPORTED_TARGETING'
 
@@ -55,7 +56,9 @@ export interface VoiceIntentCandidate {
   status: 'CANDIDATE'
   requestId: string
   intent: VoiceIntent
-  action: VoiceAction
+  action: VoiceAction | 'DEVICE_COMMAND'
+  targetDeviceCode?: string
+  deviceCommandType?: DeviceCommandType
   normalizedText: string
   confidence: number | null
   provider: string

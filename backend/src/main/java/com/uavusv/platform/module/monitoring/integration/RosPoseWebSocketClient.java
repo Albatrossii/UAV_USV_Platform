@@ -35,7 +35,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 @Component
-@ConditionalOnExpression("'${app.ros.transport:v1}' == 'legacy' || '${app.ros.transport:v1}' == 'dual-test'")
+@ConditionalOnExpression("${app.runtime.ros-enabled:false} && ('${app.ros.transport:v1}' == 'legacy' || '${app.ros.transport:v1}' == 'dual-test')")
 public class RosPoseWebSocketClient implements WebSocket.Listener {
 
     private static final Logger log = LoggerFactory.getLogger(RosPoseWebSocketClient.class);

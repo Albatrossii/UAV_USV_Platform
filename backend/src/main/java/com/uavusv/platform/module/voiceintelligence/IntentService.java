@@ -11,6 +11,7 @@ import org.springframework.stereotype.Service;
 
 import java.time.*;
 import java.util.*;
+import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
@@ -26,17 +27,51 @@ public class IntentService {
                     "PAUSE", Pattern.compile("暂停|先停一下|暂停任务"),
                     "RESUME", Pattern.compile("继续|恢复(?:任务|执行|运行)?"),
                     "STOP", Pattern.compile("停止|终止|结束任务"));
-    // Exact, unambiguous commands can skip the local LLM round trip. The result still goes
-    // through runtime capability checks and is stored as a normal interpretation candidate.
+    // Short, explicit commands can skip the local LLM round trip. These are whole-utterance
+    // matches only; arbitrary sentences still use the configured parser and safety checks.
     private static final Map<String, String> EXACT_COMMANDS =
-            Map.of("开始任务", "START", "暂停任务", "PAUSE", "继续任务", "RESUME", "停止任务", "STOP");
+            Map.ofEntries(
+                    Map.entry("开始任务", "START"),
+                    Map.entry("开始执行任务", "START"),
+                    Map.entry("启动任务", "START"),
+                    Map.entry("执行任务", "START"),
+                    Map.entry("请开始任务", "START"),
+                    Map.entry("请开始执行任务", "START"),
+                    Map.entry("现在开始任务", "START"),
+                    Map.entry("开始当前任务", "START"),
+                    Map.entry("启动当前任务", "START"),
+                    Map.entry("暂停任务", "PAUSE"),
+                    Map.entry("暂停一下", "PAUSE"),
+                    Map.entry("暂停当前任务", "PAUSE"),
+                    Map.entry("暂停一下当前任务", "PAUSE"),
+                    Map.entry("请暂停任务", "PAUSE"),
+                    Map.entry("继续任务", "RESUME"),
+                    Map.entry("继续执行任务", "RESUME"),
+                    Map.entry("恢复任务", "RESUME"),
+                    Map.entry("恢复运行", "RESUME"),
+                    Map.entry("恢复执行", "RESUME"),
+                    Map.entry("请继续任务", "RESUME"),
+                    Map.entry("停止任务", "STOP"),
+                    Map.entry("停止执行任务", "STOP"),
+                    Map.entry("停止当前任务", "STOP"),
+                    Map.entry("停止当前运行任务", "STOP"),
+                    Map.entry("结束任务", "STOP"),
+                    Map.entry("结束当前任务", "STOP"),
+                    Map.entry("终止任务", "STOP"),
+                    Map.entry("终止当前任务", "STOP"),
+                    Map.entry("请停止任务", "STOP"),
+                    Map.entry("请停止当前任务", "STOP"),
+                    Map.entry("立即停止任务", "STOP"),
+                    Map.entry("马上停止任务", "STOP"),
+                    Map.entry("请立即停止任务", "STOP"));
     private static final Pattern NEGATED =
-            Pattern.compile("(不要|别|无需|不用|禁止).{0,6}(开始|启动|暂停|继续|恢复|停止|终止|结束)");
+            Pattern.compile("(不要|别|无需|不用|禁止).{0,24}(开始|启动|暂停|继续|恢复|停止|终止|结束|悬停|驻留|待命|返航|归队|降落|停船)");
     private static final Pattern UNSUPPORTED = Pattern.compile("攻击|打击|开火|围捕|包围|撤退|返航");
     private static final Pattern TARGETED =
             Pattern.compile(
-                    "(UAV|USV)[-_]?\\d+|(?:第?[一二三四五六七八九十\\d]+|某(?:一|个))号?(?:架|艘)?(?:无人机|无人艇)|(?:无人机|无人艇)[-_]?\\d+",
+                    "(UAV|USV)[-_]?\\d+|(?:第?[一二三四五六七八九十\\d]+|某(?:一|个))号?(?:架|艘)?(?:无人机|无人艇)|(?:无人机|无人艇)(?:[-_]?\\d+|[一二三四五六七八九十]+)",
                     Pattern.CASE_INSENSITIVE | Pattern.UNICODE_CASE);
+    private static final Pattern DEVICE_CUE = Pattern.compile("UAV|USV|无人机|无人艇", Pattern.CASE_INSENSITIVE | Pattern.UNICODE_CASE);
 
     private record Key(long user, String requestId) {}
 
@@ -44,6 +79,8 @@ public class IntentService {
         final String hash;
         final AsrResponses.Outcome outcome;
         final String action;
+        final String targetDeviceCode;
+        final String deviceCommandType;
         final String runtimeRef;
         final String generation;
         final Long contextVersion;
@@ -53,6 +90,8 @@ public class IntentService {
                 String hash,
                 AsrResponses.Outcome outcome,
                 String action,
+                String targetDeviceCode,
+                String deviceCommandType,
                 String runtimeRef,
                 String generation,
                 Long contextVersion,
@@ -60,6 +99,8 @@ public class IntentService {
             this.hash = hash;
             this.outcome = outcome;
             this.action = action;
+            this.targetDeviceCode = targetDeviceCode;
+            this.deviceCommandType = deviceCommandType;
             this.runtimeRef = runtimeRef;
             this.generation = generation;
             this.contextVersion = contextVersion;
@@ -140,7 +181,8 @@ public class IntentService {
         String text = normalize(body.path("text").asText());
         boolean exactCommand = EXACT_COMMANDS.containsKey(text);
         IntentClassification parsed = parse(text, body.path("allowedActions"), runtime);
-        boolean localLlm = "local-llm".equals(settings.getIntentProvider()) && !exactCommand;
+        boolean localLlm = "local-llm".equals(settings.getIntentProvider())
+                && !exactCommand && !"DEVICE_COMMAND".equals(parsed.action());
         ObjectNode data =
                 parsed.data(
                         requestId,
@@ -158,6 +200,8 @@ public class IntentService {
                         hash,
                         outcome,
                         parsed.action(),
+                        parsed.targetDeviceCode(),
+                        parsed.deviceCommandType(),
                         hint.isNull() ? null : hint.path("runtimeRef").asText(),
                         hint.isNull() ? null : hint.path("runtimeGeneration").asText(),
                         hint.isNull() ? null : hint.path("contextVersion").asLong(),
@@ -203,6 +247,28 @@ public class IntentService {
             throw new AsrFailure(409, "VOICE_INTERPRETATION_INVALID");
     }
 
+    public record TargetedCandidate(String deviceCode, String commandType) {}
+
+    public TargetedCandidate requireTargetedCandidate(
+            long user, String interpretationId, ObjectNode runtime) {
+        if (interpretationId == null || !AudioMultipart.UUID.matcher(interpretationId).matches())
+            throw new AsrFailure(409, "VOICE_INTERPRETATION_INVALID");
+        Entry entry;
+        synchronized (this) {
+            cleanup();
+            entry = entries.get(new Key(user, interpretationId));
+        }
+        if (entry == null || !"DEVICE_COMMAND".equals(entry.action)
+                || entry.targetDeviceCode == null || entry.deviceCommandType == null
+                || entry.runtimeRef == null
+                || !entry.runtimeRef.equals(runtime.path("runtimeRef").asText())
+                || !entry.generation.equals(runtime.path("runtimeGeneration").asText())
+                || entry.contextVersion == null
+                || entry.contextVersion.longValue() != runtime.path("contextVersion").asLong())
+            throw new AsrFailure(409, "VOICE_INTERPRETATION_INVALID");
+        return new TargetedCandidate(entry.targetDeviceCode, entry.deviceCommandType);
+    }
+
     private ObjectNode requireContext(long user, JsonNode hint) {
         if (hint.isNull()) return null;
         ObjectNode current;
@@ -219,17 +285,15 @@ public class IntentService {
     }
 
     private IntentClassification parse(String text, JsonNode allowed, ObjectNode runtime) {
+        if (TARGETED.matcher(text).find()
+                || (DEVICE_CUE.matcher(text).find()
+                        && Pattern.compile("悬停|驻留|待命|保持|返航|返回|归队|继续|停止|降落|停船").matcher(text).find()))
+            return parseTargeted(text, runtime);
         if (UNSUPPORTED.matcher(text).find())
             return new IntentClassification(
                     "UNSUPPORTED",
                     "UNSUPPORTED_CAPABILITY",
                     "该动作尚未接入算法能力，不能生成执行提案。",
-                    null);
-        if (TARGETED.matcher(text).find())
-            return new IntentClassification(
-                    "UNSUPPORTED",
-                    "UNSUPPORTED_TARGETING",
-                    "当前仅支持整队任务控制，暂不支持指定单台设备。",
                     null);
         if (NEGATED.matcher(text).find())
             return new IntentClassification(
@@ -237,33 +301,38 @@ public class IntentService {
                     "NEGATED_ACTION",
                     "检测到否定表达，为避免误执行，请重新明确指令。",
                     null);
-        List<String> matched =
-                ACTIONS.stream().filter(a -> PATTERNS.get(a).matcher(text).find()).sorted().toList();
-        if (matched.size() > 1)
-            return new IntentClassification(
-                    "NEEDS_CLARIFICATION",
-                    "AMBIGUOUS_ACTION",
-                    "一句话中包含多个动作，请一次只说明一个任务动作。",
-                    null);
         IntentClassification parsed;
         String exactAction = EXACT_COMMANDS.get(text);
         if (exactAction != null) {
             parsed = new IntentClassification("CANDIDATE", null, null, exactAction);
-        } else if ("local-llm".equals(settings.getIntentProvider())) {
-            if (llm == null) throw new AsrFailure(503, "VOICE_PROVIDER_UNAVAILABLE");
-            parsed = llm.classify(text);
-        } else if ("rules".equals(settings.getIntentProvider())) {
-            parsed =
-                    matched.isEmpty()
-                            ? new IntentClassification(
-                                    "NEEDS_CLARIFICATION",
-                                    "NO_SUPPORTED_ACTION",
-                                    "未识别到开始、暂停、继续或停止，请重新表述。",
-                                    null)
-                            : new IntentClassification(
-                                    "CANDIDATE", null, null, matched.get(0));
         } else {
-            throw new AsrFailure(503, "VOICE_PROVIDER_UNAVAILABLE");
+            List<String> matched =
+                    ACTIONS.stream()
+                            .filter(a -> PATTERNS.get(a).matcher(text).find())
+                            .sorted()
+                            .toList();
+            if (matched.size() > 1)
+                return new IntentClassification(
+                        "NEEDS_CLARIFICATION",
+                        "AMBIGUOUS_ACTION",
+                        "一句话中包含多个动作，请一次只说明一个任务动作。",
+                        null);
+            if ("local-llm".equals(settings.getIntentProvider())) {
+                if (llm == null) throw new AsrFailure(503, "VOICE_PROVIDER_UNAVAILABLE");
+                parsed = llm.classify(text);
+            } else if ("rules".equals(settings.getIntentProvider())) {
+                parsed =
+                        matched.isEmpty()
+                                ? new IntentClassification(
+                                        "NEEDS_CLARIFICATION",
+                                        "NO_SUPPORTED_ACTION",
+                                        "未识别到开始、暂停、继续或停止，请重新表述。",
+                                        null)
+                                : new IntentClassification(
+                                        "CANDIDATE", null, null, matched.get(0));
+            } else {
+                throw new AsrFailure(503, "VOICE_PROVIDER_UNAVAILABLE");
+            }
         }
         if (parsed.action() == null) return parsed;
         String action = parsed.action();
@@ -280,6 +349,86 @@ public class IntentService {
                     "当前运行上下文不支持该动作。",
                     null);
         return parsed;
+    }
+
+    private IntentClassification parseTargeted(String text, ObjectNode runtime) {
+        if (NEGATED.matcher(text).find())
+            return new IntentClassification(
+                    "NOT_ACTIONABLE", "NEGATED_ACTION", "检测到否定表达，请重新明确指令。", null);
+        if (runtime == null || !runtime.path("_algorithmCode").asText().endsWith("_SINGLE_DEVICE"))
+            return new IntentClassification(
+                    "UNSUPPORTED", "UNSUPPORTED_TARGETING", "当前运行实例未启用单设备控制。", null);
+
+        List<String> members = new ArrayList<>();
+        runtime.path("_members").forEach(n -> members.add(n.asText()));
+        List<String> mentioned = new ArrayList<>();
+        for (String code : members) {
+            String compactCode = code.replaceAll("[^A-Za-z0-9]", "").toUpperCase(Locale.ROOT);
+            String compactText = text.replaceAll("[^A-Za-z0-9]", "").toUpperCase(Locale.ROOT);
+            if (!compactCode.isEmpty() && compactText.contains(compactCode)) mentioned.add(code);
+        }
+        Matcher matcher = TARGETED.matcher(text);
+        Set<String> targetTokens = new LinkedHashSet<>();
+        while (matcher.find()) targetTokens.add(matcher.group());
+        for (String token : targetTokens) {
+            String compactToken = token.replaceAll("[^A-Za-z0-9]", "").toUpperCase(Locale.ROOT);
+            if (compactToken.matches("UAV\\d+") || compactToken.matches("USV\\d+")) {
+                String type = compactToken.startsWith("UAV") ? "UAV" : "USV";
+                String number = compactToken.substring(3);
+                for (String code : members) {
+                    String compact = code.replaceAll("[^A-Za-z0-9]", "").toUpperCase(Locale.ROOT);
+                    if (compact.startsWith(type) && compact.substring(3).replaceFirst("^0+", "").equals(number.replaceFirst("^0+", ""))) mentioned.add(code);
+                }
+            } else {
+                Matcher cn = Pattern.compile("(?:第?([一二三四五六七八九十]|\\d+)号?(?:架|艘)?(无人机|无人艇)|(无人机|无人艇)([一二三四五六七八九十]|\\d+))").matcher(token);
+                if (cn.find()) {
+                    String kind = cn.group(2) != null ? cn.group(2) : cn.group(3);
+                    String ordinal = cn.group(1) != null ? cn.group(1).trim() : cn.group(4).trim();
+                    int number = chineseNumber(ordinal);
+                    String type = "无人机".equals(kind) ? "UAV" : "USV";
+                    for (String code : members) {
+                        String compact = code.replaceAll("[^A-Za-z0-9]", "").toUpperCase(Locale.ROOT);
+                        String digits = compact.startsWith(type) ? compact.substring(3).replaceFirst("^0+", "") : "";
+                        if (!digits.isEmpty() && digits.equals(Integer.toString(number))) mentioned.add(code);
+                    }
+                }
+            }
+        }
+        mentioned = mentioned.stream().distinct().toList();
+        if (mentioned.size() != 1)
+            return new IntentClassification(
+                    "NEEDS_CLARIFICATION", "AMBIGUOUS_TARGET", "请明确一个当前场景中存在的设备编号。", null);
+        String target = mentioned.get(0);
+        boolean uav = target.toUpperCase(Locale.ROOT).startsWith("UAV");
+        boolean usv = target.toUpperCase(Locale.ROOT).startsWith("USV");
+        if (!uav && !usv)
+            return new IntentClassification("UNSUPPORTED", "UNSUPPORTED_TARGETING", "目标设备类型不支持语音控制。", null);
+
+        Map<String, String> commands = uav
+                ? Map.of("悬停", "UAV_HOVER", "暂停", "UAV_HOVER", "返航", "UAV_RETURN", "返回", "UAV_RETURN", "归队", "UAV_RESUME", "继续", "UAV_RESUME", "停止", "UAV_LAND", "降落", "UAV_LAND")
+                : Map.of("驻留", "USV_HOLD", "待命", "USV_HOLD", "保持", "USV_HOLD", "暂停", "USV_HOLD", "返航", "USV_RETURN", "返回", "USV_RETURN", "归队", "USV_RESUME", "继续", "USV_RESUME", "停止", "USV_STOP", "停船", "USV_STOP");
+        Set<String> matched = new LinkedHashSet<>();
+        long actionWords = commands.keySet().stream().filter(text::contains).count();
+        commands.forEach((word, command) -> { if (text.contains(word)) matched.add(command); });
+        if (actionWords != 1 || matched.size() != 1)
+            return new IntentClassification(
+                    "NEEDS_CLARIFICATION", "AMBIGUOUS_ACTION", "请一次明确一个设备动作，例如“UAV-001 悬停”。", null);
+        String command = matched.iterator().next();
+        boolean deviceCommandCapable = false;
+        for (JsonNode capability : runtime.path("capabilities"))
+            deviceCommandCapable |= "DEVICE_COMMAND".equals(capability.asText());
+        if (!deviceCommandCapable)
+            return new IntentClassification("UNSUPPORTED", "UNSUPPORTED_CAPABILITY", "当前算法实例没有声明单设备控制能力。", null);
+        return new IntentClassification("CANDIDATE", null, null, "DEVICE_COMMAND", target, command);
+    }
+
+    private static int chineseNumber(String text) {
+        if (text.matches("\\d+")) return Integer.parseInt(text);
+        return switch (text) {
+            case "一" -> 1; case "二" -> 2; case "三" -> 3; case "四" -> 4; case "五" -> 5;
+            case "六" -> 6; case "七" -> 7; case "八" -> 8; case "九" -> 9; case "十" -> 10;
+            default -> -1;
+        };
     }
 
     private void validate(String requestId, JsonNode body) {

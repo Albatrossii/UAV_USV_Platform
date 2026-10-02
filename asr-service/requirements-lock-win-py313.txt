@@ -21,6 +21,8 @@ packaging==26.3
 protobuf==7.36.2
 psutil==7.2.2
 PyYAML==6.0.3
+sherpa-onnx==1.13.8
+sherpa-onnx-core==1.13.8
 tokenizers==0.23.2
 tqdm==4.70.1
 typing_extensions==4.16.0

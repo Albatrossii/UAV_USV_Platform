@@ -15,7 +15,7 @@ const TARGET_FPS = 30
 const store = useVisualSensorStore()
 const radarStore = useRadarSensorStore()
 const bridge = useUnityBridgeStore()
-const activeSourceId = ref(DETECTOR_ID)
+const activeSourceId = ref('uav_01')
 const focusedCameraId = ref('uav_01')
 let statusTimer: number | undefined
 let spectrumTimer: number | undefined
@@ -33,7 +33,8 @@ const totalSources = computed(() => sensors.value.length + 1)
 const onlineSources = computed(() => overview.value.onlineCount + (radar.value?.connected ? 1 : 0))
 const linkOnline = computed(() => store.unityBridgeReady || overview.value.gatewayConnected || Boolean(radar.value?.connected))
 const linkLabel = computed(() => linkOnline.value ? '融合链路在线' : '等待视觉链路')
-const detectorCount = computed(() => radar.value?.detectionCount ?? 0)
+const detectorTargets = computed(() => (radar.value?.items ?? []).filter(item => item.kind === 'DETECTION'))
+const detectorCount = computed(() => detectorTargets.value.length)
 const spectrumActive = computed(() => Boolean(
   radar.value?.spectrumConnected && radar.value.spectrumPowersDbm?.length,
 ))
@@ -76,12 +77,12 @@ const detectorUpdatedAgo = computed(() => {
   return delay < 1000 ? `${delay} ms` : `${(delay / 1000).toFixed(1)} s`
 })
 const radarRange = computed(() => {
-  const ranges = (radar.value?.items ?? [])
+  const ranges = detectorTargets.value
     .map(item => item.range ?? (item.x != null && item.y != null ? Math.hypot(item.x, item.y) : 0))
     .filter(value => Number.isFinite(value) && value > 0)
   return Math.max(100, ...ranges)
 })
-const radarPoints = computed(() => (radar.value?.items ?? []).slice(0, 80).map((item, index) => ({
+const radarPoints = computed(() => detectorTargets.value.slice(0, 80).map((item, index) => ({
   item,
   style: radarPointStyle(item),
   label: item.id || `T-${String(index + 1).padStart(3, '0')}`,
@@ -179,6 +180,8 @@ onMounted(async () => {
   await Promise.all([store.refreshOverview(), radarStore.refresh(true)])
   if (!viewActive) return
   focusedCameraId.value = overview.value.focusedCameraId || sensors.value[0]?.cameraId || 'uav_01'
+  activeSourceId.value = focusedCameraId.value
+  await store.select(focusedCameraId.value)
   subscribe(focusedCameraId.value)
   await nextTick()
   window.dispatchEvent(new CustomEvent('unity-runtime-track', { detail: { duration: 900 } }))

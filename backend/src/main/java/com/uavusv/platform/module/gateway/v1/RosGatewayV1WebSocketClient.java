@@ -35,7 +35,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 @Component
 @org.springframework.boot.autoconfigure.condition.ConditionalOnExpression(
-        "('${app.ros.transport:v1}' == 'v1' || '${app.ros.transport:v1}' == 'dual-test') && ${app.gateway.v1.enabled:true}")
+        "('${app.ros.transport:v1}' == 'v1' || '${app.ros.transport:v1}' == 'dual-test') && ${app.gateway.v1.enabled:false}")
 public class RosGatewayV1WebSocketClient implements WebSocket.Listener {
 
     private static final Logger log = LoggerFactory.getLogger(RosGatewayV1WebSocketClient.class);

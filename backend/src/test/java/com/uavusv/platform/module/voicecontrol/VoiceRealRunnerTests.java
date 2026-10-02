@@ -5,8 +5,13 @@ import static org.mockito.Mockito.*;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.uavusv.platform.module.mission.repository.MissionRunRepository;
 import com.uavusv.platform.module.mission.service.*;
+import com.uavusv.platform.module.runtimecontrol.dto.RuntimeCommandResponse;
+import com.uavusv.platform.module.runtimecontrol.entity.CommandStatus;
+import com.uavusv.platform.module.runtimecontrol.service.RuntimeControlService;
+import com.uavusv.platform.module.voiceintelligence.IntentService;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.test.util.ReflectionTestUtils;
 import java.nio.file.*;
 import java.util.*;
@@ -20,6 +25,75 @@ class VoiceRealRunnerTests extends VoiceControlTests {
         while (!condition.getAsBoolean()) {
             if (System.nanoTime() >= end) fail(reason);
             Thread.sleep(25);
+        }
+    }
+
+    @Test
+    void singleDeviceVoiceConfirmationReachesRealRunnerAndWaitsForFrameReceipt() throws Exception {
+        String source = VoiceJson.uuid();
+        var intents = mock(IntentService.class);
+        app = new VoiceCommandApplicationService(s, j, t, a, r, settings, intents);
+        var runtimeService = mock(RuntimeControlService.class);
+        @SuppressWarnings("unchecked")
+        ObjectProvider<RuntimeControlService> provider = mock(ObjectProvider.class);
+        when(provider.getObject()).thenReturn(runtimeService);
+        worker = new VoiceDispatcher(s, j, t, r, provider);
+        var manager = new AlgorithmRuntimeManager(
+                new ObjectMapper(), mock(MissionRunRepository.class), mock(AlgorithmCatalogService.class),
+                System.getenv().getOrDefault("PYTHON_COMMAND", "python"), System.getenv("P0_REAL_RUNNER"));
+        ReflectionTestUtils.setField(manager, "voiceBridge", new VoiceRuntimeBridge(r, app, worker, j));
+        when(intents.requireTargetedCandidate(eq(1L), eq(source), any()))
+                .thenReturn(new IntentService.TargetedCandidate("UAV-001", "UAV_HOVER"));
+        when(runtimeService.issueCommand(any(), any())).thenAnswer(invocation -> {
+            var request = invocation.<com.uavusv.platform.module.runtimecontrol.dto.RuntimeCommandRequest>getArgument(0);
+            var result = manager.controlDevice(
+                    request.runId(), request.deviceCode(), request.commandType().name());
+            var selected = (com.fasterxml.jackson.databind.JsonNode) null;
+            for (var agent : result.latestFrame().path("agents")) {
+                if ("HOLDING".equals(agent.path("status").asText())) {
+                    selected = agent;
+                    break;
+                }
+            }
+            assertNotNull(selected, "Authoritative frame did not report any held device");
+            return new RuntimeCommandResponse(
+                    1L, "single-device-test", request.commandType(), request.runtimeScope(),
+                    request.runtimeInstanceId(), CommandStatus.SUCCEEDED, "applied", null,
+                    java.time.LocalDateTime.now());
+        });
+        try {
+            var prepared = manager.prepare(
+                    990032L, "ESCORT_GUARD_SINGLE_DEVICE",
+                    Map.<String, Object>of("standaloneVirtualSimulation", true, "seed", 42));
+            String ref = prepared.runtimeRef();
+            until(() -> r.channel(ref).heartbeatNanos != null, "No single-device runtime heartbeat");
+            var proposal = app.createProposal(VoiceJson.uuid(), source, j.object()
+                    .put("runtimeRef", ref)
+                    .put("runtimeGeneration", prepared.runtimeGeneration())
+                    .put("expectedContextVersion", app.context(ref).path("contextVersion").asLong())
+                    .put("intent", "SINGLE_DEVICE_CONTROL")).data();
+            assertEquals("AWAITING_CONFIRMATION", proposal.path("status").asText());
+            assertTrue(proposal.path("requiresConfirmation").asBoolean());
+            assertEquals("UAV-001", proposal.path("plan").path("targetDeviceCode").asText());
+
+            var confirmed = app.confirm(
+                    proposal.path("proposalId").asText(), VoiceJson.uuid(), confirmation(proposal)).data();
+            String executionId = confirmed.path("execution").path("executionId").asText();
+            worker.tick();
+            until(() -> "SUCCEEDED".equals(app.execution(executionId).path("state").asText()),
+                    "Single-device voice command did not receive authoritative success");
+
+            var execution = app.execution(executionId);
+            assertEquals("DEVICE_COMMAND", execution.path("action").asText());
+            assertEquals("SUCCESS", execution.path("outcome").asText());
+            var requestCaptor = org.mockito.ArgumentCaptor.forClass(
+                    com.uavusv.platform.module.runtimecontrol.dto.RuntimeCommandRequest.class);
+            verify(runtimeService, times(1)).issueCommand(requestCaptor.capture(), eq("alice"));
+            assertEquals("UAV-001", requestCaptor.getValue().deviceCode());
+            assertEquals("UAV_HOVER", requestCaptor.getValue().commandType().name());
+            assertEquals("ALGORITHM_RUN:990032", requestCaptor.getValue().runtimeInstanceId());
+        } finally {
+            manager.close();
         }
     }
 

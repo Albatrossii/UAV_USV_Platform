@@ -29,6 +29,8 @@ import {
   fetchAlgorithmRunStatus,
   prepareAlgorithmRun,
 } from '@/api/algorithm'
+import { type VehicleCommandType } from '@/api/runtimeControl'
+import { issueSingleDeviceCommand } from '@/services/singleDeviceControl'
 import { useAuthStore } from '@/stores/auth'
 import { useVoiceControlStore } from '@/stores/voiceControl'
 import type { AlgorithmRuntimeFrame } from '@/types/mission'
@@ -111,9 +113,16 @@ type CaptureGroupMetric = {
   triggerReason?: string
 }
 
-type InspectorTab = 'status' | 'voice' | 'protocol' | 'logs'
+type InspectorTab = 'status' | 'voice' | 'protocol' | 'logs' | 'single'
 
 type TacticalEvent = SimulationTacticalNotice
+
+type ControlledDeviceSummary = {
+  code: string
+  authority: string
+  motionState: string
+  label: string
+}
 
 type VirtualFleetRecoverySnapshot = {
   version: 1
@@ -183,6 +192,8 @@ const algorithmPrepared = ref(restoredRuntime !== null)
 const algorithmPrepareError = ref('')
 const algorithmPreparing = ref(false)
 const missionActionMessage = ref('')
+const singleDeviceCommandPending = ref(false)
+const singleDeviceCommandMessage = ref('')
 const webglExpanded = ref(false)
 const leftPanelCollapsed = ref(false)
 const rightPanelCollapsed = ref(false)
@@ -202,15 +213,17 @@ const plannedScenarioPoses = ref<GridScenarioPose[]>(restoredRuntime?.plannedSce
 const sceneLocked = computed(() => (
   state.mission === 'RUNNING'
   || state.mission === 'PAUSED'
-  || state.mission === 'COMPLETING'
 ))
 const scenarioPlan = computed(() => deriveAdaptiveScenarioPlan(state.uavCount, state.usvCount))
+const isCaptureAlgorithm = computed(() => state.algorithm.startsWith('GB_SFLA_CS'))
+const isEscortAlgorithm = computed(() => state.algorithm.startsWith('ESCORT_GUARD'))
+const isSingleDeviceAlgorithm = computed(() => state.algorithm.endsWith('_SINGLE_DEVICE'))
 const configuredTargetCount = computed(() => (
-  state.algorithm === 'GB_SFLA_CS'
+  isCaptureAlgorithm.value
     ? scenarioPlan.value.threatCount
     : scenarioPlan.value.targetCount
 ))
-const stageCompositionLabel = computed(() => state.algorithm === 'GB_SFLA_CS'
+const stageCompositionLabel = computed(() => isCaptureAlgorithm.value
   ? `${state.uavCount} UAV · ${state.usvCount} USV · ${scenarioPlan.value.threatCount} 敌船`
   : `${state.uavCount} UAV · ${state.usvCount} USV · ${scenarioPlan.value.protectedCount} 护航目标 · ${scenarioPlan.value.threatCount} 敌船`)
 const missionPhase = computed(() => String(
@@ -389,7 +402,7 @@ function handleWorkbenchTransitionCancel(event: TransitionEvent) {
 }
 const displayCaptureStage = (stage: unknown) => {
   const value = Number(stage ?? 0)
-  if (state.algorithm === 'GB_SFLA_CS') {
+  if (isCaptureAlgorithm.value) {
     // The capture adapter already exposes its user-facing stages as 1/2/3.
     return Math.min(3, Math.max(1, value || 1))
   }
@@ -412,14 +425,72 @@ const selectedFrameItem = computed(() => {
     ?? currentAlgorithmFrame.value.targets.find(item => item.code === selectedDevice.value)
     ?? null
 })
-const phaseSteps = computed(() => state.algorithm === 'ESCORT_GUARD'
+const controllableAgents = computed(() => currentAlgorithmFrame.value?.agents ?? [])
+const selectedControlAgent = computed(() => (
+  controllableAgents.value.find(item => item.code === selectedDevice.value) ?? null
+))
+const selectedControlState = computed(() => {
+  if (!selectedDevice.value) return null
+  const states = missionMetrics.value.deviceControlStates
+  if (!states || typeof states !== 'object') return null
+  return (states as Record<string, { controlAuthority?: string; motionState?: string }>)[selectedDevice.value] ?? null
+})
+const controlledDeviceStateLabels: Record<string, string> = {
+  HOLDING: '悬停 / 驻留',
+  STOPPED: '已停止',
+  RETURNING: '返航中',
+  RETURNED: '已返航',
+  HOLDING_AT_HOME: '已返航',
+  REJOINING: '安全归队中',
+}
+const controlledDevices = computed<ControlledDeviceSummary[]>(() => {
+  const states = missionMetrics.value.deviceControlStates
+  if (!states || typeof states !== 'object') return []
+  return Object.entries(states as Record<string, { controlAuthority?: string; motionState?: string }>)
+    .map(([code, value]) => {
+      const motionState = String(value?.motionState ?? 'OPERATOR').toUpperCase()
+      return {
+        code,
+        authority: String(value?.controlAuthority ?? 'OPERATOR').toUpperCase(),
+        motionState,
+        label: controlledDeviceStateLabels[motionState] ?? motionState,
+      }
+    })
+    .sort((left, right) => left.code.localeCompare(right.code))
+})
+const singleDeviceRuntimeNotice = computed(() => {
+  if (!isSingleDeviceAlgorithm.value) return ''
+  const blocker = String(missionMetrics.value.completionBlocker ?? '')
+  if (blocker === 'INSUFFICIENT_ACTIVE_FORCE') {
+    const deficit = Math.max(1, Number(missionMetrics.value.activeMissionDeviceDeficit ?? 1))
+    const missingTypes = Array.isArray(missionMetrics.value.missingActiveDeviceTypes)
+      ? missionMetrics.value.missingActiveDeviceTypes.join(' / ')
+      : ''
+    return missingTypes
+      ? `剩余编组缺少 ${missingTypes}，任务保持运行；请让对应类型设备安全归队。`
+      : `剩余兵力低于最低要求，任务保持运行；请让至少 ${deficit} 台设备安全归队。`
+  }
+  const returning = Number(missionMetrics.value.returningDeviceCount ?? 0)
+  const returned = Number(missionMetrics.value.returnedDeviceCount ?? 0)
+  if (returning > 0) {
+    return `等待 ${returning} 台设备抵达返航点；任务完成度暂时保持在 99%。`
+  }
+  if (returned > 0) {
+    return `${returned} 台设备已返航并退出任务编组，不再阻塞任务成功。`
+  }
+  if (blocker === 'OPERATOR_OVERRIDE') {
+    return '存在人工接管设备，请选择安全归队或独立返航。'
+  }
+  return ''
+})
+const phaseSteps = computed(() => isEscortAlgorithm.value
   ? ['编队护航', '意图识别', '分向守卫', '协同拦截', '追逃压制', '动态围捕', '稳定闭环', '完成']
   : ['目标逃逸', '协同追击', '截击部署', '动态围捕', '稳定闭环', '完成'])
 const activePhaseIndex = computed(() => {
   const phase = missionPhase.value.toUpperCase()
   if (state.mission === 'COMPLETED') return phaseSteps.value.length - 1
   if (phase === 'COMPLETED') {
-    if (state.algorithm !== 'GB_SFLA_CS') return phaseSteps.value.length - 1
+    if (!isCaptureAlgorithm.value) return phaseSteps.value.length - 1
     const rawProgress = Number(missionMetrics.value.missionProgress ?? missionMetrics.value.progress ?? 0)
     const capturedTargets = Number(missionMetrics.value.capturedTargetCount ?? 0)
     // Defensive consistency gate: a stale aggregate stage must never light
@@ -429,7 +500,7 @@ const activePhaseIndex = computed(() => {
     }
     return phaseSteps.value.length - 2
   }
-  if (state.algorithm === 'ESCORT_GUARD') {
+  if (isEscortAlgorithm.value) {
     if (phase === 'COMPLETED') return 7
     if (phase === 'SAFE_GATE_TRANSIT' || phase === 'STABLE_CONTAINMENT') return 6
     if (phase === 'GAP_REPAIR' || phase === 'ENCIRCLEMENT') return 5
@@ -576,15 +647,31 @@ const voiceUnitySession = computed(() => ({
   sceneRevision: presentationSceneRevision.value,
 }))
 
-const algorithmDescription = computed(() => state.algorithm === 'GB_SFLA_CS'
-  ? '算法负责目标分配、围捕航点、设备速度方向和捕获状态。'
-  : '算法负责护航编队、意图识别、掩护撤离、协同拦截与动态围控。')
+const algorithmDescription = computed(() => {
+  const base = isCaptureAlgorithm.value
+    ? '算法负责目标分配、围捕航点、设备速度方向和捕获状态。'
+    : '算法负责护航编队、意图识别、掩护撤离、协同拦截与动态围控。'
+  return isSingleDeviceAlgorithm.value
+    ? `${base} 当前模式支持单设备临时接管与安全归队。`
+    : base
+})
 
 const speedValid = computed(() =>
   state.uavSpeed >= 0
   && state.uavSpeed <= 15
   && state.usvSpeed >= 0
   && state.usvSpeed <= 4)
+const missionActionDisabled = computed(() => {
+  if (
+    ['RUNNING', 'COMPLETING', 'COMPLETED', 'FAILED', 'CANCELLED'].includes(state.mission)
+    || !speedValid.value
+    || algorithmPreparing.value
+  ) return true
+  // Resuming uses the still-paused algorithm process. Unity can recover its
+  // renderer independently and will catch up from the latest cached frame.
+  if (state.mission === 'PAUSED') return !algorithmPrepared.value
+  return !unityReady.value || scenarioLoading.value || scenarioReadyRunId.value !== state.runId
+})
 
 function addLog(message: string) {
   const time = new Date().toLocaleTimeString('zh-CN', { hour12: false })
@@ -732,7 +819,19 @@ async function onUnityReady() {
     try {
       const runtime = await fetchAlgorithmRunStatus(state.runId)
       const runtimeState = runtime.state.toUpperCase()
-      if (!['RUNNING', 'PAUSED', 'PREPARED', 'STOPPED', 'COMPLETED', 'FAILED', 'CANCELLED'].includes(runtimeState)) {
+      if (runtimeState === 'LOST') {
+        // A standalone run can be replaced by another tab or a newly generated
+        // scenario while this tab still has a recovery snapshot. Keeping that
+        // snapshot leaves voice commands correctly parsed but permanently
+        // blocked against the dead runtime. Discard it and build a fresh preview.
+        algorithmPrepared.value = false
+        addLog(`原算法运行已失效（LOST），清理恢复记录并重新生成仿真预览 runId=${state.runId}`)
+        await resetMission()
+        return
+      }
+      // PREVIEW is a valid prepared algorithm runtime. The scene can be
+      // restored while still in preview; the user can start it afterward.
+      if (!['RUNNING', 'PAUSED', 'PREPARED', 'PREVIEW', 'STOPPED', 'COMPLETED', 'FAILED', 'CANCELLED'].includes(runtimeState)) {
         failSceneRecovery(`算法运行状态为 ${runtimeState}，不能恢复原运行场景。`)
         clearRuntimeRecovery()
         return
@@ -974,7 +1073,7 @@ async function generateScenario() {
     fleetOrigin: fleetOriginEnu,
     uavSpeedMps: state.uavSpeed,
     usvSpeedMps: state.usvSpeed,
-    captureMode: state.algorithm === 'GB_SFLA_CS',
+    captureMode: isCaptureAlgorithm.value,
     scenarioId: state.runId,
   })
   initialScenarioPoses.value = plannedScenarioPoses.value
@@ -982,7 +1081,7 @@ async function generateScenario() {
   scenarioLoading.value = true
   const generationRunId = state.runId
 
-  if (state.algorithm === 'ESCORT_GUARD') {
+  if (isEscortAlgorithm.value) {
     addLog(`authoritative escort preview pending: runId=${state.runId}`)
     const prepared = await prepareExternalAlgorithm(true, [])
     if (state.runId !== generationRunId) return
@@ -1033,10 +1132,10 @@ async function generateScenario() {
     uavCount: state.uavCount,
     usvCount: state.usvCount,
     targetCount: configuredTargetCount.value,
-    layoutVersion: state.algorithm === 'ESCORT_GUARD' ? 'ADAPTIVE_MULTI_TARGET_V2' : 'ADAPTIVE_MULTI_CAPTURE_V2',
+    layoutVersion: isEscortAlgorithm.value ? 'ADAPTIVE_MULTI_TARGET_V2' : 'ADAPTIVE_MULTI_CAPTURE_V2',
     initialPosesCoordinateFrame: 'GLOBAL_ENU',
     initialPoses: plannedScenarioPoses.value,
-    initialSpeedMps: state.algorithm === 'GB_SFLA_CS' ? state.uavSpeed : state.usvSpeed,
+    initialSpeedMps: isCaptureAlgorithm.value ? state.uavSpeed : state.usvSpeed,
   })
 }
 
@@ -1045,12 +1144,13 @@ function buildAlgorithmPrepareConfig(initialPoses: ScenarioInitialPose[]) {
     uavCount: state.uavCount,
     usvCount: state.usvCount,
     targetCount: configuredTargetCount.value,
-    protectedCount: state.algorithm === 'ESCORT_GUARD' ? scenarioPlan.value.protectedCount : 0,
+    protectedCount: isEscortAlgorithm.value ? scenarioPlan.value.protectedCount : 0,
     threatCount: scenarioPlan.value.threatCount,
     simultaneousThreats: scenarioPlan.value.simultaneousThreats,
     worldWidth: scenarioPlan.value.worldWidth,
     worldHeight: scenarioPlan.value.worldHeight,
-    adaptiveMultiTarget: state.algorithm === 'ESCORT_GUARD',
+    adaptiveMultiTarget: isEscortAlgorithm.value,
+    singleDeviceControlEnabled: isSingleDeviceAlgorithm.value,
     uavSpeedMps: state.uavSpeed,
     usvSpeedMps: state.usvSpeed,
     coordinateFrame: 'FLEET_LOCAL_ENU',
@@ -1058,8 +1158,8 @@ function buildAlgorithmPrepareConfig(initialPoses: ScenarioInitialPose[]) {
     fleetOrigin: fleetOriginEnu,
     initialPoses,
     targetBehavior: 'MOVING',
-    previewEnabled: state.algorithm === 'GB_SFLA_CS',
-    threatMinDistanceM: state.algorithm === 'GB_SFLA_CS' ? 90 : 170,
+    previewEnabled: isCaptureAlgorithm.value,
+    threatMinDistanceM: isCaptureAlgorithm.value ? 90 : 170,
     standaloneVirtualSimulation: true,
   }
 }
@@ -1089,7 +1189,7 @@ function prepareExternalAlgorithm(
       // skipping directly to the latest sequence number reported by status.
       state.sequence = 0
       addLog(`algorithm prepared: ${state.algorithm} runId=${prepareRunId}`)
-      if (state.algorithm === 'GB_SFLA_CS') startAlgorithmPolling()
+      if (isCaptureAlgorithm.value) startAlgorithmPolling()
       return true
     } catch (error) {
       algorithmPrepared.value = false
@@ -1106,18 +1206,26 @@ function prepareExternalAlgorithm(
 
 async function startMission() {
   missionActionMessage.value = ''
-  if (
+  const resuming = state.mission === 'PAUSED'
+  if (!speedValid.value) {
+    missionActionMessage.value = '速度配置无效，请修正后再启动。'
+    addLog(`missionStart blocked: ${missionActionMessage.value} runId=${state.runId}`)
+    return
+  }
+  if (!resuming && (
     !unityReady.value
-    || !speedValid.value
     || scenarioLoading.value
     || scenarioReadyRunId.value !== state.runId
-  ) {
+  )) {
     missionActionMessage.value = scenarioLoading.value || scenarioReadyRunId.value !== state.runId
       ? '场景仍在等待 Unity 确认，请重新生成场景后再试。'
-      : !unityReady.value
-        ? 'Unity WebGL 尚未就绪，暂时不能启动算法。'
-        : '速度配置无效，请修正后再启动。'
+      : 'Unity WebGL 尚未就绪，暂时不能启动新任务。'
     addLog(`missionStart blocked: ${missionActionMessage.value} runId=${state.runId}`)
+    return
+  }
+  if (resuming && !algorithmPrepared.value) {
+    missionActionMessage.value = '原暂停算法实例已不可用；为避免清零进度，没有自动创建新任务。请恢复运行实例或重新生成场景。'
+    addLog(`missionResume blocked: paused algorithm runtime unavailable runId=${state.runId}`)
     return
   }
   if (!algorithmPrepared.value) {
@@ -1136,11 +1244,12 @@ async function startMission() {
     return
   }
   try {
-    const resuming = state.mission === 'PAUSED'
-    await controlAlgorithmRun(state.runId, 'start')
+    await controlAlgorithmRun(state.runId, resuming ? 'resume' : 'start')
     state.mission = 'RUNNING'
     startMissionClock(resuming)
-    missionActionMessage.value = '算法已启动。'
+    missionActionMessage.value = !unityReady.value && resuming
+      ? '算法已继续；Unity 展示恢复后会同步最新画面。'
+      : '算法已启动。'
     addLog(
       `algorithm coordinates: FLEET_LOCAL_ENU`
       + ` origin=(${fleetOriginEnu.eastM},${fleetOriginEnu.northM},${fleetOriginEnu.upM})`,
@@ -1149,7 +1258,7 @@ async function startMission() {
     startAlgorithmPolling()
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
-    if (/停止|stop|not found|不存在/i.test(message)) {
+    if (!resuming && /停止|stop|not found|不存在/i.test(message)) {
       algorithmPrepared.value = false
       algorithmPreparePromise = null
       addLog(`algorithm process unavailable, rebuilding runId=${state.runId}`)
@@ -1160,7 +1269,6 @@ async function startMission() {
           return
         }
         try {
-          const resuming = state.mission === 'PAUSED'
           await controlAlgorithmRun(state.runId, 'start')
           state.mission = 'RUNNING'
           startMissionClock(resuming)
@@ -1282,15 +1390,31 @@ async function applyAlgorithmFrame(
   send('applyPoseBatch', { ...adapted.payload, runId: state.runId })
   if (frame.terminalStatus) {
     const terminal = frame.terminalStatus.toUpperCase()
-    pendingTerminalSequence.value = frame.sequence
-    pendingTerminalStatus.value = terminal
-    state.mission = 'COMPLETING'
-    stopAlgorithmPolling()
-    addLog(
-      `mission terminal pending Unity apply: ${terminal}`
-      + ` sequence=${frame.sequence}`
-      + ` ${String(frame.metrics.terminalReason ?? '')}`,
-    )
+    const confirmedTerminal = terminal === 'COMPLETED'
+      ? 'COMPLETED'
+      : terminal === 'FAILED'
+        ? 'FAILED'
+        : terminal
+    if (state.mission === confirmedTerminal) {
+      // The voice/runtime context can confirm the backend terminal state before
+      // this in-flight frame finishes applying. Never move the page backwards
+      // from that authoritative terminal state into COMPLETING.
+      pendingTerminalSequence.value = null
+      pendingTerminalStatus.value = null
+      algorithmPrepared.value = false
+      stopAlgorithmPolling()
+      addLog(`mission terminal already confirmed: ${terminal} sequence=${frame.sequence}`)
+    } else {
+      pendingTerminalSequence.value = frame.sequence
+      pendingTerminalStatus.value = terminal
+      state.mission = 'COMPLETING'
+      stopAlgorithmPolling()
+      addLog(
+        `mission terminal pending Unity apply: ${terminal}`
+        + ` sequence=${frame.sequence}`
+        + ` ${String(frame.metrics.terminalReason ?? '')}`,
+      )
+    }
   }
 }
 
@@ -1334,7 +1458,7 @@ async function pollAlgorithmFrame() {
     algorithmPollInFlight
     || (
       state.mission !== 'RUNNING'
-      && !(state.algorithm === 'GB_SFLA_CS' && state.mission === 'STOPPED')
+      && !(isCaptureAlgorithm.value && state.mission === 'STOPPED')
     )
     || !algorithmPrepared.value
     || !unityReady.value
@@ -1384,11 +1508,83 @@ function followSelectedDevice() {
   })
 }
 
+function selectDeviceForControl(deviceCode: string) {
+  selectedDevice.value = deviceCode
+  if (!deviceCode || !unityReady.value) return
+  send('selectDevice', { deviceCode })
+}
+
+function handleControlDeviceSelection(event: Event) {
+  selectDeviceForControl((event.target as HTMLSelectElement).value)
+}
+
+function resolveSingleDeviceCommand(
+  action: 'hold' | 'stop' | 'return' | 'rejoin',
+): VehicleCommandType | null {
+  const agent = selectedControlAgent.value
+  if (!agent) return null
+  if (agent.type === 'UAV') {
+    return ({
+      hold: 'UAV_HOVER',
+      stop: 'UAV_LAND',
+      return: 'UAV_RETURN',
+      rejoin: 'UAV_RESUME',
+    } as const)[action]
+  }
+  return ({
+    hold: 'USV_HOLD',
+    stop: 'USV_STOP',
+    return: 'USV_RETURN',
+    rejoin: 'USV_RESUME',
+  } as const)[action]
+}
+
+async function submitSingleDeviceCommand(action: 'hold' | 'stop' | 'return' | 'rejoin') {
+  if (!isSingleDeviceAlgorithm.value || singleDeviceCommandPending.value) return
+  const commandType = resolveSingleDeviceCommand(action)
+  if (!commandType || !selectedDevice.value) {
+    singleDeviceCommandMessage.value = '请先选择一台 UAV 或 USV。'
+    return
+  }
+  singleDeviceCommandPending.value = true
+  singleDeviceCommandMessage.value = ''
+  try {
+    const result = await issueSingleDeviceCommand({
+      commandType,
+      deviceCode: selectedDevice.value,
+      runId: state.runId,
+      runtimeScope: 'MISSION_CENTER',
+      runtimeInstanceId: `ALGORITHM_RUN:${state.runId}`,
+      detail: 'VirtualFleet 单设备控制',
+    })
+    if (result.status !== 'SUCCEEDED') {
+      throw new Error(result.detail || result.errorCode || `指令状态：${result.status}`)
+    }
+    singleDeviceCommandMessage.value = `${selectedDevice.value}：${commandType} 已由 Python 算法接收。`
+    if (action === 'return') {
+      singleDeviceCommandMessage.value += ' 抵达返航点后将退出任务编组并自动参与最终结算。'
+    }
+    addLog(`singleDeviceCommand: ${selectedDevice.value} ${commandType} ${result.status}`)
+    await pollAlgorithmFrame()
+  } catch (error) {
+    singleDeviceCommandMessage.value = error instanceof Error ? error.message : String(error)
+    addLog(`singleDeviceCommand failed: ${singleDeviceCommandMessage.value}`)
+  } finally {
+    singleDeviceCommandPending.value = false
+  }
+}
+
+watch(isSingleDeviceAlgorithm, (enabled) => {
+  if (!enabled && inspectorTab.value === 'single') inspectorTab.value = 'status'
+  if (!enabled) singleDeviceCommandMessage.value = ''
+})
+
 // Registration lasts as long as the cached business view, not its activation.
 simulationRuntime.events = { ready: onUnityReady, loading: onUnityLoading, message: onUnityMessage, error: onUnityError }
 simulationRuntime.requested.value = true
 watch(webglExpanded, () => window.dispatchEvent(new CustomEvent('unity-runtime-track')))
 let lastVoiceVisualStateVersion = -1
+let lostRuntimeResetInFlight = false
 watch(
   () => [
     voiceControlStore.context?.algorithmRunId ?? '',
@@ -1398,7 +1594,17 @@ watch(
   async ([algorithmRunId, stateVersion, runtimeState]) => {
     if (algorithmRunId !== String(state.runId) || stateVersion === lastVoiceVisualStateVersion) return
     lastVoiceVisualStateVersion = stateVersion
-    if (runtimeState === 'RUNNING') {
+    if (runtimeState === 'LOST') {
+      if (lostRuntimeResetInFlight) return
+      lostRuntimeResetInFlight = true
+      algorithmPrepared.value = false
+      addLog(`voice runtime synchronized: LOST stateVersion=${stateVersion}; rebuilding preview`)
+      try {
+        await resetMission()
+      } finally {
+        lostRuntimeResetInFlight = false
+      }
+    } else if (runtimeState === 'RUNNING') {
       const resuming = state.mission === 'PAUSED'
       state.mission = 'RUNNING'
       algorithmPrepared.value = true
@@ -1415,6 +1621,9 @@ watch(
       addLog(`voice runtime synchronized: PAUSED stateVersion=${stateVersion}`)
     } else if (['STOPPED', 'COMPLETED', 'FAILED'].includes(runtimeState)) {
       state.mission = runtimeState === 'COMPLETED' ? 'COMPLETED' : runtimeState === 'FAILED' ? 'FAILED' : 'STOPPED'
+      pendingTerminalSequence.value = null
+      pendingTerminalStatus.value = null
+      algorithmPrepared.value = false
       pauseMissionClock()
       stopAlgorithmPolling()
       send('missionStop', { runtimeMode: 'VIRTUAL_SIMULATION', runId: state.runId })
@@ -1493,15 +1702,17 @@ onBeforeUnmount(() => {
             <label>算法
               <select v-model="state.algorithm" :disabled="sceneLocked">
                 <option value="ESCORT_GUARD" title="智能粒球仿真护航算法">智能粒球仿真护航</option>
+                <option value="ESCORT_GUARD_SINGLE_DEVICE">智能粒球仿真护航（单设备控制）</option>
                 <option value="GB_SFLA_CS">GB-SFLA-CS 协同围捕（模拟）</option>
+                <option value="GB_SFLA_CS_SINGLE_DEVICE">GB-SFLA-CS 协同围捕（单设备控制）</option>
               </select>
             </label>
             <p class="vf-description">{{ algorithmDescription }}</p>
             <div class="vf-plan-summary">
-              <strong v-if="state.algorithm === 'ESCORT_GUARD'">{{ scenarioPlan.protectedCount }} 护航目标 · {{ scenarioPlan.threatCount }} 敌船</strong>
+              <strong v-if="isEscortAlgorithm">{{ scenarioPlan.protectedCount }} 护航目标 · {{ scenarioPlan.threatCount }} 敌船</strong>
               <strong v-else>{{ scenarioPlan.threatCount }} 艘围捕目标敌船</strong>
               <span>{{ state.uavCount }} UAV · {{ state.usvCount }} USV · 世界 {{ scenarioPlan.worldWidth }}×{{ scenarioPlan.worldHeight }} m</span>
-              <small v-if="state.algorithm === 'ESCORT_GUARD'">规划预览 · 同时来袭 {{ scenarioPlan.simultaneousThreats }} 艘 · {{ scenarioPlan.realtimeTier === 'PHASE_TWO_REALTIME' ? '实时仿真' : '容量模式' }}</small>
+              <small v-if="isEscortAlgorithm">规划预览 · 同时来袭 {{ scenarioPlan.simultaneousThreats }} 艘 · {{ scenarioPlan.realtimeTier === 'PHASE_TWO_REALTIME' ? '实时仿真' : '容量模式' }}</small>
               <small v-else>规划预览 · 自动拆分协同围捕编组 · {{ scenarioPlan.realtimeTier === 'PHASE_TWO_REALTIME' ? '实时仿真' : '容量模式' }}</small>
             </div>
             <div class="vf-two-col">
@@ -1555,17 +1766,18 @@ onBeforeUnmount(() => {
             <span><i></i>阶段 <strong>{{ missionPhaseLabel }}</strong></span>
             <span>综合进度 <strong>{{ displayMissionProgress }}%</strong></span>
             <span>可见目标 <strong>{{ visibleTargetCount }}</strong></span>
-            <span v-if="state.algorithm === 'GB_SFLA_CS'">行动距离 <strong>{{ Number(missionMetrics.targetTravelDistanceM ?? 0).toFixed(0) }} m</strong></span>
+            <span v-if="isCaptureAlgorithm">行动距离 <strong>{{ Number(missionMetrics.targetTravelDistanceM ?? 0).toFixed(0) }} m</strong></span>
             <span v-else>已捕获 <strong>{{ Number(missionMetrics.capturedThreatCount ?? 0) }}/{{ scenarioPlan.threatCount }}</strong></span>
-            <span v-if="state.algorithm !== 'GB_SFLA_CS' && postMissionFormationRequiredCount > 0">
+            <span v-if="!isCaptureAlgorithm && postMissionFormationRequiredCount > 0">
               机动余量归队 <strong>{{ postMissionFormationReadyCount }}/{{ postMissionFormationRequiredCount }}</strong>
             </span>
             <span>仿真时长 <strong>{{ simulationElapsedLabel }}</strong></span>
+            <span v-if="singleDeviceRuntimeNotice" class="vf-return-notice">{{ singleDeviceRuntimeNotice }}</span>
           </div>
           <div class="vf-command-bar">
             <div class="vf-command-actions">
-              <button class="vf-button success" type="button" title="开始任务" :disabled="state.mission === 'RUNNING' || !unityReady || !speedValid || scenarioLoading || algorithmPreparing || scenarioReadyRunId !== state.runId" @click="startMission">
-                <Play :size="15" /> <span>{{ algorithmPreparing ? '准备中' : '开始' }}</span>
+              <button class="vf-button success" type="button" :title="state.mission === 'PAUSED' ? '继续任务' : '开始任务'" :disabled="missionActionDisabled" @click="startMission">
+                <Play :size="15" /> <span>{{ algorithmPreparing ? '准备中' : state.mission === 'PAUSED' ? '继续' : '开始' }}</span>
               </button>
               <button class="vf-button" type="button" title="暂停任务" :disabled="state.mission !== 'RUNNING'" @click="pauseMission">
                 <Pause :size="15" /> <span>暂停</span>
@@ -1612,6 +1824,7 @@ onBeforeUnmount(() => {
               <button :class="{ active: inspectorTab === 'status' }" type="button" @click="inspectorTab = 'status'">任务态势</button>
               <button :class="{ active: inspectorTab === 'protocol' }" type="button" @click="inspectorTab = 'protocol'">协议状态</button>
               <button :class="{ active: inspectorTab === 'logs' }" type="button" @click="inspectorTab = 'logs'">运行日志</button>
+              <button v-if="isSingleDeviceAlgorithm" :class="{ active: inspectorTab === 'single' }" type="button" @click="inspectorTab = 'single'">单机控制</button>
               <button class="collapse" type="button" title="收起检查区" @click="setRightPanelCollapsed(true)"><ChevronRight :size="17" /></button>
             </div>
 
@@ -1639,7 +1852,7 @@ onBeforeUnmount(() => {
                 <dl class="vf-metric-list">
                   <div><dt>综合进度</dt><dd>{{ displayMissionProgress }}%</dd></div>
                   <div><dt>可见目标</dt><dd>{{ visibleTargetCount }}</dd></div>
-                  <template v-if="state.algorithm === 'GB_SFLA_CS'">
+                  <template v-if="isCaptureAlgorithm">
                     <div><dt>行动距离</dt><dd>{{ Number(missionMetrics.targetTravelDistanceM ?? 0).toFixed(0) }} m</dd></div>
                     <div><dt>闭环置信</dt><dd>{{ Math.round(Number(missionMetrics.containmentConfidence ?? 0) * 100) }}%</dd></div>
                     <div><dt>敌船速度</dt><dd>{{ Number(missionMetrics.targetSpeedMps ?? 0).toFixed(1) }} m/s</dd></div>
@@ -1709,7 +1922,7 @@ onBeforeUnmount(() => {
                       · 规划槽位缺口 {{ Number(group.maxAngularGapDeg ?? 360).toFixed(0) }}°
                     </small>
                     <small>稳定闭环 {{ group.holdFrames ?? 0 }}/{{ group.holdRequiredFrames ?? 25 }}</small>
-                    <small v-if="state.algorithm === 'GB_SFLA_CS'">
+                    <small v-if="isCaptureAlgorithm">
                       实际闭环 {{ group.postGlobalContainmentReady ? '是' : '否' }}
                       · 执行环缺口 {{ Number(group.postGlobalMaxGapDeg ?? 0).toFixed(0) }}°（阈值 ≤ {{ Number(group.postGlobalMaxAllowedGapDeg ?? 0).toFixed(0) }}°）
                       · 分组避障 {{ Number(group.globalAvoidanceCount ?? 0) }}
@@ -1743,6 +1956,66 @@ onBeforeUnmount(() => {
               <ol v-else>
                 <li v-for="entry in logEntries" :key="entry">{{ entry }}</li>
               </ol>
+            </div>
+
+            <div v-else-if="inspectorTab === 'single'" class="vf-inspector-content vf-single-device-control">
+              <article class="vf-status-card">
+                <span>单设备控制</span>
+                <strong>{{ selectedDevice || '未选择' }}</strong>
+                <small>Python 权威运动 · 其他设备继续执行当前群体算法</small>
+              </article>
+              <section class="vf-inspector-section">
+                <h4>选择设备 <span>{{ controllableAgents.length }} ONLINE</span></h4>
+                <select
+                  :value="selectedDevice"
+                  :disabled="singleDeviceCommandPending || !controllableAgents.length"
+                  @change="handleControlDeviceSelection"
+                >
+                  <option value="">请选择 UAV 或 USV</option>
+                  <option v-for="agent in controllableAgents" :key="agent.code" :value="agent.code">
+                    {{ agent.code }} · {{ agent.type }} · {{ agent.status || 'ACTIVE' }}
+                  </option>
+                </select>
+                <div class="vf-control-authority">
+                  <span>控制权</span>
+                  <strong :class="{ operator: selectedControlState }">
+                    {{ selectedControlState?.controlAuthority || 'ALGORITHM' }}
+                  </strong>
+                  <span>运动状态</span>
+                  <strong>{{ selectedControlState?.motionState || selectedControlAgent?.status || 'ACTIVE' }}</strong>
+                </div>
+                <div class="vf-single-command-grid">
+                  <button class="vf-button capture" type="button" :disabled="!selectedDevice || singleDeviceCommandPending" @click="submitSingleDeviceCommand('hold')">悬停 / 驻留</button>
+                  <button class="vf-button danger" type="button" :disabled="!selectedDevice || singleDeviceCommandPending" @click="submitSingleDeviceCommand('stop')">单机停止</button>
+                  <button class="vf-button" type="button" :disabled="!selectedDevice || singleDeviceCommandPending" @click="submitSingleDeviceCommand('return')">独立返航</button>
+                  <button class="vf-button success" type="button" :disabled="!selectedDevice || singleDeviceCommandPending" @click="submitSingleDeviceCommand('rejoin')">安全归队</button>
+                </div>
+                <div v-if="controlledDevices.length" class="vf-controlled-device-list">
+                  <h5>已接管设备 <span>{{ controlledDevices.length }}</span></h5>
+                  <div class="vf-controlled-device-tags">
+                    <button
+                      v-for="device in controlledDevices"
+                      :key="device.code"
+                      type="button"
+                      :class="[
+                        `state-${device.motionState.toLowerCase().replace(/_/g, '-')}`,
+                        { active: selectedDevice === device.code },
+                      ]"
+                      :title="`点击切换到 ${device.code}`"
+                      @click="selectDeviceForControl(device.code)"
+                    >
+                      <strong>{{ device.code }}</strong>
+                      <span>{{ device.label }}</span>
+                    </button>
+                  </div>
+                </div>
+                <p v-if="singleDeviceCommandMessage" class="vf-action-message">{{ singleDeviceCommandMessage }}</p>
+                <p v-if="singleDeviceRuntimeNotice" class="vf-action-message vf-return-status">{{ singleDeviceRuntimeNotice }}</p>
+              </section>
+              <section class="vf-inspector-section">
+                <h4>控制规则</h4>
+                <p class="vf-note">被接管设备暂时退出当前任务输出，仍保留在场景和避碰域中。独立返航抵达起始点后会标记为 RETURNED 并退出任务编组；剩余兵力足够时任务继续，兵力不足时进入可恢复的降级状态，不会直接失败。安全归队可把控制权重新交还群体算法。</p>
+              </section>
             </div>
 
             <div v-else class="vf-inspector-content">
@@ -1909,6 +2182,25 @@ onBeforeUnmount(() => {
 .vf-runtime-log { padding: 12px; }
 .vf-runtime-log ol { display: grid; max-height: 650px; overflow: auto; margin: 0; padding: 0; gap: 5px; list-style: none; }
 .vf-runtime-log li { padding: 7px 8px; color: #86aaa7; background: rgba(3,16,20,.55); border-left: 2px solid rgba(108,228,213,.25); font: 9px/1.45 Consolas, monospace; word-break: break-all; }
+.vf-single-device-control select { width: 100%; min-height: 36px; padding: 0 9px; color: #eafffb; background: #07171c; border: 1px solid #28515a; border-radius: 4px; }
+.vf-control-authority { display: grid; margin-top: 10px; padding: 9px; align-items: center; gap: 7px 10px; color: #789c99; background: rgba(3,16,20,.58); border: 1px solid rgba(108,228,213,.12); border-radius: 4px; grid-template-columns: 1fr auto; font-size: 10px; }
+.vf-control-authority strong { color: #dff8f4; font-size: 9px; }
+.vf-control-authority strong.operator { color: #ffcf72; }
+.vf-single-command-grid { display: grid; margin-top: 10px; gap: 7px; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.vf-single-command-grid .vf-button { width: 100%; }
+.vf-controlled-device-list { margin-top: 12px; }
+.vf-controlled-device-list h5 { display: flex; margin: 0 0 7px; align-items: center; justify-content: space-between; color: #8eb7b3; font-size: 10px; font-weight: 500; }
+.vf-controlled-device-list h5 span { min-width: 20px; padding: 2px 6px; color: #06161a; background: #6ce4d5; border-radius: 10px; text-align: center; font: 700 9px/1.4 Consolas, monospace; }
+.vf-controlled-device-tags { display: flex; flex-wrap: wrap; gap: 6px; }
+.vf-controlled-device-tags button { display: inline-flex; min-height: 29px; padding: 5px 7px; align-items: center; gap: 6px; color: #bdd8d5; background: rgba(7, 28, 33, .82); border: 1px solid #28515a; border-radius: 4px; cursor: pointer; }
+.vf-controlled-device-tags button:hover, .vf-controlled-device-tags button.active { border-color: #6ce4d5; box-shadow: 0 0 0 1px rgba(108, 228, 213, .12) inset; }
+.vf-controlled-device-tags strong { color: #eefcf9; font: 700 9px/1.2 Consolas, monospace; }
+.vf-controlled-device-tags span { padding: 2px 5px; color: #ffcf72; background: rgba(255, 196, 92, .1); border-radius: 8px; font-size: 9px; }
+.vf-controlled-device-tags .state-returned span { color: #63e5ad; background: rgba(99, 229, 173, .1); }
+.vf-controlled-device-tags .state-stopped span { color: #ff8178; background: rgba(255, 96, 87, .1); }
+.vf-controlled-device-tags .state-rejoining span { color: #6ce4d5; background: rgba(108, 228, 213, .1); }
+.vf-live-strip .vf-return-notice { color: #ffcf72; }
+.vf-return-status { padding: 8px; background: rgba(255, 196, 92, .07); border-left: 2px solid #ffcf72; }
 @media (max-width: 1500px) {
   .vf-workbench { --vf-left-width: 220px; --vf-right-width: 232px; gap: 9px; }
   .vf-workbench.left-collapsed { --vf-current-left: 42px; }

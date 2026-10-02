@@ -637,10 +637,10 @@ class VoiceControlTests {
     }
 
     @Test
-    void staleSceneBlocksResumeButNotStop() {
+    void staleSceneBlocksStartButAllowsPausedLocalSimulationResumeAndStop() {
         heartbeat("PAUSED", 4, 2);
         r.channel(ref()).sceneNanos = null;
-        error("SCENE_NOT_READY", () -> proposal("RESUME"));
+        assertNotNull(proposal("RESUME"));
         assertNotNull(proposal("STOP"));
     }
 

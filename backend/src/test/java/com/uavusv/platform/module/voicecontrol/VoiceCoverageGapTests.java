@@ -112,10 +112,10 @@ class VoiceCoverageGapTests extends VoiceControlTests {
         assertEquals(0,count("voice_execution"));assertEquals(0,sent.size());
     }
     @ParameterizedTest @ValueSource(strings={"START","PAUSE","RESUME","STOP"})
-    void staleSceneGatesOnlyStartAndResume(String action) {
+    void staleSceneGatesNewStartButAllowsLocalSimulationResume(String action) {
         String state=action.equals("START")?"PREPARED":action.equals("RESUME")?"PAUSED":"RUNNING";
         heartbeat(state,4,2);t.advance(10001);heartbeat(state,4,3);
-        if(action.equals("START")||action.equals("RESUME"))error("SCENE_NOT_READY",()->proposal(action));
+        if(action.equals("START"))error("SCENE_NOT_READY",()->proposal(action));
         else assertNotNull(proposal(action));
     }
     @Test void duplicateCancelAndConfirmedCancelNeverWrite() {

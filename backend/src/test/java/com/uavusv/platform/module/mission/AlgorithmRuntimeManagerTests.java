@@ -199,6 +199,34 @@ class AlgorithmRuntimeManagerTests {
         );
     }
 
+    @Test
+    void shouldApplySingleDeviceCommandOnlyAfterAuthoritativeFrameReceipt() throws Exception {
+        long runId = 92003L;
+        MissionRunRepository runRepository = mock(MissionRunRepository.class);
+        AlgorithmCatalogService catalogService = mock(AlgorithmCatalogService.class);
+        when(catalogService.requireEnabled("ESCORT_GUARD_SINGLE_DEVICE"))
+                .thenReturn(mock(AlgorithmDefinition.class));
+        AlgorithmRuntimeManager manager = manager(runRepository, catalogService);
+        try {
+            manager.prepare(
+                    runId,
+                    "ESCORT_GUARD_SINGLE_DEVICE",
+                    Map.of("standaloneVirtualSimulation", true, "seed", 42));
+
+            AlgorithmRuntimeStatusResponse afterCommand =
+                    manager.controlDevice(runId, "uav_001", "UAV_HOVER");
+
+            assertNotNull(afterCommand.latestFrame());
+            assertEquals("ESCORT_GUARD_SINGLE_DEVICE", afterCommand.latestFrame().path("algorithmCode").asText());
+            JsonNode selected = afterCommand.latestFrame().path("agents").get(0);
+            assertEquals("UAV-001", selected.path("deviceCode").asText());
+            assertEquals("HOLDING", selected.path("status").asText());
+            assertEquals("OPERATOR_CONTROLLED", selected.path("role").asText());
+        } finally {
+            manager.close();
+        }
+    }
+
     private Path resolveRepositoryFile(String... candidates) {
         for (String candidate : candidates) {
             Path path = Path.of(candidate).toAbsolutePath().normalize();

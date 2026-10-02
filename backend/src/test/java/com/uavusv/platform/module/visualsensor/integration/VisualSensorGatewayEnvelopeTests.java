@@ -30,7 +30,7 @@ class VisualSensorGatewayEnvelopeTests {
     @Test void routesPointCloudPayload() throws Exception {
         var frame = mapper.readTree("{\"message_type\":\"pointcloud_frame\",\"data\":{\"stream_id\":\"usv_01_mid360\",\"xyz\":[1,2,3]}}");
         client.acceptMessage(frame);
-        verify(sensors).observePointCloudFrame(frame.path("data"));
+        verify(sensors).observePointCloudFrame(frame);
     }
 
     @Test void doesNotTreatOtherEncodingsAsJpeg() throws Exception {

@@ -12,9 +12,11 @@ import {
 } from '@lucide/vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { computed, onActivated, onBeforeUnmount, onDeactivated, onMounted, ref, watch } from 'vue'
+import { useRoute } from 'vue-router'
 
 import ConsoleLayout from '@/components/layout/ConsoleLayout.vue'
 import VehicleGlyph from '@/components/control/VehicleGlyph.vue'
+import PointCloudOverviewPanel from '@/components/sensor/PointCloudOverviewPanel.vue'
 import type { VehicleQuickCommand } from '@/components/control/VehicleQuickControl.vue'
 import { controlAlgorithmRun, fetchAlgorithms, prepareAlgorithmRun } from '@/api/algorithm'
 import { executeMissionAction, fetchMission, fetchMissions } from '@/api/mission'
@@ -40,6 +42,7 @@ import type { RuntimeNode } from '@/types/monitoring'
 import { normalizeOperationalState } from '@/utils/runtimeOperationalState'
 import { resolveActiveRun } from '@/utils/missionRun'
 import type { AlgorithmDefinition, MissionDetail, MissionStatus } from '@/types/mission'
+import type { PointCloudLatest } from '@/types/sensor'
 
 type UnityMessage = {
   type: string
@@ -58,6 +61,7 @@ class PostMissionAlgorithmRuntimeError extends Error {
 }
 
 const monitoringStore = useMonitoringStore()
+const route = useRoute()
 const realtimeStore = useRealtimeStore()
 const activeExperimentStore = useActiveExperimentStore()
 const realMissionRuntimeStore = useRealMissionRuntimeStore()
@@ -1370,6 +1374,10 @@ function handleUnityCommand(message: UnityMessage) {
   unityCommandState.value = `已发送：${message.type}`
 }
 
+function forwardPointCloudFrameToUnity(value: PointCloudLatest) {
+  window.dispatchEvent(new CustomEvent('uav-usv:pointcloud-frame', { detail: value }))
+}
+
 function handleUnityReady() {
   unityConnection.value = 'Unity WebGL 已连接'
   lastUnityEvent.value = 'sceneLoaded'
@@ -1701,6 +1709,7 @@ watch(
         </div>
 
         <div class="overview-stage-viewport-shell">
+          <PointCloudOverviewPanel v-if="route.query.workspace !== 'simulation'" @frame="forwardPointCloudFrameToUnity" />
           <div class="overview-unity-stage unity-runtime-viewport" data-unity-runtime-viewport="dashboard">
             <div v-if="!unityBridgeStore.connected" class="unity-runtime-placeholder">
               <strong>Unity WebGL 常驻实例启动中</strong>

@@ -50,16 +50,50 @@ const asrOnly = import.meta.env.VITE_VOICE_ASR_ONLY === 'true'
 const voiceAutomationStatus = ref('')
 const automaticProposalId = ref<string | null>(null)
 const voiceActionStartedAt = ref<number | null>(null)
+const voiceActionFinishedAt = ref<number | null>(null)
+const voiceActionIncludesRecognition = ref(false)
+const voicePipelineMetrics = ref<{
+  asrRequestMs: number
+  parseMs: number
+  proposalMs: number | null
+  submitAndAckMs: number | null
+  totalMs: number | null
+} | null>(null)
+let voiceSubmitStartedAt: number | null = null
 const voiceAutomationDisplay = computed(() => {
   const result = execution.value
-  const elapsed = voiceActionStartedAt.value === null ? 0 : Math.max(0, Math.floor((now.value - voiceActionStartedAt.value) / 1000))
+  const elapsedEnd = voiceActionFinishedAt.value ?? now.value
+  const elapsed = voiceActionStartedAt.value === null ? 0 : Math.max(0, Math.floor((elapsedEnd - voiceActionStartedAt.value) / 1000))
+  const isCurrentManualDeviceExecution = Boolean(
+    result
+    && result.proposalId === proposal.value?.proposalId
+    && proposal.value.plan.action === 'DEVICE_COMMAND'
+  )
+  if (isCurrentManualDeviceExecution) {
+    const command = proposal.value!.plan.deviceCommandType ?? ''
+    const target = proposal.value!.plan.targetDeviceCode ?? '目标设备'
+    return `单设备指令：${target} · ${actionLabels[command] ?? command} · ${executionLabels[result!.state] ?? result!.state}。`
+  }
   if (!automaticProposalId.value || result?.proposalId !== automaticProposalId.value) {
     return voiceAutomationStatus.value && voiceActionStartedAt.value !== null
-      ? `${voiceAutomationStatus.value}（已等待 ${elapsed} 秒）`
+      ? `${voiceAutomationStatus.value}（录音结束后累计 ${elapsed} 秒）`
       : voiceAutomationStatus.value
   }
-  return `仿真动作：${executionLabels[result.state] ?? result.state}；Unity ${presentationLabels[result.presentationStatus] ?? result.presentationStatus}；已用 ${elapsed} 秒。`
+  const metrics = voicePipelineMetrics.value
+  if (voiceActionFinishedAt.value !== null && voiceActionIncludesRecognition.value && metrics?.totalMs !== null && metrics?.totalMs !== undefined) {
+    const parts = [`上传/识别请求 ${formatSeconds(metrics.asrRequestMs)}`, `指令解析 ${formatSeconds(metrics.parseMs)}`]
+    if (metrics.proposalMs !== null) parts.push(`提案 ${formatSeconds(metrics.proposalMs)}`)
+    if (metrics.submitAndAckMs !== null) parts.push(`提交至页面收到回执 ${formatSeconds(metrics.submitAndAckMs)}`)
+    return `仿真动作：${executionLabels[result.state] ?? result.state}；录音结束至算法回执 ${formatSeconds(metrics.totalMs)}（${parts.join(' · ')}）；Unity ${presentationLabels[result.presentationStatus] ?? result.presentationStatus}。`
+  }
+  const durationLabel = voiceActionFinishedAt.value === null ? '处理中'
+    : voiceActionIncludesRecognition.value ? '录音结束至算法回执' : '算法回执耗时'
+  return `仿真动作：${executionLabels[result.state] ?? result.state}；${durationLabel} ${elapsed} 秒；Unity ${presentationLabels[result.presentationStatus] ?? result.presentationStatus}。`
 })
+
+function formatSeconds(milliseconds: number) {
+  return `${(milliseconds / 1000).toFixed(2)} 秒`
+}
 const runtimeEnded = computed(() => !!context.value && (
   ['STOPPED', 'CANCELLED', 'COMPLETED', 'FAILED', 'LOST'].includes(context.value.state)
   || (execution.value?.runtimeRef === context.value.runtimeRef
@@ -70,11 +104,14 @@ const activeVoiceContext = computed(() => context.value && !runtimeEnded.value ?
 const presentationBridgeReady = ref(false)
 const presentationBridgeStatus = ref(presentationBridgeEnabled ? '等待展示绑定' : 'E03 未启用')
 const helloAttempts = ref(0)
-const lastSceneProbeAt = ref(0)
+const lastSceneProbeAt = ref<number | null>(null)
 const lastAutoBindingKey = ref('')
 let pendingFrameResync = false
 let presentationRequestInFlight = false
 let presentationBindingInFlight = false
+let autoResyncExecutionId = ''
+let autoResyncAttempts = 0
+let lastAutoResyncAt: number | null = null
 let timer: number | undefined
 let pollTick = 0
 
@@ -87,7 +124,11 @@ const actions: Array<{ action: VoiceAction; intent: VoiceIntent; label: string }
 const stateRules: Record<VoiceAction, string[]> = {
   START: ['PREPARED', 'PREVIEW'], PAUSE: ['RUNNING'], RESUME: ['PAUSED'], STOP: ['PREPARED', 'PREVIEW', 'RUNNING', 'PAUSED'],
 }
-const actionLabels: Record<VoiceAction, string> = { START: '开始任务', PAUSE: '暂停任务', RESUME: '继续任务', STOP: '停止任务' }
+const actionLabels: Record<string, string> = {
+  START: '开始任务', PAUSE: '暂停任务', RESUME: '继续任务', STOP: '停止任务', DEVICE_COMMAND: '单设备控制',
+  UAV_HOVER: '无人机悬停', UAV_RESUME: '无人机归队', UAV_RETURN: '无人机返航', UAV_LAND: '无人机降落',
+  USV_HOLD: '无人艇驻留', USV_RESUME: '无人艇归队', USV_RETURN: '无人艇返航', USV_STOP: '无人艇停止',
+}
 const executionLabels: Record<string, string> = {
   QUEUED: '等待调度', DISPATCHED: '已下发', ACCEPTED: '算法已接收', EXECUTING: '算法执行中',
   SUCCEEDED: '算法执行成功', REJECTED: '算法拒绝', FAILED: '算法执行失败',
@@ -137,6 +178,13 @@ const presentationCanResync = computed(() => execution.value?.state === 'SUCCEED
 const contextSummary = computed(() => context.value
   ? `运行 ${context.value.algorithmRunId} · ${context.value.state} · 帧 ${context.value.latestFrameSequence} · 心跳${heartbeatFresh.value ? '正常' : '失效'}`
   : '未发现可控制的算法实例，请重新生成场景；若提示运行被占用，请联系管理员清理旧运行。')
+
+watch(() => [execution.value?.proposalId, execution.value?.state], ([proposalId, state]) => {
+  if (proposalId !== automaticProposalId.value || !state) return
+  if (['SUCCEEDED', 'REJECTED', 'FAILED', 'INVALIDATED'].includes(state)) {
+    markVoicePipelineFinished()
+  }
+})
 // Text parsing can run without a P0-capable runtime. Bind a candidate to a runtime
 // only when the context speaks the frozen command protocol; legacy contexts remain
 // visible to disabledReason() and therefore cannot create or execute a proposal.
@@ -173,14 +221,18 @@ function disabledReason(action: VoiceAction) {
   if (!heartbeatFresh.value) return '算法心跳超过 5 秒或尚未建立'
   if (props.runtimeHint.deviceCodes.length === 0) return '尚未生成可冻结的设备集合'
   if (props.runtimeHint.deviceCodes.length > 200) return '设备集合超过 P0 上限 200'
-  if ((action === 'START' || action === 'RESUME') && !context.value.sceneReady) return 'Unity 场景尚未就绪'
+  const localSimulationResume = action === 'RESUME'
+    && context.value.runtimeKind === 'STANDALONE_ALGORITHM'
+    && context.value.executionBackend === 'PYTHON_SIMULATION'
+  if (action === 'START' && !context.value.sceneReady) return 'Unity 场景尚未就绪'
+  if (action === 'RESUME' && !localSimulationResume && !context.value.sceneReady) return 'Unity 场景尚未就绪'
   if (activeProposal.value || (execution.value && !['SUCCEEDED', 'REJECTED', 'FAILED', 'INVALIDATED'].includes(execution.value.state))) return '请先处理当前指令'
   return ''
 }
 
 async function propose(intent: VoiceIntent, interpretationId?: string, automaticVoice = false) {
   await store.propose(intent, interpretationId)
-  const expectedAction = intent.replace('MISSION_', '')
+  const expectedAction = intent === 'SINGLE_DEVICE_CONTROL' ? 'DEVICE_COMMAND' : intent.replace('MISSION_', '')
   const proposalMatchesVoice = Boolean(interpretationId
     && proposal.value?.status === 'AWAITING_CONFIRMATION'
     && proposal.value.interpretationId === interpretationId
@@ -209,28 +261,113 @@ async function handleVoiceCandidate(intent: VoiceIntent, interpretationId?: stri
   await propose(intent, interpretationId)
 }
 
-async function handleAutomaticVoiceCandidate(intent: VoiceIntent, interpretationId: string) {
+function markVoicePipelineFinished() {
+  const finishedAt = Date.now()
+  voiceActionFinishedAt.value ??= finishedAt
+  if (voicePipelineMetrics.value && voiceActionStartedAt.value !== null) {
+    voicePipelineMetrics.value.totalMs = finishedAt - voiceActionStartedAt.value
+    if (voiceSubmitStartedAt !== null) voicePipelineMetrics.value.submitAndAckMs = finishedAt - voiceSubmitStartedAt
+  }
+}
+
+async function handleAutomaticVoiceCandidate(
+  intent: VoiceIntent,
+  interpretationId: string,
+  timing: { startedAt: number; asrRequestMs: number; parseMs: number },
+) {
   automaticProposalId.value = null
-  voiceActionStartedAt.value = Date.now()
+  voiceActionStartedAt.value = timing.startedAt
+  voiceActionFinishedAt.value = null
+  voiceActionIncludesRecognition.value = true
+  voiceSubmitStartedAt = null
+  voicePipelineMetrics.value = {
+    asrRequestMs: timing.asrRequestMs,
+    parseMs: timing.parseMs,
+    proposalMs: null,
+    submitAndAckMs: null,
+    totalMs: null,
+  }
+  if (intent === 'SINGLE_DEVICE_CONTROL') {
+    const runtime = context.value
+    if (!runtime
+      || runtime.runtimeKind !== 'STANDALONE_ALGORITHM'
+      || runtime.executionBackend !== 'PYTHON_SIMULATION'
+      || !runtime.capabilities.includes('DEVICE_COMMAND')
+      || !runtime.runtimeRef
+      || !runtime.runtimeGeneration) {
+      voiceAutomationStatus.value = '已识别单设备指令，但当前运行实例未就绪或不支持单设备控制；没有下发命令。'
+      markVoicePipelineFinished()
+      return
+    }
+    voiceAutomationStatus.value = '已识别单设备指令，正在校验目标并自动提交至本地仿真。'
+    const proposalStartedAt = performance.now()
+    await propose(intent, interpretationId, true)
+    if (voicePipelineMetrics.value) voicePipelineMetrics.value.proposalMs = Math.round(performance.now() - proposalStartedAt)
+    const targetedProposal = proposal.value
+    const target = targetedProposal?.plan.targetDeviceCode
+    const command = targetedProposal?.plan.deviceCommandType
+    const targetMatchesRuntime = Boolean(target
+      && props.runtimeHint.deviceCodes.some(code => code.toUpperCase() === target.toUpperCase()))
+    const commandMatchesTarget = Boolean(command && target
+      && ((command.startsWith('UAV_') && target.toUpperCase().startsWith('UAV-'))
+        || (command.startsWith('USV_') && target.toUpperCase().startsWith('USV-'))))
+    const proposalMatchesVoice = Boolean(targetedProposal
+      && targetedProposal.status === 'AWAITING_CONFIRMATION'
+      && targetedProposal.interpretationId === interpretationId
+      && targetedProposal.plan.action === 'DEVICE_COMMAND'
+      && targetedProposal.plan.runtimeRef === runtime.runtimeRef
+      && targetedProposal.plan.runtimeGeneration === runtime.runtimeGeneration
+      && targetMatchesRuntime
+      && commandMatchesTarget)
+    if (!proposalMatchesVoice) {
+      voiceAutomationStatus.value = store.responseUnknown
+        ? '单设备提案结果待核对；没有自动下发命令，请先核对上次请求。'
+        : `单设备确认提案未能通过目标校验${displayError.value ? `：${displayError.value}` : '；没有下发命令。'}`
+      markVoicePipelineFinished()
+      return
+    }
+    automaticProposalId.value = targetedProposal!.proposalId
+    voiceSubmitStartedAt = Date.now()
+    voiceAutomationStatus.value = `目标已校验，正在自动提交：${target} · ${actionLabels[command!] ?? command}。`
+    await confirm()
+    const executionMatchesProposal = execution.value?.proposalId === targetedProposal!.proposalId
+      && execution.value.runtimeRef === targetedProposal!.plan.runtimeRef
+      && execution.value.runtimeGeneration === targetedProposal!.plan.runtimeGeneration
+      && execution.value.action === 'DEVICE_COMMAND'
+    voiceAutomationStatus.value = executionMatchesProposal
+      ? `单设备命令已自动提交：${target} · ${actionLabels[command!] ?? command}，正在等待算法回执。`
+      : store.responseUnknown
+        ? '单设备执行结果待核对，已停止自动重试；请检查上次请求。'
+        : `单设备命令未能完成提交${displayError.value ? `：${displayError.value}` : '，请检查运行状态后重试。'}`
+    if (!executionMatchesProposal) markVoicePipelineFinished()
+    else if (execution.value && ['SUCCEEDED', 'REJECTED', 'FAILED', 'INVALIDATED'].includes(execution.value.state)) markVoicePipelineFinished()
+    return
+  }
   const action = intent.replace('MISSION_', '') as VoiceAction
   if (!autoExecuteSimulationVoice.value || disabledReason(action)) {
     voiceAutomationStatus.value = '已识别语音，但当前仿真或运行条件不允许自动执行；识别文字已保留，请检查后重试。'
+    markVoicePipelineFinished()
     return
   }
   voiceAutomationStatus.value = '语音已识别，正在创建并自动提交当前仿真提案。'
+  const proposalStartedAt = performance.now()
   const proposalReady = await propose(intent, interpretationId, true)
+  if (voicePipelineMetrics.value) voicePipelineMetrics.value.proposalMs = Math.round(performance.now() - proposalStartedAt)
   if (!proposalReady) {
     voiceAutomationStatus.value = store.responseUnknown
       ? '提案结果待核对，已停止自动重试；请先核对上次请求。'
       : `自动执行未提交${displayError.value ? `：${displayError.value}` : '，请检查识别文字后重试。'}`
+    markVoicePipelineFinished()
     return
   }
   const submittedProposal = proposal.value
   if (!submittedProposal || submittedProposal.status !== 'AWAITING_CONFIRMATION') {
     voiceAutomationStatus.value = '提案状态无法核实，已停止自动提交；请检查识别文字后重试。'
+    markVoicePipelineFinished()
     return
   }
   automaticProposalId.value = submittedProposal.proposalId
+  voiceSubmitStartedAt = Date.now()
   await confirm()
   const executionMatchesProposal = execution.value?.proposalId === submittedProposal.proposalId
     && execution.value.runtimeRef === submittedProposal.plan.runtimeRef
@@ -241,6 +378,8 @@ async function handleAutomaticVoiceCandidate(intent: VoiceIntent, interpretation
     : store.responseUnknown
       ? '执行确认结果待核对，已停止自动重试；请先核对上次请求。'
       : `自动执行未完成${displayError.value ? `：${displayError.value}` : '，请检查识别文字后重试。'}`
+  if (!executionMatchesProposal) markVoicePipelineFinished()
+  else if (execution.value && ['SUCCEEDED', 'REJECTED', 'FAILED', 'INVALIDATED'].includes(execution.value.state)) markVoicePipelineFinished()
 }
 
 function presentationIdentityMatches(message: UnityPresentationIncoming) {
@@ -275,7 +414,8 @@ async function requestPresentationProbe(forceFrameResync = false) {
     && ['START', 'RESUME'].includes(execution.value.action)
     && (execution.value.presentationStatus === 'PENDING'
       || (forceFrameResync && execution.value.presentationStatus === 'STALE'))
-  if (!frameRequired && Date.now() - lastSceneProbeAt.value < 3000) return
+  if (!frameRequired && lastSceneProbeAt.value !== null
+    && Date.now() - lastSceneProbeAt.value < 3000) return
   presentationRequestInFlight = true
   try {
     const kind = frameRequired ? 'FRAME_APPLIED' : 'SCENE_READY'
@@ -314,7 +454,7 @@ async function resyncPresentation() {
   // asks the backend for a fresh one-time FRAME_APPLIED challenge.
   if (!store.clearStalePresentationRecovery()) return
   await requestPresentationProbe(true)
-  if (presentationChallenge.value?.kind === 'FRAME_APPLIED') pendingFrameResync = false
+  pendingFrameResync = presentationChallenge.value?.kind === 'FRAME_APPLIED'
 }
 
 async function handleUnityPresentationMessage(message: UnityWindowMessage) {
@@ -389,6 +529,20 @@ watch(() => props.runtimeHint.algorithmRunId, algorithmRunId => {
 watch([
   () => context.value?.runtimeRef,
   () => context.value?.runtimeGeneration,
+], ([runtimeRef, runtimeGeneration], [previousRuntimeRef, previousRuntimeGeneration]) => {
+  if (!previousRuntimeRef || (runtimeRef === previousRuntimeRef && runtimeGeneration === previousRuntimeGeneration)) return
+  automaticProposalId.value = null
+  voiceAutomationStatus.value = ''
+  voiceActionStartedAt.value = null
+  voiceActionFinishedAt.value = null
+  voiceActionIncludesRecognition.value = false
+  voicePipelineMetrics.value = null
+  voiceSubmitStartedAt = null
+})
+
+watch([
+  () => context.value?.runtimeRef,
+  () => context.value?.runtimeGeneration,
   () => props.unitySession.connected,
   () => props.unitySession.unityInstanceId,
   () => props.unitySession.sceneRevision,
@@ -412,6 +566,12 @@ watch(() => [execution.value?.state, execution.value?.presentationStatus], ([sta
   else presentationPendingSince.value = null
 }, { immediate: true })
 
+watch(() => execution.value?.executionId, executionId => {
+  autoResyncExecutionId = executionId ?? ''
+  autoResyncAttempts = 0
+  lastAutoResyncAt = null
+})
+
 watch(runtimeEnded, ended => {
   if (!ended) return
   store.presentationChallenge = null
@@ -420,7 +580,10 @@ watch(runtimeEnded, ended => {
 })
 
 function onVisibilityChange() {
-  if (document.visibilityState === 'visible') void store.refreshContexts()
+  if (document.visibilityState === 'visible') {
+    void store.refreshContexts()
+    void store.poll()
+  }
 }
 
 onMounted(async () => {
@@ -428,18 +591,23 @@ onMounted(async () => {
   await store.selectAlgorithmRun(props.runtimeHint.algorithmRunId)
   await store.recover()
   timer = window.setInterval(() => {
-    now.value = Date.now()
-    if (document.visibilityState !== 'visible') return
     pollTick += 1
-    if (pollTick % 3 === 0) void store.refreshContexts()
+    if (document.visibilityState !== 'visible') return
+    const currentTime = Date.now()
+    const oneSecondTick = pollTick % 4 === 0
+    if (oneSecondTick) now.value = currentTime
+    if (pollTick % 12 === 0) void store.refreshContexts()
     const timedOutSeconds = execution.value?.timedOutAt
-      ? Math.floor((now.value - Date.parse(execution.value.timedOutAt)) / 1000)
+      ? Math.floor((currentTime - Date.parse(execution.value.timedOutAt)) / 1000)
       : 0
-    const executionDue = execution.value?.state === 'TIMED_OUT'
-      ? pollTick % (timedOutSeconds < 30 ? 2 : 10) === 0
-      : true
+    const state = execution.value?.state
+    const awaitingCommandReceipt = ['QUEUED', 'DISPATCHED', 'ACCEPTED', 'EXECUTING'].includes(state ?? '')
+    const executionDue = awaitingCommandReceipt
+      || (state === 'TIMED_OUT'
+        ? pollTick % (timedOutSeconds < 30 ? 8 : 40) === 0
+        : oneSecondTick)
     if (executionDue) void store.poll()
-    if (presentationBridgeEnabled && !runtimeEnded.value) {
+    if (oneSecondTick && presentationBridgeEnabled && !runtimeEnded.value) {
       if (!presentationBridgeReady.value && helloAttempts.value < 30) emitHello()
       else if (!presentationBridgeReady.value && helloAttempts.value >= 30) presentationBridgeStatus.value = 'Unity 展示握手超时，请重新接管'
       else {
@@ -447,10 +615,23 @@ onMounted(async () => {
           store.presentationChallenge = null
         }
         if (pendingFrameResync) void resyncPresentation()
-        else void requestPresentationProbe()
+        else if (presentationCanResync && execution.value) {
+          if (autoResyncExecutionId !== execution.value.executionId) {
+            autoResyncExecutionId = execution.value.executionId
+            autoResyncAttempts = 0
+            lastAutoResyncAt = null
+          }
+          if (autoResyncAttempts < 3
+            && (lastAutoResyncAt === null || Date.now() - lastAutoResyncAt >= 5000)) {
+            autoResyncAttempts += 1
+            lastAutoResyncAt = Date.now()
+            presentationBridgeStatus.value = `Unity 展示过期，正在自动恢复（${autoResyncAttempts}/3）`
+            void resyncPresentation()
+          }
+        } else void requestPresentationProbe()
       }
     }
-  }, 1000)
+  }, 250)
   document.addEventListener('visibilitychange', onVisibilityChange)
 })
 
@@ -484,8 +665,8 @@ onBeforeUnmount(() => {
     <p class="scope-note">
       {{ asrOnly ? '本轮仅本地语音转文字；手工任务控制独立使用，识别结果不执行动作。' : voiceP1PreparationEnabled
         ? autoExecuteSimulationVoice
-          ? '仿真语音自动模式：录音结束后自动识别、解析并提交明确的整队任务动作；不能确认时保留文字供修改。'
-          : '已启用语音文本输入；自动执行仅限受保护的 Python 仿真语音识别结果。'
+        ? '本地仿真会自动提交通过校验的整队或单设备语音命令；Gateway 实机链路不走此自动流程。'
+          : '已启用语音文本输入；本地仿真中的明确单设备命令会自动提交。'
         : '当前验证整队任务控制链路；麦克风、模型解析和单设备控制将在后续阶段接入。' }}
     </p>
     <p v-if="voiceAutomationDisplay" class="scope-note" role="status">{{ voiceAutomationDisplay }}</p>
@@ -536,7 +717,7 @@ onBeforeUnmount(() => {
     </label>
 
     <article v-if="execution" class="result" :class="execution.outcome.toLowerCase()">
-      <div><strong>{{ executionLabels[execution.state] ?? execution.state }}</strong><span>{{ actionLabels[execution.action] }}</span></div>
+      <div><strong>{{ executionLabels[execution.state] ?? execution.state }}</strong><span>{{ execution.action === 'DEVICE_COMMAND' ? `${proposal?.plan.targetDeviceCode ?? ''} · ${actionLabels[proposal?.plan.deviceCommandType ?? ''] ?? '单设备控制'}` : actionLabels[execution.action] }}</span></div>
       <p v-if="execution.errorCode">{{ errorLabels[execution.errorCode] ?? execution.errorCode }}</p>
       <small>算法结果：{{ execution.outcome }} · 展示状态：{{ presentationLabels[execution.presentationStatus] }}</small>
       <p v-if="presentationWaitExpired">算法动作已成功，但 30 秒内暂未收到画面确认；未修改服务端展示状态。</p>
@@ -571,6 +752,8 @@ onBeforeUnmount(() => {
       <p>此提案等待确认。计划内容不可在此修改。</p>
       <dl>
         <div><dt>动作</dt><dd>{{ actionLabels[proposal.plan.action] }}</dd></div>
+        <div v-if="proposal.plan.action === 'DEVICE_COMMAND'"><dt>目标设备</dt><dd>{{ proposal.plan.targetDeviceCode }}</dd></div>
+        <div v-if="proposal.plan.action === 'DEVICE_COMMAND'"><dt>设备动作</dt><dd>{{ actionLabels[proposal.plan.deviceCommandType ?? ''] ?? proposal.plan.deviceCommandType }}</dd></div>
         <div><dt>当前仿真</dt><dd>运行 {{ context?.algorithmRunId ?? '-' }} / {{ context?.state ?? '-' }}</dd></div>
         <div><dt>设备快照</dt><dd>{{ proposal.plan.explicitDeviceCodes.length }} 个：{{ proposal.plan.explicitDeviceCodes.join('、') }}</dd></div>
       </dl>

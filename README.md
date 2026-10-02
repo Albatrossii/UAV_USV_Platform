@@ -105,3 +105,9 @@ com.uavusv.platform
 - 前端：http://localhost:5174
 - 后端：http://localhost:8081
 - 健康接口：http://localhost:8081/api/system/health
+
+## ROS / Gateway 可选连接
+
+平台页面和本地算法仿真不依赖 ROS/Gateway 在线。默认关闭 Gateway v1 与视觉传感器外连，任务控制默认走浏览器 Unity 通道；Gateway 不可达时，摄像头、ROS 遥测和对应的远端控制功能会显示离线，但不会阻止前后端启动或其他页面使用。本地配置模板也默认关闭这些外连。
+
+需要接入 Gateway 时，按实际部署显式设置 `ROS_GATEWAY_V1_ENABLED=true`、`VISUAL_SENSOR_WEBSOCKET_ENABLED=true` 和对应的 WebSocket 地址；同时按目标选择 `MISSION_DISPATCH_MODE=ros-gateway-v1` 与/或 `COMMAND_DISPATCH_MODE=ros-gateway-v1`。legacy ROS 位姿链路由 `ROS_TRANSPORT=legacy` 与 `ROS_ENABLED=true` 启用。各链路开关彼此独立，切换或断开其中一条不会自动切换到另一条控制通道，也不会把本地仿真命令转发到 ROS。

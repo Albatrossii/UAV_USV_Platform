@@ -45,7 +45,7 @@ public class RuntimeContextRegistry {
         this.settings = settings;
     }
 
-    public ObjectNode register(long runId, String configHash) {
+    public ObjectNode register(long runId, String algorithmCode, String configHash) {
         long user = access.user(true);
         if (runId <= 0) throw VoiceFailure.bad();
         return store.locked(
@@ -61,6 +61,7 @@ public class RuntimeContextRegistry {
                     var c = json.object();
                     c.put("_id", ref)
                             .put("_owner", user)
+                            .put("_algorithmCode", algorithmCode)
                             .put("_configHash", configHash)
                             .put("_nextSequence", 0);
                     c.put("runtimeRef", ref)
@@ -160,10 +161,52 @@ public class RuntimeContextRegistry {
         if (!allowed.contains(c.path("state").asText()))
             throw VoiceFailure.conflict("INVALID_STATE");
         if (c.path("_members").isEmpty()) throw VoiceFailure.conflict("CONTEXT_CHANGED");
+        boolean localSimulationResume = action.equals("RESUME")
+                && "STANDALONE_ALGORITHM".equals(c.path("runtimeKind").asText())
+                && "PYTHON_SIMULATION".equals(c.path("executionBackend").asText());
+        // Starting a new run needs a fresh rendered scene. A local simulation
+        // resume only needs the same live, paused algorithm instance; renderer
+        // recovery can catch up from its latest frame after the command.
         if (scene
-                && (action.equals("START") || action.equals("RESUME"))
-                && (!freshScene(c)
-                        || (action.equals("START") && c.path("latestFrameSequence").asLong() < 1)))
+                && ((action.equals("START")
+                                && (!freshScene(c)
+                                        || c.path("latestFrameSequence").asLong() < 1))
+                        || (action.equals("RESUME")
+                                && !localSimulationResume
+                                && !freshScene(c))))
+            throw VoiceFailure.conflict("SCENE_NOT_READY");
+    }
+
+    /** Backwards-compatible test seam for generic mission-context fixtures. */
+    public ObjectNode register(long runId, String configHash) {
+        return register(runId, "", configHash);
+    }
+
+    public void checkDevice(ObjectNode c, String targetCode, String commandType) {
+        access.require(c.path("_owner").asLong(), true);
+        if (!PROTOCOL.equals(c.path("protocolVersion").asText()))
+            throw new VoiceFailure(422, "PROTOCOL_UNSUPPORTED");
+        if (!c.path("_algorithmCode").asText().endsWith("_SINGLE_DEVICE"))
+            throw new VoiceFailure(422, "UNSUPPORTED_TARGETING");
+        boolean capable = false;
+        for (var n : c.path("capabilities")) capable |= "DEVICE_COMMAND".equals(n.asText());
+        if (!capable) throw new VoiceFailure(422, "UNSUPPORTED_CAPABILITY");
+        boolean member = false;
+        for (var n : c.path("_members")) member |= targetCode.equals(n.asText());
+        if (!member) throw VoiceFailure.conflict("CONTEXT_CHANGED");
+        boolean compatible = targetCode.toUpperCase(Locale.ROOT).startsWith("UAV")
+                ? commandType.startsWith("UAV_")
+                : targetCode.toUpperCase(Locale.ROOT).startsWith("USV") && commandType.startsWith("USV_");
+        if (!compatible) throw new VoiceFailure(422, "UNSUPPORTED_TARGETING");
+        if (!Set.of("UAV_HOVER", "UAV_RESUME", "UAV_RETURN", "UAV_LAND",
+                "USV_HOLD", "USV_RESUME", "USV_RETURN", "USV_STOP").contains(commandType))
+            throw new VoiceFailure(422, "UNSUPPORTED_CAPABILITY");
+        var ch = channel(c.path("_id").asText());
+        if (ch == null || ch.faulted || !ch.alive.getAsBoolean())
+            throw VoiceFailure.conflict("RUNTIME_UNAVAILABLE");
+        if (ch.heartbeatNanos == null || time.nanos() - ch.heartbeatNanos > 5_000_000_000L)
+            throw VoiceFailure.conflict("HEARTBEAT_STALE");
+        if (c.path("latestFrameSequence").asLong() < 1)
             throw VoiceFailure.conflict("SCENE_NOT_READY");
     }
 

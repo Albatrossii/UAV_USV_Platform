@@ -108,6 +108,9 @@
       if (type === 'visualsensorsubscribe') {
         return sendTo('UnityVisualSensorBridge', 'ReceiveFromVue', message);
       }
+      if (type === 'pointcloudframe') {
+        return sendTo('UnityPointCloudBridge', 'ReceiveFromVue', message);
+      }
       if (type === 'selectdevice') {
         return send('SelectDevice', Object.assign({ requestId: message.requestId || '' }, payload));
       }

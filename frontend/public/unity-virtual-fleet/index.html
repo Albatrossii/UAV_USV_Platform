@@ -97,6 +97,8 @@
       var platformBridgeReady = false;
       var platformCapabilities = {};
       var pendingUnityMessages = [];
+      var activeScenarioReadyRunId = '';
+      var latestAppliedPoseSequence = 0;
       var viewportTransitioning = false;
       var viewportTransitionSerial = 0;
       var platformBridgeMethods = [
@@ -194,6 +196,24 @@
           var parsed = typeof message === 'string' ? JSON.parse(message) : message;
           if (parsed && parsed.type) {
             var normalizedPayload = eventPayload(parsed);
+            if (parsed.type === 'scenarioReady' || parsed.type === 'scenarioLoaded') {
+              var readyRunId = String(normalizedPayload.runId || runId || '');
+              if (normalizedPayload.success === true && readyRunId) {
+                activeScenarioReadyRunId = readyRunId;
+              } else {
+                activeScenarioReadyRunId = '';
+                latestAppliedPoseSequence = 0;
+              }
+            } else if (parsed.type === 'poseFrameApplied') {
+              var appliedRunId = String(normalizedPayload.runId || runId || '');
+              var appliedSequence = Number(normalizedPayload.sequence);
+              if (normalizedPayload.success === true
+                && appliedRunId === activeScenarioReadyRunId
+                && Number.isSafeInteger(appliedSequence)
+                && appliedSequence >= latestAppliedPoseSequence) {
+                latestAppliedPoseSequence = appliedSequence;
+              }
+            }
             if (parsed.type === 'platformBridgeReady' || parsed.type === 'platformInitialized') {
               publishPlatformReady(normalizedPayload);
             }
@@ -368,11 +388,34 @@
         var payload = message.payload || {};
 
         if (type === 'presentation_hello' || type === 'presentation_probe') {
-          window.uavUsvUnityInstance.SendMessage(
-            'PlatformBridge',
-            'Receive',
-            JSON.stringify(message),
-          );
+          var scenarioReady = !!activeScenarioReadyRunId
+            && activeScenarioReadyRunId === String(runId || '');
+          var presentation = message.payload || message;
+          var identity = {
+            protocolVersion: String(presentation.protocolVersion || ''),
+            runtimeRef: String(presentation.runtimeRef || ''),
+            runtimeGeneration: String(presentation.runtimeGeneration || ''),
+            bindingId: String(presentation.bindingId || ''),
+            unityInstanceId: String(presentation.unityInstanceId || runtimeInstanceId),
+            sceneRevision: Number(presentation.sceneRevision || 0),
+            scenarioReady: scenarioReady,
+          };
+          if (type === 'presentation_hello') {
+            postUnityMessage('PRESENTATION_READY', identity);
+            return true;
+          }
+          var frameSequence = latestAppliedPoseSequence;
+          var frameApplied = scenarioReady && presentation.kind === 'FRAME_APPLIED'
+            && frameSequence > 0;
+          var sceneApplied = scenarioReady && presentation.kind === 'SCENE_READY';
+          postUnityMessage('PRESENTATION_REPORT', Object.assign({}, identity, {
+            requestId: String(presentation.requestId || ''),
+            sequence: Number(presentation.sequence || 0),
+            kind: String(presentation.kind || ''),
+            executionId: presentation.executionId || null,
+            frameSequence: frameSequence,
+            applied: frameApplied || sceneApplied,
+          }));
           return true;
         }
 
@@ -387,6 +430,9 @@
           });
         }
         if (type === 'loadscenario') {
+          runId = String(payload.runId || runId || '');
+          activeScenarioReadyRunId = '';
+          latestAppliedPoseSequence = 0;
           return sendPlatformBridge('LoadScenario', {
             requestId: message.requestId || '',
             runtimeMode: String(payload.runtimeMode || 'VIRTUAL_SIMULATION'),
@@ -410,6 +456,9 @@
           });
         }
         if (type === 'regeneratescenario') {
+          runId = String(payload.runId || runId || '');
+          activeScenarioReadyRunId = '';
+          latestAppliedPoseSequence = 0;
           return sendPlatformBridge('RegenerateScenario', {
             requestId: message.requestId || '',
             runtimeMode: String(payload.runtimeMode || 'VIRTUAL_SIMULATION'),

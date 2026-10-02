@@ -3,7 +3,7 @@ import { computed, onBeforeUnmount, onDeactivated, onMounted, ref, shallowRef, w
 import { Mic, Square, WandSparkles } from '@lucide/vue'
 import { createVoiceIntelligenceAdapter } from '@/services/voiceIntelligence'
 import { voiceRecoveryInfo } from '@/services/voiceIntelligenceRecovery'
-import { VOICE_AUDIO_MAX_BYTES } from '@/api/voiceIntelligence'
+import { normalizeVoiceAudioType, VOICE_AUDIO_MAX_BYTES } from '@/api/voiceIntelligence'
 import type { VoiceIntent } from '@/types/voiceControl'
 import type {
   VoiceAction,
@@ -30,7 +30,7 @@ const props = withDefaults(defineProps<{
 })
 const emit = defineEmits<{
   candidate: [intent: VoiceIntent, interpretationId?: string]
-  voiceCandidate: [intent: VoiceIntent, interpretationId: string]
+  voiceCandidate: [intent: VoiceIntent, interpretationId: string, timing: { startedAt: number; asrRequestMs: number; parseMs: number }]
 }>()
 const adapter = props.adapter ?? createVoiceIntelligenceAdapter()
 const draft = ref('')
@@ -39,6 +39,9 @@ const result = ref<VoiceParseResult | null>(null)
 const message = ref('输入文字或录音，识别结果可编辑后再解析。')
 const stageElapsed = ref(0)
 const stageStartedAt = ref(performance.now())
+let audioPipelineStartedAt: number | null = null
+let audioRequestElapsedMs = 0
+let parseElapsedMs = 0
 let elapsedTimer: number | undefined
 type Pending = { kind: 'audio'; input: VoiceAudioInput } | { kind: 'text'; input: VoiceParseRequest }
 // Keep the exact original body and key in memory for explicit recovery.
@@ -53,9 +56,16 @@ let cooldownTimer: number | undefined
 let recordingTimer: number | undefined
 let stream: MediaStream | null = null
 let recorder: MediaRecorder | null = null
+let audioContext: AudioContext | null = null
+let audioMeterTimer: number | undefined
 let controller: AbortController | null = null
 let epoch = 0
-const recordingMaxMs = 60_000
+// Voice control utterances are deliberately short. Keeping the browser open for a
+// full minute after the level meter misses end-of-speech turns a one-second command
+// into a very slow Whisper request and leaves subsequent attempts behind the ASR lock.
+const recordingMaxMs = 12_000
+const utteranceMaxMs = 6_000
+const speechEndSilenceMs = 700
 
 const textLength = computed(() => [...draft.value].length)
 const busy = computed(() => permissionPending.value || ['TRANSCRIBING', 'PARSING'].includes(stage.value))
@@ -64,6 +74,7 @@ const candidate = computed(() => result.value?.status === 'CANDIDATE' ? result.v
 const candidateDisabledReason = computed(() => {
   if (blocked.value) return '当前账号没有语音控制权限'
   if (adapter.mode === 'MOCK' && !props.allowMockSubmission) return '本地解析 MOCK 无后端来源记录，仅可与 P0 MOCK 演示'
+  if (candidate.value?.action === 'DEVICE_COMMAND') return ''
   return candidate.value && props.actionDisabledReason ? props.actionDisabledReason(candidate.value.action) : ''
 })
 const statusLabel = computed(() => ({
@@ -71,9 +82,26 @@ const statusLabel = computed(() => ({
   PARSING: '正在解析', CANDIDATE: '候选指令', NEEDS_CLARIFICATION: '需要澄清',
   UNSUPPORTED: '暂不支持', ERROR: '处理失败',
 }[stage.value]))
-const exactFastPath = computed(() => result.value?.provider === 'local-rules'
-  && result.value.model === 'rules-v1'
-  && ['开始任务', '暂停任务', '继续任务', '停止任务'].includes(result.value.normalizedText.replace(/[。！？!?，,]+$/, '')))
+const exactVoiceCommands: Record<string, VoiceAction> = {
+  '开始任务': 'START', '开始执行任务': 'START', '执行任务': 'START',
+  '请开始任务': 'START', '请开始执行任务': 'START', '现在开始任务': 'START',
+  '开始当前任务': 'START', '启动任务': 'START', '启动当前任务': 'START',
+  '暂停任务': 'PAUSE', '暂停一下': 'PAUSE', '暂停当前任务': 'PAUSE',
+  '暂停一下当前任务': 'PAUSE', '请暂停任务': 'PAUSE',
+  '继续任务': 'RESUME', '继续执行任务': 'RESUME', '恢复任务': 'RESUME',
+  '恢复运行': 'RESUME', '恢复执行': 'RESUME', '请继续任务': 'RESUME',
+  '停止任务': 'STOP', '停止执行任务': 'STOP', '结束任务': 'STOP',
+  '停止当前任务': 'STOP', '停止当前运行任务': 'STOP', '结束当前任务': 'STOP',
+  '终止任务': 'STOP', '终止当前任务': 'STOP', '请停止任务': 'STOP',
+  '请停止当前任务': 'STOP', '立即停止任务': 'STOP', '马上停止任务': 'STOP',
+  '请立即停止任务': 'STOP',
+}
+const exactFastPath = computed(() => {
+  const parsed = result.value
+  if (parsed?.status !== 'CANDIDATE' || parsed.provider !== 'local-rules' || parsed.model !== 'rules-v1') return false
+  const exactText = parsed.normalizedText.trim().replace(/[。！？!?，,]+$/, '')
+  return exactVoiceCommands[exactText] === parsed.action
+})
 const adapterLabel = computed(() => adapter.mode === 'MOCK' ? '本地解析 MOCK'
   : result.value?.provider === 'test-fixture' ? '后端测试适配器' : adapter.name === 'unconfigured' ? '待配置' : '平台接口')
 
@@ -86,6 +114,10 @@ watch(draft, () => {
 
 function stopCapture() {
   window.clearTimeout(recordingTimer)
+  window.clearInterval(audioMeterTimer)
+  audioMeterTimer = undefined
+  if (audioContext) void audioContext.close().catch(() => {})
+  audioContext = null
   const previous = recorder
   recorder = null
   if (previous?.state === 'recording') previous.stop()
@@ -104,6 +136,9 @@ function resetInput() {
   failed.value = false
   speechFallbackAvailable.value = false
   result.value = null
+  audioPipelineStartedAt = null
+  audioRequestElapsedMs = 0
+  parseElapsedMs = 0
   draft.value = ''
   stage.value = 'IDLE'
 }
@@ -134,7 +169,9 @@ async function runRequest() {
     : '正在解析指令，请等待。'
   try {
     if (current.kind === 'audio') {
+      const asrStartedAt = performance.now()
       const transcript = await adapter.transcribe({ ...current.input, signal: active.signal })
+      audioRequestElapsedMs += Math.round(performance.now() - asrStartedAt)
       if (ticket !== epoch || active.signal.aborted) return
       draft.value = transcript.text
       pending.value = null
@@ -163,24 +200,41 @@ async function runRequest() {
         }
         // Preserve the interpretation key/body if the second stage times out.
         pending.value = { kind: 'text', input: parseInput }
+        const parseStartedAt = performance.now()
         const parsed = await adapter.parse({ ...parseInput, signal: active.signal })
+        parseElapsedMs += Math.round(performance.now() - parseStartedAt)
         if (ticket !== epoch || active.signal.aborted) return
         pending.value = null
         result.value = parsed
         stage.value = parsed.status === 'CANDIDATE' ? 'CANDIDATE'
           : parsed.status === 'NOT_ACTIONABLE' ? 'NEEDS_CLARIFICATION' : parsed.status
+        const targetedDeviceCommand = parsed.status === 'CANDIDATE'
+          && parsed.action === 'DEVICE_COMMAND'
+          && parsed.provider === 'local-rules'
+        const safeToAutoExecute = parsed.status === 'CANDIDATE'
+          && (targetedDeviceCommand
+            || exactFastPath.value
+            || (parsed.provider === 'local-llm' && parsed.intent !== 'MISSION_STOP'))
         if (parsed.status === 'CANDIDATE'
-          && (parsed.provider === 'local-llm' || exactFastPath.value)
+          && safeToAutoExecute
           && !props.submissionDisabled
           && !candidateDisabledReason.value) {
           result.value = null
-          message.value = exactFastPath.value
+          message.value = targetedDeviceCommand
+            ? '单设备指令已识别，正在校验目标和动作并自动提交至本地仿真。'
+            : exactFastPath.value
             ? '明确口令已由本地规则快速确认，正在自动提交仿真动作。'
             : '识别成功，正在自动提交仿真动作并等待回执。'
-          emit('voiceCandidate', parsed.intent, parsed.requestId)
+          emit('voiceCandidate', parsed.intent, parsed.requestId, {
+            startedAt: audioPipelineStartedAt ?? Date.now(),
+            asrRequestMs: audioRequestElapsedMs,
+            parseMs: parseElapsedMs,
+          })
         } else if (parsed.status === 'CANDIDATE') {
           speechFallbackAvailable.value = true
-          message.value = parsed.provider === 'local-llm' || exactFastPath.value
+          message.value = parsed.intent === 'MISSION_STOP' && !exactFastPath.value
+            ? '语音识别对应停止任务，但不是明确停止口令；已阻止自动执行，请核对或修改文字。'
+            : parsed.provider === 'local-llm' || exactFastPath.value
             ? candidateDisabledReason.value || '当前仿真条件未通过自动执行检查，请核对识别文字。'
             : '解析来源不是本地离线模型；已保留识别文字，请核对后重新解析。'
         } else {
@@ -191,12 +245,40 @@ async function runRequest() {
       }
       stage.value = 'READY_TO_PARSE'
     } else {
+      const parseStartedAt = performance.now()
       const parsed = await adapter.parse({ ...current.input, signal: active.signal })
       if (ticket !== epoch || active.signal.aborted) return
       result.value = parsed
       stage.value = parsed.status === 'NOT_ACTIONABLE' ? 'NEEDS_CLARIFICATION' : parsed.status
-      message.value = parsed.status === 'CANDIDATE'
-        ? '已生成候选；请核对识别文字与动作后提交。' : parsed.message
+      const targetedDeviceCommand = parsed.status === 'CANDIDATE'
+        && parsed.action === 'DEVICE_COMMAND'
+        && parsed.provider === 'local-rules'
+      const safeToAutoExecute = parsed.status === 'CANDIDATE'
+        && (targetedDeviceCommand
+          || exactFastPath.value
+          || (parsed.provider === 'local-llm' && parsed.intent !== 'MISSION_STOP'))
+      if (props.autoExecuteSpeech
+        && safeToAutoExecute
+        && !props.submissionDisabled
+        && !candidateDisabledReason.value) {
+        result.value = null
+        message.value = targetedDeviceCommand
+          ? '单设备文字指令已识别，正在校验目标和动作并自动提交至本地仿真。'
+          : exactFastPath.value
+            ? '明确文字口令已由本地规则快速确认，正在自动提交仿真动作。'
+            : '文字指令解析成功，正在自动提交仿真动作并等待回执。'
+        emit('voiceCandidate', parsed.intent, parsed.requestId, {
+          startedAt: Date.now(),
+          asrRequestMs: 0,
+          parseMs: Math.round(performance.now() - parseStartedAt),
+        })
+      } else if (parsed.status === 'CANDIDATE') {
+        message.value = parsed.intent === 'MISSION_STOP' && !exactFastPath.value
+          ? '解析结果对应停止任务，但不是明确停止口令；已阻止自动执行，请核对或修改文字。'
+          : '已生成候选；请核对识别文字与动作后提交。'
+      } else {
+        message.value = parsed.message
+      }
     }
     pending.value = null
   } catch (error) {
@@ -256,12 +338,25 @@ async function startRecording() {
     if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined') {
       throw new Error('当前浏览器不支持录音，请使用 HTTPS / localhost 或改用文字。')
     }
-    const acquired = await navigator.mediaDevices.getUserMedia({ audio: true })
+    const acquired = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+    })
     if (ticket !== epoch) { acquired.getTracks().forEach(track => track.stop()); return }
     stream = acquired
     const mimeType = preferredAudioType()
     const active = mimeType ? new MediaRecorder(acquired, { mimeType }) : new MediaRecorder(acquired)
     recorder = active
+    const context = new AudioContext()
+    audioContext = context
+    await context.resume()
+    const analyser = context.createAnalyser()
+    analyser.fftSize = 1024
+    context.createMediaStreamSource(acquired).connect(analyser)
+    const samples = new Float32Array(analyser.fftSize)
+    let voiceStartedAt = 0
+    let quietStartedAt = 0
+    let noiseFloor = 0.002
+    let loudFrames = 0
     const chunks: Blob[] = []
     let size = 0
     active.addEventListener('dataavailable', event => {
@@ -271,6 +366,12 @@ async function startRecording() {
       if (size > VOICE_AUDIO_MAX_BYTES && active.state === 'recording') active.stop()
     })
     active.addEventListener('stop', () => {
+      window.clearInterval(audioMeterTimer)
+      audioMeterTimer = undefined
+      if (audioContext === context) {
+        void context.close().catch(() => {})
+        audioContext = null
+      }
       acquired.getTracks().forEach(track => track.stop())
       if (ticket !== epoch) return
       window.clearTimeout(recordingTimer)
@@ -282,6 +383,9 @@ async function startRecording() {
         message.value = size === 0 ? '音频为空，请重新录音。' : '音频超过 5 MiB，请缩短录音。'
         return
       }
+      audioPipelineStartedAt = Date.now()
+      audioRequestElapsedMs = 0
+      parseElapsedMs = 0
       pending.value = { kind: 'audio', input: {
         audio: new Blob(chunks, { type: active.mimeType || 'audio/webm' }),
         requestId: crypto.randomUUID(), locale: 'zh-CN',
@@ -295,8 +399,40 @@ async function startRecording() {
       message.value = '录音设备异常，请重新录音或使用文字。'
     })
     active.start(1000)
+    // Start each recording with a clean transcript so an older candidate
+    // cannot look like the result of the new utterance while ASR is pending.
+    draft.value = ''
+    result.value = null
     stage.value = 'RECORDING'
-    message.value = '只录任务口令，说完立即点击停止录音，可减少识别等待时间。'
+    message.value = '请说出任务口令；停顿约 0.7 秒会自动识别，单次录音最长 12 秒。'
+    audioMeterTimer = window.setInterval(() => {
+      if (ticket !== epoch || active.state !== 'recording') return
+      analyser.getFloatTimeDomainData(samples)
+      let sum = 0
+      for (let index = 0; index < samples.length; index++) sum += samples[index]! * samples[index]!
+      const rms = Math.sqrt(sum / samples.length)
+      const now = performance.now()
+      const voiceThreshold = Math.max(0.014, noiseFloor * 2.8)
+      const silenceThreshold = Math.max(0.011, noiseFloor * 1.8)
+      if (!voiceStartedAt && rms < voiceThreshold) {
+        noiseFloor = noiseFloor * 0.94 + rms * 0.06
+      }
+      if (rms >= voiceThreshold) {
+        loudFrames++
+        if (!voiceStartedAt && loudFrames >= 2) voiceStartedAt = now
+        quietStartedAt = 0
+      } else {
+        loudFrames = 0
+        if (voiceStartedAt && rms <= silenceThreshold && !quietStartedAt) quietStartedAt = now
+        if (voiceStartedAt && rms > silenceThreshold) quietStartedAt = 0
+        if (voiceStartedAt && quietStartedAt && now - quietStartedAt >= speechEndSilenceMs
+          && now - voiceStartedAt >= 180) {
+          active.stop()
+          return
+        }
+      }
+      if (voiceStartedAt && now - voiceStartedAt >= utteranceMaxMs) active.stop()
+    }, 50)
     recordingTimer = window.setTimeout(() => {
       if (active.state === 'recording') active.stop()
     }, recordingMaxMs)
@@ -312,6 +448,32 @@ async function startRecording() {
 }
 function stopRecording() {
   if (recorder?.state === 'recording') recorder.stop()
+}
+function chooseAudioFile(event: Event) {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  input.value = ''
+  if (!file || blocked.value || busy.value || pending.value) return
+  const extensionType = /\.wav$/i.test(file.name) ? 'audio/wav'
+    : /\.mp3$/i.test(file.name) ? 'audio/mpeg'
+      : /\.mp4$|\.m4a$/i.test(file.name) ? 'audio/mp4'
+        : /\.ogg$/i.test(file.name) ? 'audio/ogg' : /\.webm$/i.test(file.name) ? 'audio/webm' : ''
+  const type = normalizeVoiceAudioType(file.type || extensionType)
+  if (file.size === 0 || file.size > VOICE_AUDIO_MAX_BYTES
+    || !['audio/wav', 'audio/mpeg', 'audio/mp4', 'audio/ogg', 'audio/webm'].includes(type)) {
+    stage.value = 'ERROR'
+    message.value = file.size > VOICE_AUDIO_MAX_BYTES
+      ? '录音文件超过 5 MiB 限制。' : '文件测试支持 WAV、MP3、MP4/M4A、Ogg 和 WebM 音频。'
+    return
+  }
+  speechFallbackAvailable.value = false
+  audioPipelineStartedAt = Date.now()
+  audioRequestElapsedMs = 0
+  parseElapsedMs = 0
+  pending.value = { kind: 'audio', input: {
+    audio: new Blob([file], { type }), requestId: crypto.randomUUID(), locale: 'zh-CN',
+  } }
+  void runRequest()
 }
 async function parseDraft() {
   if (busy.value || pending.value || blocked.value || !draft.value.trim() || textLength.value > 200) return
@@ -357,6 +519,11 @@ onBeforeUnmount(() => window.clearInterval(elapsedTimer))
         <WandSparkles :size="13" />解析指令
       </button>
     </div>
+    <label v-if="autoExecuteSpeech" class="audio-file-test">
+      选择录音文件进行仿真链路测试
+      <input type="file" accept="audio/wav,audio/mpeg,audio/mp4,audio/ogg,audio/webm,.wav,.mp3,.m4a,.mp4,.ogg,.webm" :disabled="busy || !!pending || blocked || stage === 'RECORDING'" @change="chooseAudioFile" />
+    </label>
+    <p v-if="autoExecuteSpeech" class="file-test-note">文件会经过真实识别和指令解析；明确口令可能自动启动本地仿真任务。</p>
     <p class="status"><b>{{ statusLabel }}<template v-if="['RECORDING', 'TRANSCRIBING', 'PARSING'].includes(stage)"> · {{ stageElapsed }} 秒</template></b><span>{{ message }}</span></p>
     <details v-if="result" class="result-details">
       <summary>{{ result.provider === 'local-llm' ? '本地离线模型' : result.provider === 'local-rules' ? '本地规则解析' : '解析信息' }}</summary>
@@ -373,8 +540,8 @@ onBeforeUnmount(() => window.clearInterval(elapsedTimer))
       <button type="button" :disabled="busy" @click="discardPending">放弃本页恢复（新请求可能重复计费）</button>
     </div>
     <article v-if="candidate" class="candidate">
-      <div><strong>{{ candidate.action }}</strong><small>{{ candidate.intent }}</small></div>
-      <p>请核对识别文字与动作；不符合预期时修改文字后重新解析。</p>
+      <div><strong>{{ candidate.action === 'DEVICE_COMMAND' ? candidate.targetDeviceCode : candidate.action }}</strong><small>{{ candidate.action === 'DEVICE_COMMAND' ? candidate.deviceCommandType : candidate.intent }}</small></div>
+      <p>{{ candidate.action === 'DEVICE_COMMAND' ? '本地仿真中，语音或文字指令通过校验后会自动提交，且仅作用于所示设备。' : '请核对识别文字与动作；不符合预期时修改文字后重新解析。' }}</p>
       <button type="button" :disabled="submissionDisabled || !!candidateDisabledReason" :title="candidateDisabledReason" @click="submitCandidate">
         {{ candidateDisabledReason || '生成待确认提案' }}
       </button>
@@ -390,6 +557,8 @@ onBeforeUnmount(() => window.clearInterval(elapsedTimer))
 textarea { box-sizing:border-box; width:100%; resize:vertical; padding:8px; color:#d9f1ed; background:#06191e; border:1px solid #28484e; border-radius:4px; font:10px/1.5 inherit; }
 textarea:focus { outline:1px solid #58bfb3; border-color:#58bfb3; }.controls button,.candidate button { display:inline-flex; align-items:center; justify-content:center; gap:4px; padding:6px 8px; color:#aedad4; cursor:pointer; background:#0a282e; border:1px solid #285159; border-radius:4px; font-size:9px; }
 .controls button { flex:1; }.controls button.recording { color:#ffb3aa; border-color:#8b453f; }.controls button:disabled,.candidate button:disabled { cursor:not-allowed; opacity:.35; }
+.audio-file-test { display:grid; gap:4px; padding:6px 8px; border:1px dashed #42615f; border-radius:4px; color:#aedad4; font-size:9px; }.audio-file-test input { max-width:100%; color:#86aca7; font:inherit; font-size:9px; }
+.file-test-note { margin:0; color:#b9966b; font-size:9px; line-height:1.4; }
 .status { display:grid; gap:2px; margin:0; color:#709792; line-height:1.4; }.status b { color:#93c4be; font-size:9px; }.status span { font-size:9px; }
 .result-details { color:#86aca7; font-size:9px; line-height:1.5; overflow-wrap:anywhere; }.result-details summary { cursor:pointer; color:#aedad4; }
 .candidate { display:grid; gap:6px; padding:8px; background:#082329; border:1px solid #2a7052; border-radius:4px; }.candidate strong { color:#78eadb; }.candidate small { color:#709792; }.candidate p { margin:0; color:#86aca7; font-size:9px; line-height:1.4; }.candidate button { color:#04191b; background:#6ce4d5; border-color:#6ce4d5; }

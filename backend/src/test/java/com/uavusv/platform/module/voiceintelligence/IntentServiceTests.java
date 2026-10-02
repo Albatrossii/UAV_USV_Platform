@@ -49,12 +49,93 @@ class IntentServiceTests {
     }
 
     @Test
+    void commonExplicitPhrasesSkipTheLocalModelRoundTrip() {
+        settings.setIntentProvider("local-llm");
+        LocalLlmIntentProvider model = mock(LocalLlmIntentProvider.class);
+        service = new IntentService(access, settings, runtimes, json, model, clock);
+
+        assertEquals("local-rules", data("暂停当前任务").path("provider").asText());
+        assertEquals("PAUSE", data("暂停当前任务").path("action").asText());
+        assertEquals("local-rules", data("恢复运行").path("provider").asText());
+        assertEquals("RESUME", data("恢复运行").path("action").asText());
+        verifyNoInteractions(model);
+    }
+
+    @Test
     void unsafeLanguageNeverBecomesCandidate() {
         assertStatus("不要停止任务", "NOT_ACTIONABLE", "NEGATED_ACTION");
         assertStatus("暂停然后继续", "NEEDS_CLARIFICATION", "AMBIGUOUS_ACTION");
         assertStatus("让一号无人艇暂停", "UNSUPPORTED", "UNSUPPORTED_TARGETING");
         assertStatus("攻击目标", "UNSUPPORTED", "UNSUPPORTED_CAPABILITY");
         assertStatus("今天天气如何", "NEEDS_CLARIFICATION", "NO_SUPPORTED_ACTION");
+    }
+
+    @Test
+    void singleDeviceCandidateIsBoundToTheLiveSingleDeviceRun() {
+        ObjectNode runtime = runtime("DEVICE_COMMAND");
+        runtime.put("_algorithmCode", "ESCORT_GUARD_SINGLE_DEVICE");
+        runtime.putArray("_members").add("UAV-001").add("USV-002");
+        when(runtimes.require(REF, 7)).thenReturn(runtime);
+        String id = java.util.UUID.randomUUID().toString();
+        var outcome = service.interpret(7, id, request(id, "UAV-001 悬停", hint()));
+        var data = (ObjectNode) outcome.body().get("data");
+        assertEquals("CANDIDATE", data.path("status").asText());
+        assertEquals("SINGLE_DEVICE_CONTROL", data.path("intent").asText());
+        assertEquals("DEVICE_COMMAND", data.path("action").asText());
+        assertEquals("UAV-001", data.path("targetDeviceCode").asText());
+        assertEquals("UAV_HOVER", data.path("deviceCommandType").asText());
+        assertEquals("local-rules", data.path("provider").asText());
+        assertEquals(new IntentService.TargetedCandidate("UAV-001", "UAV_HOVER"),
+                service.requireTargetedCandidate(7, id, runtime));
+        assertThrows(AsrFailure.class,
+                () -> service.requireTargetedCandidate(8, id, runtime));
+
+        String pauseId = java.util.UUID.randomUUID().toString();
+        var pause = (ObjectNode) service.interpret(7, pauseId,
+                request(pauseId, "USV-002 暂停", hint())).body().get("data");
+        assertEquals("SINGLE_DEVICE_CONTROL", pause.path("intent").asText());
+        assertEquals("USV-002", pause.path("targetDeviceCode").asText());
+        assertEquals("USV_HOLD", pause.path("deviceCommandType").asText());
+
+        String chineseOrdinalId = java.util.UUID.randomUUID().toString();
+        var chineseOrdinal = (ObjectNode) service.interpret(7, chineseOrdinalId,
+                request(chineseOrdinalId, "第一架无人机悬停", hint())).body().get("data");
+        assertEquals("SINGLE_DEVICE_CONTROL", chineseOrdinal.path("intent").asText());
+        assertEquals("UAV-001", chineseOrdinal.path("targetDeviceCode").asText());
+        assertEquals("UAV_HOVER", chineseOrdinal.path("deviceCommandType").asText());
+
+        String vesselOrdinalId = java.util.UUID.randomUUID().toString();
+        var vesselOrdinal = (ObjectNode) service.interpret(7, vesselOrdinalId,
+                request(vesselOrdinalId, "第二艘无人艇返航", hint())).body().get("data");
+        assertEquals("USV-002", vesselOrdinal.path("targetDeviceCode").asText());
+        assertEquals("USV_RETURN", vesselOrdinal.path("deviceCommandType").asText());
+
+        String multipleActionsId = java.util.UUID.randomUUID().toString();
+        var multipleActions = (ObjectNode) service.interpret(7, multipleActionsId,
+                request(multipleActionsId, "第一架无人机悬停返航", hint())).body().get("data");
+        assertEquals("NEEDS_CLARIFICATION", multipleActions.path("status").asText());
+        assertEquals("AMBIGUOUS_ACTION", multipleActions.path("reason").asText());
+    }
+
+    @Test
+    void singleDeviceParserClarifiesUnknownAndMultipleTargetsWithoutDowngrading() {
+        ObjectNode runtime = runtime("DEVICE_COMMAND");
+        runtime.put("_algorithmCode", "ESCORT_GUARD_SINGLE_DEVICE");
+        runtime.putArray("_members").add("UAV-001").add("UAV-002");
+        when(runtimes.require(REF, 7)).thenReturn(runtime);
+        String unknownId = java.util.UUID.randomUUID().toString();
+        var unknown = (ObjectNode) service.interpret(7, unknownId,
+                request(unknownId, "UAV-009 悬停", hint())).body().get("data");
+        assertEquals("NEEDS_CLARIFICATION", unknown.path("status").asText());
+        assertEquals("AMBIGUOUS_TARGET", unknown.path("reason").asText());
+        String multipleId = java.util.UUID.randomUUID().toString();
+        var multiple = (ObjectNode) service.interpret(7, multipleId,
+                request(multipleId, "UAV-001 与 UAV-002 悬停", hint())).body().get("data");
+        assertEquals("NEEDS_CLARIFICATION", multiple.path("status").asText());
+        String negatedId = java.util.UUID.randomUUID().toString();
+        var negated = (ObjectNode) service.interpret(7, negatedId,
+                request(negatedId, "不要让一号无人机悬停", hint())).body().get("data");
+        assertEquals("NOT_ACTIONABLE", negated.path("status").asText());
     }
 
     @Test
@@ -213,6 +294,12 @@ class IntentServiceTests {
         var data = (ObjectNode) service.interpret(7, id, request(id, text, null)).body().get("data");
         assertEquals(status, data.path("status").asText());
         assertEquals(reason, data.path("reason").asText());
+    }
+
+    private ObjectNode data(String text) {
+        String id = java.util.UUID.randomUUID().toString();
+        return (ObjectNode) service.interpret(7, id, request(id, text, null))
+                .body().get("data");
     }
 
     private ObjectNode request(String text, ObjectNode runtime) {

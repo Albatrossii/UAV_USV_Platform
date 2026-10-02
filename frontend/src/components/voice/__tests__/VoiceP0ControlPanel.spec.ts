@@ -7,7 +7,7 @@ import VoiceP0ControlPanel from '@/components/voice/VoiceP0ControlPanel.vue'
 import VoiceIntelligenceInput from '@/components/voice/VoiceIntelligenceInput.vue'
 import { useAuthStore } from '@/stores/auth'
 import { useVoiceControlStore } from '@/stores/voiceControl'
-import type { VoiceExecution, VoiceRuntimeContext } from '@/types/voiceControl'
+import type { VoiceExecution, VoiceProposal, VoiceRuntimeContext } from '@/types/voiceControl'
 
 const context: VoiceRuntimeContext = {
   runtimeRef: '11111111-1111-4111-8111-111111111111',
@@ -72,6 +72,119 @@ function mountPanel(presentationStatus: VoiceExecution['presentationStatus']) {
 }
 
 describe('VoiceP0ControlPanel presentation recovery UI', () => {
+  it('shows the confirmed manual device receipt instead of stale automatic voice status', async () => {
+    const wrapper = mountPanel('NOT_REQUIRED')
+    const store = useVoiceControlStore()
+    const proposalId = '99999999-9999-4999-8999-999999999999'
+    store.proposal = {
+      proposalId,
+      status: 'CONFIRMED',
+      planVersion: 1,
+      planHash: 'device-plan-hash',
+      requiresConfirmation: true,
+      createdAt: '2026-09-28T00:00:00.000Z',
+      expiresAt: '2026-09-28T00:00:30.000Z',
+      executionId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      plan: {
+        runtimeRef: context.runtimeRef,
+        runtimeGeneration: context.runtimeGeneration,
+        contextVersion: context.contextVersion,
+        stateVersion: context.stateVersion,
+        action: 'DEVICE_COMMAND',
+        targetDeviceCode: 'UAV-001',
+        deviceCommandType: 'UAV_HOVER',
+        explicitDeviceCodes: ['UAV-001'],
+        policyVersion: 'voice-p0.v1',
+      },
+    } satisfies VoiceProposal
+    store.execution = {
+      ...execution('NOT_REQUIRED'),
+      proposalId,
+      action: 'DEVICE_COMMAND',
+    }
+    wrapper.vm.$.setupState.voiceAutomationStatus = '仿真动作已自动提交，正在等待算法回执。'
+    await nextTick()
+
+    expect(wrapper.text()).toContain('单设备指令：UAV-001 · 无人机悬停 · 算法执行成功。')
+    expect(wrapper.text()).not.toContain('仿真动作已自动提交，正在等待算法回执。')
+    wrapper.unmount()
+  })
+
+  it('clears prior voice execution status when the selected runtime changes', async () => {
+    const wrapper = mountPanel('NOT_REQUIRED')
+    const store = useVoiceControlStore()
+    wrapper.vm.$.setupState.voiceAutomationStatus = '仿真动作已自动提交，正在等待算法回执。'
+    await nextTick()
+    expect(wrapper.text()).toContain('仿真动作已自动提交，正在等待算法回执。')
+
+    store.contexts = [{
+      ...context,
+      runtimeRef: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+      runtimeGeneration: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+      algorithmRunId: '178980000002',
+      state: 'PREVIEW',
+    }]
+    store.selectedRuntimeRef = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
+    await nextTick()
+
+    expect(wrapper.text()).not.toContain('仿真动作已自动提交，正在等待算法回执。')
+    wrapper.unmount()
+  })
+
+  it('automatically confirms a validated single-device voice command in local simulation', async () => {
+    const wrapper = mountPanel('NOT_REQUIRED')
+    const store = useVoiceControlStore()
+    const targetedContext = { ...context, capabilities: [...context.capabilities, 'DEVICE_COMMAND'] }
+    const interpretationId = '66666666-6666-4666-8666-666666666666'
+    const proposalId = '99999999-9999-4999-8999-999999999999'
+    store.contexts = [targetedContext]
+    store.expectedAlgorithmRunId = targetedContext.algorithmRunId
+    store.propose = vi.fn().mockImplementation(async () => {
+      store.proposal = {
+        proposalId,
+        interpretationId,
+        status: 'AWAITING_CONFIRMATION',
+        planVersion: 1,
+        planHash: 'device-plan-hash',
+        requiresConfirmation: true,
+        createdAt: '2026-09-28T00:00:00.000Z',
+        expiresAt: new Date(Date.now() + 30_000).toISOString(),
+        executionId: null,
+        plan: {
+          runtimeRef: targetedContext.runtimeRef,
+          runtimeGeneration: targetedContext.runtimeGeneration,
+          contextVersion: targetedContext.contextVersion,
+          stateVersion: targetedContext.stateVersion,
+          action: 'DEVICE_COMMAND',
+          targetDeviceCode: 'UAV-001',
+          deviceCommandType: 'UAV_HOVER',
+          explicitDeviceCodes: ['UAV-001'],
+          policyVersion: 'voice-p0.v1',
+        },
+      } satisfies VoiceProposal
+    })
+    store.confirm = vi.fn().mockImplementation(async () => {
+      store.proposal = { ...store.proposal!, status: 'CONFIRMED' }
+      store.execution = {
+        ...execution('NOT_REQUIRED'),
+        proposalId,
+        action: 'DEVICE_COMMAND',
+      }
+    })
+
+    await wrapper.vm.$.setupState.handleAutomaticVoiceCandidate(
+      'SINGLE_DEVICE_CONTROL',
+      interpretationId,
+      { startedAt: Date.now() - 120, asrRequestMs: 80, parseMs: 30 },
+    )
+
+    expect(store.propose).toHaveBeenCalledOnce()
+    expect(store.confirm).toHaveBeenCalledOnce()
+    expect(store.execution?.action).toBe('DEVICE_COMMAND')
+    expect(wrapper.text()).toContain('单设备指令：UAV-001 · 无人机悬停 · 算法执行成功。')
+    wrapper.unmount()
+  })
+
   it('parses independently of a LOST runtime while keeping proposal submission blocked', async () => {
     const wrapper = mountPanel('NOT_REQUIRED')
     const store = useVoiceControlStore()
@@ -82,6 +195,22 @@ describe('VoiceP0ControlPanel presentation recovery UI', () => {
     expect(input.props('runtimeContext')).toBeNull()
     expect(input.props('allowedActions')).toEqual(['START', 'PAUSE', 'RESUME', 'STOP'])
     expect(input.props('submissionDisabled')).toBe(true)
+    wrapper.unmount()
+  })
+
+  it('allows local simulation resume while Unity is recovering, but still requires a ready scene for START', async () => {
+    const wrapper = mountPanel('NOT_REQUIRED')
+    const store = useVoiceControlStore()
+    store.contexts = [{ ...context, state: 'PAUSED', sceneReady: false }]
+    await nextTick()
+
+    const input = wrapper.getComponent(VoiceIntelligenceInput)
+    const disabledReason = input.props('actionDisabledReason') as (action: string) => string
+    expect(disabledReason('RESUME')).toBe('')
+
+    store.contexts = [{ ...context, state: 'PREPARED', sceneReady: false }]
+    await nextTick()
+    expect(disabledReason('START')).toContain('Unity 场景尚未就绪')
     wrapper.unmount()
   })
 
@@ -112,27 +241,35 @@ describe('VoiceP0ControlPanel presentation recovery UI', () => {
 
   it('serializes a scene probe and a newly due frame probe', async () => {
     const wrapper = mountPanel('NOT_REQUIRED')
+    await nextTick()
     const store = useVoiceControlStore()
     store.execution = { ...execution('NOT_REQUIRED'), action: 'PAUSE' }
+    store.presentationBinding = {
+      bindingId: '77777777-7777-4777-8777-777777777777',
+      runtimeGeneration: context.runtimeGeneration,
+    }
     store.takePresentationBinding = vi.fn().mockImplementation(async () => {
       store.presentationBinding = { bindingId: '77777777-7777-4777-8777-777777777777', runtimeGeneration: context.runtimeGeneration }
     })
     let finishScene!: (value: null) => void
     store.requestPresentationChallenge = vi.fn().mockImplementationOnce(() => new Promise(resolve => { finishScene = resolve }))
       .mockResolvedValue(null)
+    await nextTick()
     await wrapper.setProps({ unitySession: { connected: true, unityInstanceId: 'unity-test', sceneRevision: 1 } })
     await nextTick()
     await wrapper.vm.handleUnityPresentationMessage({ type: 'PRESENTATION_READY', payload: {
       protocolVersion: 'unity.presentation.v1', runtimeRef: context.runtimeRef, runtimeGeneration: context.runtimeGeneration,
       bindingId: '77777777-7777-4777-8777-777777777777', unityInstanceId: 'unity-test', sceneRevision: 1, scenarioReady: true,
     } })
-    await vi.advanceTimersByTimeAsync(1000)
+    void wrapper.vm.$.setupState.requestPresentationProbe()
+    await nextTick()
     expect(store.requestPresentationChallenge).toHaveBeenCalledExactlyOnceWith('SCENE_READY', null)
     store.execution = execution('PENDING')
-    await vi.advanceTimersByTimeAsync(2000)
+    await wrapper.vm.$.setupState.requestPresentationProbe()
     expect(store.requestPresentationChallenge).toHaveBeenCalledTimes(1)
     finishScene(null)
-    await vi.advanceTimersByTimeAsync(1000)
+    await Promise.resolve()
+    await wrapper.vm.$.setupState.requestPresentationProbe()
     expect(store.requestPresentationChallenge).toHaveBeenNthCalledWith(2, 'FRAME_APPLIED', store.execution!.executionId)
     wrapper.unmount()
   })

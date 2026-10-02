@@ -39,6 +39,7 @@ declare module 'vue' {
     MissionTrajectoryMap: typeof import('./components/mission/MissionTrajectoryMap.vue')['default']
     OverviewUnityWebglPanel: typeof import('./components/unity/OverviewUnityWebglPanel.vue')['default']
     PointCloudCanvas: typeof import('./components/sensor/PointCloudCanvas.vue')['default']
+    PointCloudOverviewPanel: typeof import('./components/sensor/PointCloudOverviewPanel.vue')['default']
     RadarPpiCanvas: typeof import('./components/sensor/RadarPpiCanvas.vue')['default']
     RouterLink: typeof import('vue-router')['RouterLink']
     RouterView: typeof import('vue-router')['RouterView']
