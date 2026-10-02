@@ -165,7 +165,7 @@ async function runRequest() {
   result.value = null
   stage.value = current.kind === 'audio' ? 'TRANSCRIBING' : 'PARSING'
   message.value = current.kind === 'audio'
-    ? '本地模型正在识别录音，可能需要数十秒，请等待；无需重复录音。'
+    ? '正在识别录音，可能需要数十秒，请等待；无需重复录音。'
     : '正在解析指令，请等待。'
   try {
     if (current.kind === 'audio') {
@@ -175,7 +175,9 @@ async function runRequest() {
       if (ticket !== epoch || active.signal.aborted) return
       draft.value = transcript.text
       pending.value = null
-      const transcriptIsLocal = transcript.provider === 'local-asr'
+      // Only real ASR providers enter the speech-to-intent flow. Test fixtures
+      // and the local mock must remain transcription-only in this UI.
+      const transcriptIsRealAsr = transcript.provider === 'local-asr' || transcript.provider === 'aliyun-asr'
       if (!transcript.text.trim()) {
         speechFallbackAvailable.value = true
         stage.value = 'ERROR'
@@ -185,10 +187,10 @@ async function runRequest() {
       message.value = transcript.provider === 'test-fixture'
         ? '后端测试适配器返回的固定样例，请核对文字；未调用真实 ASR。'
         : adapter.mode === 'MOCK' ? '本地录音演示返回固定文字，不是实际语音识别。'
-          : transcriptIsLocal && props.autoExecuteSpeech
-            ? '语音已识别，正在由本地离线模型判断动作。'
+          : transcriptIsRealAsr && props.autoExecuteSpeech
+            ? '语音已识别，正在解析指令。'
             : '请核对识别文字后再解析。'
-      if (props.autoExecuteSpeech && transcriptIsLocal && transcript.text.trim()) {
+      if (props.autoExecuteSpeech && transcriptIsRealAsr && transcript.text.trim()) {
         stage.value = 'PARSING'
         const parseInput: VoiceParseRequest = {
           requestId: crypto.randomUUID(),

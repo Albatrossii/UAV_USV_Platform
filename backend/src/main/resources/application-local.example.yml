@@ -16,11 +16,17 @@ spring:
 app:
   voiceintelligence:
     enabled: ${APP_VOICEINTELLIGENCE_ENABLED:false}
+    provider: ${APP_VOICEINTELLIGENCE_PROVIDER:local}
     intent-provider: ${APP_VOICEINTELLIGENCE_INTENT_PROVIDER:rules}
     base-url: ${APP_VOICEINTELLIGENCE_BASE_URL:http://127.0.0.1:18082}
     token: ${APP_VOICEINTELLIGENCE_TOKEN:}
     model-revision: ${APP_VOICEINTELLIGENCE_MODEL_REVISION:536b0662742c02347bc0e980a01041f333bce120+uav-usv-domain-prompt-v1-beam-2}
     model-alias: ${APP_VOICEINTELLIGENCE_MODEL_ALIAS:whisper-small-cpu-int8-r1}
+    aliyun-app-key: ${APP_VOICEINTELLIGENCE_ALIYUN_APP_KEY:}
+    aliyun-token: ${APP_VOICEINTELLIGENCE_ALIYUN_TOKEN:}
+    aliyun-region: ${APP_VOICEINTELLIGENCE_ALIYUN_REGION:cn-shanghai}
+    aliyun-ffmpeg-path: ${APP_VOICEINTELLIGENCE_ALIYUN_FFMPEG_PATH:ffmpeg}
+    aliyun-model-alias: ${APP_VOICEINTELLIGENCE_ALIYUN_MODEL_ALIAS:aliyun-shiyinshi-v1}
     llm-base-url: ${APP_VOICEINTELLIGENCE_LLM_BASE_URL:http://127.0.0.1:18083}
     llm-token: ${APP_VOICEINTELLIGENCE_LLM_TOKEN:}
     llm-model: ${APP_VOICEINTELLIGENCE_LLM_MODEL:qwen2.5-1.5b-instruct-q4_k_m}

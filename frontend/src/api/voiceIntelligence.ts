@@ -12,8 +12,8 @@ import type {
 import { VoiceIntelligenceError } from '@/types/voiceIntelligence'
 
 export const VOICE_AUDIO_MAX_BYTES = 5 * 1024 * 1024
-// Java permits up to 120 seconds for CPU ASR. Keep the browser alive through
-// that deadline, with time for upload and response delivery on the local host.
+// Keep the browser alive through the backend's ASR deadline, with time for
+// upload and response delivery.
 export const VOICE_TRANSCRIPTION_TIMEOUT_MS = 140_000
 export const LOCAL_ASR_TIMEOUT_MS = VOICE_TRANSCRIPTION_TIMEOUT_MS
 // Allow the local CPU model's 60-second budget plus validation and delivery.
@@ -171,7 +171,7 @@ async function transcribeVoiceAudioRequest(
       headers, signal: input.signal, timeout: timeoutMs,
     })
     if (requireSuccessEnvelope && response.data.code !== 'SUCCESS') {
-      throw new VoiceIntelligenceError('本地识别未返回成功响应。', 'VOICE_MALFORMED_RESPONSE')
+      throw new VoiceIntelligenceError('语音识别未返回成功响应。', 'VOICE_MALFORMED_RESPONSE')
     }
     if (!isTranscript(response.data.data) || response.data.data.requestId !== input.requestId) {
       throw new VoiceIntelligenceError('语音识别响应格式或请求标识无效。', 'VOICE_MALFORMED_RESPONSE')
@@ -182,13 +182,16 @@ async function transcribeVoiceAudioRequest(
   }
 }
 
-/** D1 uses the Java endpoint, never a mock fallback or direct Python call. */
-export function transcribeLocalAudio(input: VoiceAudioInput) {
+/** ASR-only mode uses the Java endpoint without a mock or direct provider call. */
+export function transcribeAsrOnlyAudio(input: VoiceAudioInput) {
   if (!supportedAudioTypes.has(audioType(input.audio))) {
     return Promise.reject(new VoiceIntelligenceError('仅支持WebM/Opus、Ogg/Opus、MP4/AAC、WAV/PCM和MP3。', 'VOICE_AUDIO_FORMAT_UNSUPPORTED'))
   }
   return transcribeVoiceAudioRequest(input, LOCAL_ASR_TIMEOUT_MS, true)
 }
+
+/** Kept for callers of the original D1 ASR-only interface. */
+export const transcribeLocalAudio = transcribeAsrOnlyAudio
 
 export async function interpretVoiceText(input: VoiceParseRequest): Promise<VoiceParseResult> {
   assertRequestActive(input.signal)

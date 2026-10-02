@@ -46,6 +46,18 @@ describe('D1 isolated ASR UI', () => {
     await upload(wrapper)
     expect(wrapper.text()).toContain('不计入验收')
   })
+  it('accepts Aliyun as real ASR while remaining transcription-only', async () => {
+    const { wrapper, transcribe } = setup(vi.fn(async input => ({
+      ...transcript(input), provider: 'aliyun-asr', model: 'paraformer-realtime',
+    })))
+    await upload(wrapper)
+    expect(transcribe).toHaveBeenCalledOnce()
+    expect(wrapper.text()).toContain('阿里云 ASR')
+    expect(wrapper.text()).toContain('不会执行任何任务动作')
+    expect(wrapper.text()).not.toContain('不计入验收')
+    expect(wrapper.find('.candidate').exists()).toBe(false)
+    expect(wrapper.emitted('candidate')).toBeUndefined()
+  })
   it('reuses the exact key and Blob after loss; cooldown is respected', async () => {
     const transcribe = vi.fn().mockRejectedValueOnce(new ApiClientError('busy', 409, 'VOICE_REQUEST_IN_PROGRESS', 2))
       .mockImplementation(async (input: VoiceAudioInput) => transcript(input))

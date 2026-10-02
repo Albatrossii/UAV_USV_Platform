@@ -136,9 +136,9 @@ public class AsrService {
                             "locale",
                             "zh-CN",
                             "provider",
-                            "local-asr",
+                            t.provider() == null ? "local-asr" : t.provider(),
                             "model",
-                            settings.getModelAlias());
+                            t.model() == null ? settings.getModelAlias() : t.model());
             outcome =
                     new AsrResponses.Outcome(200, AsrResponses.body("SUCCESS", "操作成功", data), null);
         } catch (AsrFailure e) {

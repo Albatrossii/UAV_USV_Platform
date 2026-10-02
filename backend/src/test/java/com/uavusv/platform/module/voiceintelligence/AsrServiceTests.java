@@ -67,6 +67,23 @@ class AsrServiceTests {
     }
 
     @Test
+    void cloudTranscriptMetadataIsReturnedWithoutChangingThePublicEnvelope() {
+        when(provider.transcribe(any(), anyLong()))
+                .thenAnswer(i -> {
+                    var a = (SpeechProvider.Audio) i.getArgument(0);
+                    return new SpeechProvider.Transcript(
+                            a.requestId(), "开始任务", 1000, "aliyun-isi-rest-v1",
+                            "aliyun-asr", "aliyun-shiyinshi-v1");
+                });
+        var outcome = call(1, UUID.randomUUID().toString());
+        assertEquals(200, outcome.status());
+        @SuppressWarnings("unchecked")
+        var data = (Map<String, Object>) outcome.body().get("data");
+        assertEquals("aliyun-asr", data.get("provider"));
+        assertEquals("aliyun-shiyinshi-v1", data.get("model"));
+    }
+
+    @Test
     void replayPreservesResultAndTimestamp() {
         var id = UUID.randomUUID().toString();
         var first = call(1, id);

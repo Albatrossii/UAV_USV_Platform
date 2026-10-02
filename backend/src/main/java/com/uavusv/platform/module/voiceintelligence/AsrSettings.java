@@ -7,10 +7,16 @@ import org.springframework.stereotype.Component;
 @ConfigurationProperties(prefix = "app.voiceintelligence")
 public class AsrSettings {
     private boolean enabled = false;
-    private String baseUrl = "http://127.0.0.1:18082",
+    private String provider = "local",
+            baseUrl = "http://127.0.0.1:18082",
             token = "",
             modelRevision = "",
             modelAlias = "whisper-small-cpu-int8-r1",
+            aliyunAppKey = "",
+            aliyunToken = "",
+            aliyunRegion = "cn-shanghai",
+            aliyunFfmpegPath = "ffmpeg",
+            aliyunModelAlias = "aliyun-shiyinshi-v1",
             intentProvider = "rules",
             llmBaseUrl = "http://127.0.0.1:18083",
             llmToken = "",
@@ -24,6 +30,14 @@ public class AsrSettings {
 
     public void setEnabled(boolean v) {
         enabled = v;
+    }
+
+    public String getProvider() {
+        return provider;
+    }
+
+    public void setProvider(String v) {
+        provider = v;
     }
 
     public String getBaseUrl() {
@@ -56,6 +70,46 @@ public class AsrSettings {
 
     public void setModelAlias(String v) {
         modelAlias = v;
+    }
+
+    public String getAliyunAppKey() {
+        return aliyunAppKey;
+    }
+
+    public void setAliyunAppKey(String v) {
+        aliyunAppKey = v;
+    }
+
+    public String getAliyunToken() {
+        return aliyunToken;
+    }
+
+    public void setAliyunToken(String v) {
+        aliyunToken = v;
+    }
+
+    public String getAliyunRegion() {
+        return aliyunRegion;
+    }
+
+    public void setAliyunRegion(String v) {
+        aliyunRegion = v;
+    }
+
+    public String getAliyunFfmpegPath() {
+        return aliyunFfmpegPath;
+    }
+
+    public void setAliyunFfmpegPath(String v) {
+        aliyunFfmpegPath = v;
+    }
+
+    public String getAliyunModelAlias() {
+        return aliyunModelAlias;
+    }
+
+    public void setAliyunModelAlias(String v) {
+        aliyunModelAlias = v;
     }
 
     public String getIntentProvider() {

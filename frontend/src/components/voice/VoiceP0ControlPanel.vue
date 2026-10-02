@@ -663,7 +663,7 @@ onBeforeUnmount(() => {
       </dl>
     </article>
     <p class="scope-note">
-      {{ asrOnly ? '本轮仅本地语音转文字；手工任务控制独立使用，识别结果不执行动作。' : voiceP1PreparationEnabled
+      {{ asrOnly ? '当前仅将语音转成文字（本地或阿里云识别）；手工任务控制独立使用，识别结果不执行动作。' : voiceP1PreparationEnabled
         ? autoExecuteSimulationVoice
         ? '本地仿真会自动提交通过校验的整队或单设备语音命令；Gateway 实机链路不走此自动流程。'
           : '已启用语音文本输入；本地仿真中的明确单设备命令会自动提交。'

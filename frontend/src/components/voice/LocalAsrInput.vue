@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onDeactivated, ref, shallowRef, watch } from 'vue'
-import { transcribeLocalAudio, normalizeVoiceAudioType, VOICE_AUDIO_MAX_BYTES, LOCAL_ASR_TIMEOUT_MS } from '@/api/voiceIntelligence'
+import { transcribeAsrOnlyAudio, normalizeVoiceAudioType, VOICE_AUDIO_MAX_BYTES, LOCAL_ASR_TIMEOUT_MS } from '@/api/voiceIntelligence'
 import { voiceRecoveryInfo } from '@/services/voiceIntelligenceRecovery'
 import type { VoiceAudioInput, VoiceTranscript } from '@/types/voiceIntelligence'
 
@@ -24,8 +24,10 @@ const recognitionStatus = computed(() => phase.value === 'waiting'
   ? `${message.value} 已等待 ${recognitionElapsed.value} 秒。` : message.value)
 const locked = computed(() => props.disabled || denied.value)
 const inputLocked = computed(() => locked.value || phase.value !== 'idle' || !!pending.value)
+const realProviders: Record<string, string> = { 'local-asr': '本地 ASR', 'aliyun-asr': '阿里云 ASR' }
+const isRealProvider = (provider: string) => Object.prototype.hasOwnProperty.call(realProviders, provider)
 const adapterLabel = computed(() => !result.value ? '等待真实识别'
-  : result.value.provider === 'local-asr' ? '本地 ASR' : '测试/非本地适配器（不计入验收）')
+  : isRealProvider(result.value.provider) ? realProviders[result.value.provider] : '测试/未知适配器（不计入验收）')
 let epoch = 0
 let activeRequest: AbortController | null = null
 let recorder: MediaRecorder | null = null
@@ -96,21 +98,21 @@ async function send() {
     recognitionElapsed.value = Math.floor((performance.now() - recognitionStarted) / 1000)
   }, 250)
   retryable.value = false
-  message.value = '正在本地识别，最多等待140秒。停止等待不代表模型停止。'
+  message.value = '正在识别，最多等待140秒。停止等待不代表服务停止。'
   requestTimer = window.setTimeout(() => {
     if (activeRequest === controller) stopWaiting('等待已超过140秒，后台可能仍在处理，可手动使用原请求恢复。')
   }, LOCAL_ASR_TIMEOUT_MS)
   try {
-    const response = await (props.transcribe ?? transcribeLocalAudio)({ ...pending.value, signal: controller.signal })
+    const response = await (props.transcribe ?? transcribeAsrOnlyAudio)({ ...pending.value, signal: controller.signal })
     if (ticket !== epoch || controller.signal.aborted) return
     result.value = response
     completedRecognitionElapsedMs.value = Math.round(performance.now() - recognitionStarted)
     text.value = response.text
     pending.value = null
     window.clearTimeout(expireTimer)
-    message.value = response.provider === 'local-asr'
+    message.value = isRealProvider(response.provider)
       ? '识别完成，请核对并编辑文字；不会执行任何任务动作。'
-      : '返回来自测试或非本地适配器，不作为真实本地识别通过证据。'
+      : '返回来自测试或未知适配器，不作为真实识别通过证据。'
   } catch (error) {
     if (ticket !== epoch || controller.signal.aborted) return
     const info = voiceRecoveryInfo(error)
@@ -235,8 +237,8 @@ onDeactivated(clear)
 </script>
 
 <template>
-  <section class="local-asr" aria-label="本地语音识别">
-    <header><strong>本地语音识别</strong><span>{{ adapterLabel }}</span></header>
+  <section class="local-asr" aria-label="语音识别（仅转文字）">
+    <header><strong>语音识别（仅转文字）</strong><span>{{ adapterLabel }}</span></header>
     <p>只转文字 · 不需要生成场景 · 不执行控制</p>
     <div class="asr-actions">
       <button v-if="phase === 'recording'" @click="stopRecording">停止录音（{{ elapsed }}秒）</button>

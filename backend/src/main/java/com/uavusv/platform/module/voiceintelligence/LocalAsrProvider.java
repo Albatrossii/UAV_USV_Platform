@@ -2,6 +2,7 @@ package com.uavusv.platform.module.voiceintelligence;
 
 import com.fasterxml.jackson.databind.*;
 
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 
 import java.io.*;
@@ -15,6 +16,7 @@ import java.util.concurrent.*;
 import java.util.concurrent.Flow;
 
 @Component
+@ConditionalOnProperty(name = "app.voiceintelligence.provider", havingValue = "local", matchIfMissing = true)
 public class LocalAsrProvider implements SpeechProvider {
     private final AsrSettings settings;
     private final ObjectMapper json;

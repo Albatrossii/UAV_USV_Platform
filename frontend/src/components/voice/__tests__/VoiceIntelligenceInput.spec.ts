@@ -177,6 +177,56 @@ describe('VoiceIntelligenceInput', () => {
     wrapper.unmount()
   })
 
+  it('parses an Aliyun transcript through the existing confirmation flow', async () => {
+    const transcribe = vi.fn(async input => ({
+      requestId: input.requestId, text: '停止任务', locale: 'zh-CN', durationMs: 900,
+      provider: 'aliyun-asr', model: 'paraformer-realtime',
+    }))
+    const parse = vi.fn(async input => ({
+      status: 'CANDIDATE' as const, requestId: input.requestId, action: 'STOP' as const,
+      intent: 'MISSION_STOP' as const, normalizedText: input.text, confidence: 1,
+      provider: 'local-rules', model: 'rules-v1',
+    }))
+    const wrapper = mount(VoiceIntelligenceInput, { props: {
+      adapter: { name: 'platform-backend', mode: 'BACKEND', transcribe, parse },
+      allowedActions: ['STOP'], deviceCodes: [], operatorScope: 'admin', autoExecuteSpeech: true,
+    } })
+    const input = wrapper.get('input[type="file"]')
+    Object.defineProperty(input.element, 'files', { configurable: true,
+      value: [new File(['wav-sample'], 'stop.wav', { type: 'audio/wav' })] })
+    await input.trigger('change')
+    await flushPromises()
+
+    expect(parse).toHaveBeenCalledOnce()
+    expect(parse.mock.calls[0]![0].text).toBe('停止任务')
+    expect(wrapper.emitted('voiceCandidate')).toEqual([['MISSION_STOP', expect.any(String), expect.any(Object)]])
+    expect(wrapper.emitted('candidate')).toBeUndefined()
+    wrapper.unmount()
+  })
+
+  it('keeps test fixture audio as editable text without automatically parsing', async () => {
+    const transcribe = vi.fn(async input => ({
+      requestId: input.requestId, text: '停止任务', locale: 'zh-CN', durationMs: 900,
+      provider: 'test-fixture', model: 'fixed-v1',
+    }))
+    const parse = vi.fn()
+    const wrapper = mount(VoiceIntelligenceInput, { props: {
+      adapter: { name: 'platform-backend', mode: 'BACKEND', transcribe, parse },
+      allowedActions: ['STOP'], deviceCodes: [], operatorScope: 'admin', autoExecuteSpeech: true,
+    } })
+    const input = wrapper.get('input[type="file"]')
+    Object.defineProperty(input.element, 'files', { configurable: true,
+      value: [new File(['wav-sample'], 'stop.wav', { type: 'audio/wav' })] })
+    await input.trigger('change')
+    await flushPromises()
+
+    expect(parse).not.toHaveBeenCalled()
+    expect(wrapper.text()).toContain('未调用真实 ASR')
+    expect((wrapper.get('textarea').element as HTMLTextAreaElement).value).toBe('停止任务')
+    expect(wrapper.emitted('voiceCandidate')).toBeUndefined()
+    wrapper.unmount()
+  })
+
   it('keeps an LLM-inferred STOP from a short ASR transcript for review instead of auto-executing', async () => {
     const transcribe = vi.fn(async input => ({
       requestId: input.requestId, text: '全停', locale: 'zh-CN', durationMs: 2360,
