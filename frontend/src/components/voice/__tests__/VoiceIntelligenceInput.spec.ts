@@ -21,6 +21,25 @@ function mountInput() {
 }
 
 describe('VoiceIntelligenceInput', () => {
+  it('unlocks recording and text input after a definitive no-speech result', async () => {
+    const parse = vi.fn()
+    const wrapper = mount(VoiceIntelligenceInput, { props: {
+      adapter: { name: 'platform-backend', mode: 'BACKEND',
+        transcribe: vi.fn().mockRejectedValue(new ApiClientError('no speech', 422, 'VOICE_NO_SPEECH')), parse },
+      allowedActions: ['START'], deviceCodes: [], operatorScope: 'admin', autoExecuteSpeech: true,
+    } })
+    const input = wrapper.get('input[type="file"]')
+    Object.defineProperty(input.element, 'files', { configurable: true,
+      value: [new File(['sample'], 'sample.wav', { type: 'audio/wav' })] })
+    await input.trigger('change')
+    await flushPromises()
+    expect(wrapper.text()).toContain('未识别到语音')
+    expect((wrapper.get('textarea').element as HTMLTextAreaElement).disabled).toBe(false)
+    expect(wrapper.findAll('button').find(button => button.text() === '开始录音')!.attributes('disabled')).toBeUndefined()
+    expect(parse).not.toHaveBeenCalled()
+    expect(wrapper.emitted('voiceCandidate')).toBeUndefined()
+    wrapper.unmount()
+  })
   function backendInput(parse: VoiceIntelligenceAdapter['parse']) {
     return mount(VoiceIntelligenceInput, { props: {
       adapter: { name: 'platform-backend', mode: 'BACKEND', transcribe: vi.fn(), parse },

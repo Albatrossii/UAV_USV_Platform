@@ -63,10 +63,13 @@ class VoiceRealRunnerTests extends VoiceControlTests {
         });
         try {
             var prepared = manager.prepare(
-                    990032L, "ESCORT_GUARD_SINGLE_DEVICE",
+                    990032L, "ESCORT_GUARD",
                     Map.<String, Object>of("standaloneVirtualSimulation", true, "seed", 42));
             String ref = prepared.runtimeRef();
             until(() -> r.channel(ref).heartbeatNanos != null, "No single-device runtime heartbeat");
+            manager.action(990032L, "START");
+            worker.tick();
+            until(() -> "RUNNING".equals(app.context(ref).path("state").asText()), "Fleet did not start");
             var proposal = app.createProposal(VoiceJson.uuid(), source, j.object()
                     .put("runtimeRef", ref)
                     .put("runtimeGeneration", prepared.runtimeGeneration())
@@ -112,7 +115,7 @@ class VoiceRealRunnerTests extends VoiceControlTests {
             report.set("prepare", j.mapper.valueToTree(prepared));
             assertEquals("PREPARED", prepared.state());
             assertEquals(RuntimeContextRegistry.PROTOCOL, prepared.protocolVersion());
-            assertEquals(List.of("START", "PAUSE", "RESUME", "STOP"), prepared.capabilities());
+            assertEquals(List.of("START", "PAUSE", "RESUME", "STOP", "DEVICE_COMMAND"), prepared.capabilities());
             String ref = prepared.runtimeRef();
             String generation = prepared.runtimeGeneration();
             UUID.fromString(ref); UUID.fromString(generation);

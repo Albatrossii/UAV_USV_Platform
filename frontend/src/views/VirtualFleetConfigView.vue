@@ -217,7 +217,18 @@ const sceneLocked = computed(() => (
 const scenarioPlan = computed(() => deriveAdaptiveScenarioPlan(state.uavCount, state.usvCount))
 const isCaptureAlgorithm = computed(() => state.algorithm.startsWith('GB_SFLA_CS'))
 const isEscortAlgorithm = computed(() => state.algorithm.startsWith('ESCORT_GUARD'))
-const isSingleDeviceAlgorithm = computed(() => state.algorithm.endsWith('_SINGLE_DEVICE'))
+const isSingleDeviceAlgorithm = computed(() => isCaptureAlgorithm.value || isEscortAlgorithm.value)
+// Preserve the identity of an already running legacy session while displaying two choices.
+const algorithmSelection = computed({
+  get: () => state.algorithm.replace(/_SINGLE_DEVICE$/, ''),
+  set: (value: string) => { state.algorithm = value },
+})
+const singleDeviceDisabledReason = computed(() => {
+  if (state.mission === 'PAUSED') return '任务已暂停，请先继续任务'
+  if (state.mission !== 'RUNNING') return '请先开始任务，再下发单设备命令'
+  if (!selectedControlAgent.value) return '请先选择一台 UAV 或 USV'
+  return ''
+})
 const configuredTargetCount = computed(() => (
   isCaptureAlgorithm.value
     ? scenarioPlan.value.threatCount
@@ -652,7 +663,7 @@ const algorithmDescription = computed(() => {
     ? '算法负责目标分配、围捕航点、设备速度方向和捕获状态。'
     : '算法负责护航编队、意图识别、掩护撤离、协同拦截与动态围控。'
   return isSingleDeviceAlgorithm.value
-    ? `${base} 当前模式支持单设备临时接管与安全归队。`
+    ? `${base} 支持整队命令、单设备临时接管与安全归队。`
     : base
 })
 
@@ -1549,6 +1560,10 @@ function resolveSingleDeviceCommand(
 
 async function submitSingleDeviceCommand(action: 'hold' | 'stop' | 'return' | 'rejoin') {
   if (!isSingleDeviceAlgorithm.value || singleDeviceCommandPending.value) return
+  if (singleDeviceDisabledReason.value) {
+    singleDeviceCommandMessage.value = singleDeviceDisabledReason.value
+    return
+  }
   const commandType = resolveSingleDeviceCommand(action)
   if (!commandType || !selectedDevice.value) {
     singleDeviceCommandMessage.value = '请先选择一台 UAV 或 USV。'
@@ -1707,11 +1722,9 @@ onBeforeUnmount(() => {
               </button>
             </div>
             <label>算法
-              <select v-model="state.algorithm" :disabled="sceneLocked">
+              <select v-model="algorithmSelection" :disabled="sceneLocked">
                 <option value="ESCORT_GUARD" title="智能粒球仿真护航算法">智能粒球仿真护航</option>
-                <option value="ESCORT_GUARD_SINGLE_DEVICE">智能粒球仿真护航（单设备控制）</option>
-                <option value="GB_SFLA_CS">GB-SFLA-CS 协同围捕（模拟）</option>
-                <option value="GB_SFLA_CS_SINGLE_DEVICE">GB-SFLA-CS 协同围捕（单设备控制）</option>
+                <option value="GB_SFLA_CS">GB-SFLA-CS 协同围捕</option>
               </select>
             </label>
             <p class="vf-description">{{ algorithmDescription }}</p>
@@ -1998,11 +2011,12 @@ onBeforeUnmount(() => {
                   <strong>{{ selectedControlState?.motionState || selectedControlAgent?.status || 'ACTIVE' }}</strong>
                 </div>
                 <div class="vf-single-command-grid">
-                  <button class="vf-button capture" type="button" :disabled="!selectedDevice || singleDeviceCommandPending" @click="submitSingleDeviceCommand('hold')">悬停 / 驻留</button>
-                  <button class="vf-button danger" type="button" :disabled="!selectedDevice || singleDeviceCommandPending" @click="submitSingleDeviceCommand('stop')">单机停止</button>
-                  <button class="vf-button" type="button" :disabled="!selectedDevice || singleDeviceCommandPending" @click="submitSingleDeviceCommand('return')">独立返航</button>
-                  <button class="vf-button success" type="button" :disabled="!selectedDevice || singleDeviceCommandPending" @click="submitSingleDeviceCommand('rejoin')">安全归队</button>
+                  <button class="vf-button capture" type="button" :disabled="!!singleDeviceDisabledReason || singleDeviceCommandPending" :title="singleDeviceDisabledReason" @click="submitSingleDeviceCommand('hold')">悬停 / 驻留</button>
+                  <button class="vf-button danger" type="button" :disabled="!!singleDeviceDisabledReason || singleDeviceCommandPending" :title="singleDeviceDisabledReason" @click="submitSingleDeviceCommand('stop')">单机停止</button>
+                  <button class="vf-button" type="button" :disabled="!!singleDeviceDisabledReason || singleDeviceCommandPending" :title="singleDeviceDisabledReason" @click="submitSingleDeviceCommand('return')">独立返航</button>
+                  <button class="vf-button success" type="button" :disabled="!!singleDeviceDisabledReason || singleDeviceCommandPending" :title="singleDeviceDisabledReason" @click="submitSingleDeviceCommand('rejoin')">安全归队</button>
                 </div>
+                <p v-if="singleDeviceDisabledReason" class="vf-note">{{ singleDeviceDisabledReason }}</p>
                 <div v-if="controlledDevices.length" class="vf-controlled-device-list">
                   <h5>已接管设备 <span>{{ controlledDevices.length }}</span></h5>
                   <div class="vf-controlled-device-tags">

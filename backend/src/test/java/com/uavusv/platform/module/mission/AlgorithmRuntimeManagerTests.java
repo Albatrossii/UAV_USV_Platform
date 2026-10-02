@@ -199,8 +199,9 @@ class AlgorithmRuntimeManagerTests {
         );
     }
 
-    @Test
-    void shouldApplySingleDeviceCommandOnlyAfterAuthoritativeFrameReceipt() throws Exception {
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {"ESCORT_GUARD", "GB_SFLA_CS", "ESCORT_GUARD_SINGLE_DEVICE", "GB_SFLA_CS_SINGLE_DEVICE"})
+    void shouldApplySingleDeviceCommandOnlyAfterAuthoritativeFrameReceipt(String algorithm) throws Exception {
         long runId = 92003L;
         MissionRunRepository runRepository = mock(MissionRunRepository.class);
         AlgorithmCatalogService catalogService = mock(AlgorithmCatalogService.class);
@@ -210,14 +211,18 @@ class AlgorithmRuntimeManagerTests {
         try {
             manager.prepare(
                     runId,
-                    "ESCORT_GUARD_SINGLE_DEVICE",
+                    algorithm,
                     Map.of("standaloneVirtualSimulation", true, "seed", 42));
+            assertTrue(manager.isStandaloneSingleDeviceRun(runId));
+            assertThrows(com.uavusv.platform.common.exception.BusinessException.class,
+                    () -> manager.controlDevice(runId, "UAV-001", "UAV_HOVER"));
+            manager.action(runId, "START");
 
             AlgorithmRuntimeStatusResponse afterCommand =
                     manager.controlDevice(runId, "uav_001", "UAV_HOVER");
 
             assertNotNull(afterCommand.latestFrame());
-            assertEquals("ESCORT_GUARD_SINGLE_DEVICE", afterCommand.latestFrame().path("algorithmCode").asText());
+            assertEquals(algorithm, afterCommand.latestFrame().path("algorithmCode").asText());
             JsonNode selected = afterCommand.latestFrame().path("agents").get(0);
             assertEquals("UAV-001", selected.path("deviceCode").asText());
             assertEquals("HOLDING", selected.path("status").asText());

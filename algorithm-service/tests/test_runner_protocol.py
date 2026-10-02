@@ -7,16 +7,17 @@ from pathlib import Path
 
 
 class RunnerProtocolTest(unittest.TestCase):
+    algorithm = "GB_SFLA_CS"
     def setUp(self):
         root = Path(__file__).resolve().parents[1]
         runtime_ref = str(uuid.uuid4())
         generation = str(uuid.uuid4())
-        config = json.dumps({"uavCount": 1, "usvCount": 1, "targetCount": 1, "seed": 42})
+        config = json.dumps(getattr(self, 'config', {"uavCount": 1, "usvCount": 1, "targetCount": 1, "seed": 42}))
         self.process = subprocess.Popen(
             [
                 sys.executable,
                 str(root / "runner.py"),
-                "--algorithm", "GB_SFLA_CS",
+                "--algorithm", self.algorithm,
                 "--run-id", "990026",
                 "--config", config,
                 "--fps", "20",

@@ -141,7 +141,10 @@ def _apply_device_command(adapter, command: dict) -> tuple[bool, str]:
         return False, str(error)
 
 
-def _device_command_receipt(adapter, command: dict) -> dict:
+def _device_command_receipt(adapter, command: dict, runtime_state: str = "RUNNING") -> dict:
+    if runtime_state != "RUNNING":
+        return {"success": False, "detail": f"INVALID_STATE: {runtime_state}; device commands require RUNNING",
+                "frame": None, "frameSequence": 0, "deviceStatus": ""}
     success, detail = _apply_device_command(adapter, command)
     frame = None
     device_status = ""
@@ -248,7 +251,7 @@ def v1_main(args: argparse.Namespace, adapter, config: dict) -> int:
             if isinstance(command, MalformedProtocolInput):
                 protocol_error("MALFORMED_MESSAGE", command.detail)
             elif isinstance(command, dict) and command.get("kind") == "DEVICE_COMMAND":
-                receipt = _device_command_receipt(adapter, command)
+                receipt = _device_command_receipt(adapter, command, state)
                 if receipt["frame"] is not None:
                     frame = receipt["frame"]
                     last_frame_sequence = receipt["frameSequence"]
@@ -397,8 +400,8 @@ def main() -> int:
         adapter = AdaptiveEscortAdapter(args.run_id, config)
     else:
         adapter = EscortAdapter(args.run_id, config)
-    if args.algorithm.endswith("_SINGLE_DEVICE"):
-        adapter = SingleDeviceControlAdapter(adapter, args.algorithm)
+    # Both algorithm families support fleet and individual control; keep legacy IDs valid.
+    adapter = SingleDeviceControlAdapter(adapter, args.algorithm)
     if args.command_protocol == "v1":
         if not args.runtime_ref or not args.runtime_generation:
             parser.error("--runtime-ref and --runtime-generation are required with --command-protocol v1")
@@ -451,7 +454,7 @@ def main() -> int:
                     "selectedThreatCode": selected,
                 })
             elif action == "DEVICE_COMMAND":
-                receipt = _device_command_receipt(adapter, command)
+                receipt = _device_command_receipt(adapter, command, state)
                 if receipt["frame"] is not None:
                     emit({"event": "frame", "payload": receipt["frame"]})
                 emit({

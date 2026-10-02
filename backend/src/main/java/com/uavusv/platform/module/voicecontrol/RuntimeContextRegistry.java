@@ -186,8 +186,11 @@ public class RuntimeContextRegistry {
         access.require(c.path("_owner").asLong(), true);
         if (!PROTOCOL.equals(c.path("protocolVersion").asText()))
             throw new VoiceFailure(422, "PROTOCOL_UNSUPPORTED");
-        if (!c.path("_algorithmCode").asText().endsWith("_SINGLE_DEVICE"))
+        if (!Set.of("ESCORT_GUARD", "GB_SFLA_CS", "ESCORT_GUARD_SINGLE_DEVICE", "GB_SFLA_CS_SINGLE_DEVICE")
+                .contains(c.path("_algorithmCode").asText()))
             throw new VoiceFailure(422, "UNSUPPORTED_TARGETING");
+        if (!"RUNNING".equals(c.path("state").asText()))
+            throw VoiceFailure.conflict("INVALID_STATE");
         boolean capable = false;
         for (var n : c.path("capabilities")) capable |= "DEVICE_COMMAND".equals(n.asText());
         if (!capable) throw new VoiceFailure(422, "UNSUPPORTED_CAPABILITY");

@@ -141,7 +141,8 @@ class VoiceInterpretationSourceTests extends VoiceControlTests {
 
     private void makeSingleDeviceRuntime() {
         c = s.get("voice_runtime_context", ref());
-        c.put("_algorithmCode", "TEST_SINGLE_DEVICE");
+        c.put("_algorithmCode", "ESCORT_GUARD");
+        c.put("state", "RUNNING");
         c.putArray("capabilities").add("DEVICE_COMMAND");
         s.save("voice_runtime_context", c);
     }

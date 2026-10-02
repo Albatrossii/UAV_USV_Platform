@@ -355,7 +355,8 @@ public class IntentService {
         if (NEGATED.matcher(text).find())
             return new IntentClassification(
                     "NOT_ACTIONABLE", "NEGATED_ACTION", "检测到否定表达，请重新明确指令。", null);
-        if (runtime == null || !runtime.path("_algorithmCode").asText().endsWith("_SINGLE_DEVICE"))
+        if (runtime == null || !Set.of("ESCORT_GUARD", "GB_SFLA_CS", "ESCORT_GUARD_SINGLE_DEVICE", "GB_SFLA_CS_SINGLE_DEVICE")
+                .contains(runtime.path("_algorithmCode").asText()))
             return new IntentClassification(
                     "UNSUPPORTED", "UNSUPPORTED_TARGETING", "当前运行实例未启用单设备控制。", null);
 

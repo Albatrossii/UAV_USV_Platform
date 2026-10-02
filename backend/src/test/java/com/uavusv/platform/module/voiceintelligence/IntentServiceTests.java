@@ -70,10 +70,11 @@ class IntentServiceTests {
         assertStatus("今天天气如何", "NEEDS_CLARIFICATION", "NO_SUPPORTED_ACTION");
     }
 
-    @Test
-    void singleDeviceCandidateIsBoundToTheLiveSingleDeviceRun() {
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {"ESCORT_GUARD", "GB_SFLA_CS", "ESCORT_GUARD_SINGLE_DEVICE", "GB_SFLA_CS_SINGLE_DEVICE"})
+    void singleDeviceCandidateIsBoundToTheLiveSingleDeviceRun(String algorithm) {
         ObjectNode runtime = runtime("DEVICE_COMMAND");
-        runtime.put("_algorithmCode", "ESCORT_GUARD_SINGLE_DEVICE");
+        runtime.put("_algorithmCode", algorithm);
         runtime.putArray("_members").add("UAV-001").add("USV-002");
         when(runtimes.require(REF, 7)).thenReturn(runtime);
         String id = java.util.UUID.randomUUID().toString();

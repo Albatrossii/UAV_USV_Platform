@@ -340,7 +340,17 @@ class CommandFastPathEngine:
         self.fallback = LocalEngine(whisper_path, threads)
 
     def transcribe(self, audio, mime, deadline):
-        text, duration = self.fast.transcribe(audio, mime, deadline)
+        try:
+            text, duration = self.fast.transcribe(audio, mime, deadline)
+        except AsrError as error:
+            if error.code != 'ASR_NO_SPEECH':
+                raise
+            # An empty result from the small model is not proof of silent audio.
+            # Give the existing Whisper fallback the same chance as an inexact result.
+            check_deadline(deadline)
+            print(json.dumps({'event': 'ASR_FAST_PATH_FALLBACK', 'reason': 'fast-no-speech',
+                              'pid': os.getpid()}), flush=True)
+            return self.fallback.transcribe(audio, mime, deadline)
         normalized = re.sub(r'[，。！？；,.!?…]+$', '', text.strip())
         if normalized in self.fast_commands:
             print(json.dumps({'event': 'ASR_FAST_COMMAND_ACCEPTED', 'pid': os.getpid()}), flush=True)

@@ -217,14 +217,14 @@ public class AlgorithmRuntimeManager {
         return handle != null
                 && handle.standaloneVirtualSimulation
                 && handle.process.isAlive()
-                && handle.algorithmCode.endsWith("_SINGLE_DEVICE");
+                && EXTERNAL_ALGORITHMS.contains(handle.algorithmCode);
     }
 
     public AlgorithmRuntimeStatusResponse controlDevice(
             Long runId, String deviceCode, String commandType) {
         RuntimeHandle handle = requireHandle(runId);
         if (!handle.standaloneVirtualSimulation
-                || !handle.algorithmCode.endsWith("_SINGLE_DEVICE")) {
+                || !EXTERNAL_ALGORITHMS.contains(handle.algorithmCode)) {
             throw new BusinessException(
                     ErrorCode.BAD_REQUEST, "当前算法运行未启用单设备控制");
         }

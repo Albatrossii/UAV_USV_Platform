@@ -74,6 +74,30 @@ class CommandFastPathTests(unittest.TestCase):
         self.assertEqual(engine.transcribe(b'audio', 'audio/webm', time.monotonic() + 1)[0], 'fallback')
         self.assertEqual(engine.fallback.calls, 1)
 
+    def test_empty_fast_result_uses_existing_whisper_fallback(self):
+        engine = self.engine('')
+        engine.fast = FakeEngine()
+        engine.fast.error = AsrError(422, 'ASR_NO_SPEECH', 'no speech')
+        self.assertEqual(engine.transcribe(b'audio', 'audio/webm', time.monotonic() + 1)[0], 'fallback')
+        self.assertEqual(engine.fallback.calls, 1)
+
+    def test_invalid_audio_does_not_retry_another_model(self):
+        engine = self.engine('')
+        engine.fast = FakeEngine()
+        engine.fast.error = AsrError(415, 'ASR_AUDIO_FORMAT_UNSUPPORTED', 'invalid')
+        with self.assertRaises(AsrError):
+            engine.transcribe(b'audio', 'audio/webm', time.monotonic() + 1)
+        self.assertEqual(engine.fallback.calls, 0)
+
+    def test_both_models_can_still_reject_silence(self):
+        engine = self.engine('')
+        engine.fast = FakeEngine()
+        engine.fallback = FakeEngine()
+        engine.fast.error = engine.fallback.error = AsrError(422, 'ASR_NO_SPEECH', 'no speech')
+        with self.assertRaises(AsrError) as caught:
+            engine.transcribe(b'audio', 'audio/webm', time.monotonic() + 1)
+        self.assertEqual(caught.exception.code, 'ASR_NO_SPEECH')
+
 
 class HttpTests(unittest.TestCase):
     def setUp(self):

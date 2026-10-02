@@ -291,6 +291,9 @@ async function runRequest() {
       failed.value = true
       speechFallbackAvailable.value = props.autoExecuteSpeech && current.kind === 'audio'
       retryable.value = info.retryable
+      // A definitive empty transcript has no unknown execution to recover.
+      // Release the finished recording so recording and text editing remain available.
+      if (current.kind === 'audio' && info.code === 'VOICE_NO_SPEECH') pending.value = null
       coolingDown.value = info.retryAfter > 0
       window.clearTimeout(cooldownTimer)
       if (coolingDown.value) cooldownTimer = window.setTimeout(() => { coolingDown.value = false }, info.retryAfter * 1000)
