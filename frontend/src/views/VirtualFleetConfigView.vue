@@ -113,7 +113,7 @@ type CaptureGroupMetric = {
   triggerReason?: string
 }
 
-type InspectorTab = 'status' | 'voice' | 'protocol' | 'logs' | 'single'
+type InspectorTab = 'status' | 'voice' | 'protocol' | 'logs'
 
 type TacticalEvent = SimulationTacticalNotice
 
@@ -198,7 +198,7 @@ const webglExpanded = ref(false)
 const leftPanelCollapsed = ref(false)
 const rightPanelCollapsed = ref(false)
 const panelTransitioning = ref(false)
-const inspectorTab = ref<InspectorTab>('status')
+const inspectorTab = ref<InspectorTab>('voice')
 const logEntries = ref<string[]>([])
 const lastUnityMessage = ref<UnityMessage | null>(null)
 const voiceControlPanel = ref<InstanceType<typeof VoiceP0ControlPanel> | null>(null)
@@ -1518,6 +1518,14 @@ function handleControlDeviceSelection(event: Event) {
   selectDeviceForControl((event.target as HTMLSelectElement).value)
 }
 
+watch(() => voiceControlStore.proposal?.proposalId, () => {
+  const plan = voiceControlStore.proposal?.plan
+  if (!isSingleDeviceAlgorithm.value || plan?.action !== 'DEVICE_COMMAND'
+    || voiceControlStore.context?.algorithmRunId !== String(state.runId)) return
+  const target = controllableAgents.value.find(agent => agent.code.toUpperCase() === plan.targetDeviceCode?.toUpperCase())
+  if (target) selectDeviceForControl(target.code)
+})
+
 function resolveSingleDeviceCommand(
   action: 'hold' | 'stop' | 'return' | 'rejoin',
 ): VehicleCommandType | null {
@@ -1575,7 +1583,6 @@ async function submitSingleDeviceCommand(action: 'hold' | 'stop' | 'return' | 'r
 }
 
 watch(isSingleDeviceAlgorithm, (enabled) => {
-  if (!enabled && inspectorTab.value === 'single') inspectorTab.value = 'status'
   if (!enabled) singleDeviceCommandMessage.value = ''
 })
 
@@ -1824,7 +1831,6 @@ onBeforeUnmount(() => {
               <button :class="{ active: inspectorTab === 'status' }" type="button" @click="inspectorTab = 'status'">任务态势</button>
               <button :class="{ active: inspectorTab === 'protocol' }" type="button" @click="inspectorTab = 'protocol'">协议状态</button>
               <button :class="{ active: inspectorTab === 'logs' }" type="button" @click="inspectorTab = 'logs'">运行日志</button>
-              <button v-if="isSingleDeviceAlgorithm" :class="{ active: inspectorTab === 'single' }" type="button" @click="inspectorTab = 'single'">单机控制</button>
               <button class="collapse" type="button" title="收起检查区" @click="setRightPanelCollapsed(true)"><ChevronRight :size="17" /></button>
             </div>
 
@@ -1958,7 +1964,14 @@ onBeforeUnmount(() => {
               </ol>
             </div>
 
-            <div v-else-if="inspectorTab === 'single'" class="vf-inspector-content vf-single-device-control">
+            <div v-else class="vf-inspector-content vf-merged-controls">
+              <VoiceP0ControlPanel
+                ref="voiceControlPanel"
+                :runtime-hint="voiceRuntimeHint"
+                :unity-session="voiceUnitySession"
+                @presentation-message="sendPresentationMessage"
+              />
+            <section v-if="isSingleDeviceAlgorithm" class="vf-single-device-control" aria-label="单设备控制">
               <article class="vf-status-card">
                 <span>单设备控制</span>
                 <strong>{{ selectedDevice || '未选择' }}</strong>
@@ -2012,19 +2025,11 @@ onBeforeUnmount(() => {
                 <p v-if="singleDeviceCommandMessage" class="vf-action-message">{{ singleDeviceCommandMessage }}</p>
                 <p v-if="singleDeviceRuntimeNotice" class="vf-action-message vf-return-status">{{ singleDeviceRuntimeNotice }}</p>
               </section>
-              <section class="vf-inspector-section">
-                <h4>控制规则</h4>
+              <details class="vf-inspector-section vf-control-rules">
+                <summary>控制规则</summary>
                 <p class="vf-note">被接管设备暂时退出当前任务输出，仍保留在场景和避碰域中。独立返航抵达起始点后会标记为 RETURNED 并退出任务编组；剩余兵力足够时任务继续，兵力不足时进入可恢复的降级状态，不会直接失败。安全归队可把控制权重新交还群体算法。</p>
-              </section>
-            </div>
-
-            <div v-else class="vf-inspector-content">
-              <VoiceP0ControlPanel
-                ref="voiceControlPanel"
-                :runtime-hint="voiceRuntimeHint"
-                :unity-session="voiceUnitySession"
-                @presentation-message="sendPresentationMessage"
-              />
+              </details>
+            </section>
             </div>
           </section>
         </aside>
@@ -2313,4 +2318,72 @@ onBeforeUnmount(() => {
   .vf-phase-stepper li { flex-shrink: 0; min-width: 76px; }
   .vf-stage-head { flex-wrap: wrap; gap: 8px; }
 }
+/* Dense simulation workspace: one scrolling inspector for voice and device control. */
+.virtual-fleet-page { gap: 7px; }
+.vf-app-header { min-height: 46px; padding: 0 12px; }
+.vf-app-title strong { font-size: 16px; }
+.vf-workspace-switch a, .vf-workspace-switch span { padding: 6px 12px; font-size: 11px; }
+.vf-workbench { --vf-left-width: clamp(190px, 14vw, 240px); --vf-right-width: clamp(310px, 23vw, 350px); gap: 7px; }
+.vf-config-panel { padding: 10px; }
+.vf-panel-head { margin-bottom: 8px; }
+.vf-panel-head h3, .vf-stage-head h3 { font-size: 13px; }
+.vf-panel label { margin-top: 7px; gap: 4px; font-size: 10px; }
+.vf-panel input, .vf-panel select { min-height: 30px; font-size: 11px; }
+.vf-description, .vf-note { margin-top: 6px; font-size: 10px; line-height: 1.4; }
+.vf-plan-summary { padding: 7px; margin-top: 7px; gap: 3px; }
+.vf-stage-head { padding: 8px 10px; }
+.vf-live-strip { min-height: 28px; }
+.vf-command-bar { min-height: 68px; padding: 6px 9px; gap: 5px 9px; }
+.vf-inspector-tabs { min-height: 36px; padding: 0 5px; }
+.vf-inspector-tabs > button:not(.collapse) { flex: 1; padding: 0 4px; font-size: 10px; white-space: nowrap; }
+.vf-merged-controls { min-width: 0; padding: 8px; gap: 8px; }
+.vf-single-device-control { min-width: 0; border: 1px solid #28515a; border-radius: 5px; }
+.vf-single-device-control .vf-status-card, .vf-single-device-control .vf-inspector-section { padding: 8px; }
+.vf-single-device-control .vf-status-card { gap: 3px; }
+.vf-single-device-control .vf-status-card > strong { font-size: 16px; }
+.vf-single-device-control .vf-status-card small { font-size: 9px; }
+.vf-single-device-control h4 { margin-bottom: 6px; font-size: 11px; }
+.vf-single-device-control select { min-height: 29px; font-size: 10px; }
+.vf-control-authority { margin-top: 6px; padding: 6px; gap: 4px 8px; }
+.vf-single-command-grid { margin-top: 6px; gap: 5px; }
+.vf-single-command-grid .vf-button { min-height: 28px; padding: 5px 7px; font-size: 10px; }
+.vf-controlled-device-list { margin-top: 7px; }
+.vf-single-device-control .vf-inspector-section:last-child { border-bottom: 0; }
+.vf-merged-controls :deep(.voice-p0) { min-height: 0; padding: 0; gap: 6px; background: none; font-size: 10px; }
+.vf-merged-controls :deep(.voice-head .voice-icon) { width: 24px; height: 24px; }
+.vf-merged-controls :deep(.voice-head strong) { font-size: 12px; }
+.vf-merged-controls :deep(.runtime-card) { padding: 7px; gap: 6px; }
+.vf-merged-controls :deep(.scope-note) { font-size: 9px; line-height: 1.4; }
+.vf-merged-controls :deep(.intelligence-input) { padding: 7px; gap: 5px; }
+.vf-merged-controls :deep(.intelligence-input textarea) { min-height: 44px; height: 44px; padding: 6px; font-family: inherit; font-size: 10px; line-height: 1.4; }
+.vf-merged-controls :deep(.audio-file-test) { margin-top: 0; padding: 5px 6px; }
+.vf-merged-controls :deep(.action-grid) { gap: 5px; }
+.vf-merged-controls :deep(.action-grid button) { min-height: 44px; padding: 6px; gap: 3px; min-width: 0; }
+.vf-merged-controls :deep(.action-grid button strong) { font-size: 11px; }
+.vf-merged-controls :deep(.voice-p0 footer) { flex-wrap: wrap; gap: 4px 8px; }
+.vf-control-rules summary { cursor: pointer; color: #8fb4b2; font-size: 10px; }
+.vf-panel select, .vf-panel input { box-sizing: border-box; width: 100%; min-width: 0; }
+.vf-two-col { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+@container workspace (min-width: 800px) {
+  .virtual-fleet-page { height: calc(100dvh - 40px); min-height: 0; overflow: hidden; }
+  .vf-app-header { grid-template-columns: minmax(0, 1fr) auto; padding-block: 4px; gap: 4px; }
+  .vf-instance-status { grid-column: auto; justify-self: end; }
+  .vf-workspace-switch { display: none; }
+  .vf-workbench, .vf-workbench.left-collapsed, .vf-workbench.right-collapsed, .vf-workbench.left-collapsed.right-collapsed {
+    --vf-left-width: clamp(160px, 14vw, 240px); --vf-right-width: clamp(290px, 23vw, 350px);
+    overflow: hidden; grid-template-columns: var(--vf-current-left) minmax(0, 1fr) var(--vf-current-right); grid-template-rows: minmax(0, 1fr);
+  }
+  .vf-inspector-drawer { grid-column: auto; min-height: 0; }
+  .vf-inspector-panel { position: absolute; height: 100%; max-height: none; }
+  .vf-inspector-drawer.collapsed .vf-drawer-reopen { position: absolute; height: 100%; flex-direction: column; }
+  .vf-inspector-drawer.collapsed .vf-drawer-reopen span { writing-mode: vertical-rl; }
+  .vf-unity-stage, .vf-unity-stage :deep(.unity-webgl-panel) { min-height: 0; }
+  .vf-camera-actions button { width: 28px; padding: 0; }
+  .vf-camera-actions button span { display: none; }
+}
+@container workspace (min-width: 1100px) {
+  .vf-app-header { grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); }
+  .vf-workspace-switch { display: flex; }
+}
+@media (min-width: 1201px) { .vf-unity-stage, .vf-unity-stage :deep(.unity-webgl-panel) { min-height: 0; } }
 </style>

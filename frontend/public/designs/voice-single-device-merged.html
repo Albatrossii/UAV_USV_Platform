@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>语音 + 单设备控制融合方案</title>
+  <style>
+    :root{--bg:#06191c;--panel:#082226;--panel2:#0a292e;--line:#17454a;--muted:#6d9a9e;--text:#d9f7f3;--cyan:#62e5d5;--green:#38d9a1;--amber:#ffc857;--red:#ff6b6b;--blue:#173743}
+    *{box-sizing:border-box}html,body{margin:0;height:100%;background:#041315;color:var(--text);font-family:Inter,"Microsoft YaHei",system-ui,sans-serif}button,select,textarea{font:inherit}
+    body{min-width:1180px;background:radial-gradient(circle at 45% 38%,#12323a 0,#071b1f 34%,#041315 73%)}
+    .app{height:100vh;display:grid;grid-template-columns:66px 250px 1fr 390px;grid-template-rows:64px 1fr;gap:10px;padding:12px}
+    .top{grid-column:2/5;border:1px solid #173a40;border-radius:10px;background:#061c20;display:flex;align-items:center;justify-content:space-between;padding:0 18px}
+    .brand{font-weight:800;letter-spacing:.4px}.brand small{color:#75aeb2;margin-right:16px}.switch{display:flex;border:1px solid #173e44;border-radius:8px;overflow:hidden}.switch button{border:0;background:transparent;color:#679499;padding:11px 34px}.switch .on{color:#fff;background:#103238;box-shadow:inset 0 -2px var(--cyan)}.online{font-size:12px;color:var(--cyan);font-weight:700}.online:before{content:"";display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--cyan);box-shadow:0 0 12px var(--cyan);margin-right:8px}
+    .rail{grid-row:1/3;border-right:1px solid #17383d;display:flex;flex-direction:column;align-items:center;padding:12px 0;gap:18px}.logo{width:42px;height:42px;border-radius:9px;background:var(--cyan);color:#062226;display:grid;place-items:center;font-size:22px}.rail button{width:42px;height:42px;border:0;border-radius:9px;background:transparent;color:#6d9a9e;font-size:20px}.rail button.active{background:#10393d;color:var(--cyan);box-shadow:inset 3px 0 var(--cyan)}
+    .config,.stage,.inspector{border:1px solid #174148;border-radius:10px;background:rgba(6,29,33,.95);overflow:hidden}.config{padding:18px}.title{display:flex;align-items:center;justify-content:space-between;font-weight:800;font-size:17px}.title small{font-size:10px;color:#4e9499;font-weight:500}.field{margin-top:18px}.field label{display:block;color:#8bb7ba;font-size:12px;margin-bottom:7px}select,textarea{width:100%;background:#081d21;border:1px solid #20525a;color:#d9f7f3;border-radius:6px;padding:10px 12px;outline:none}select:focus,textarea:focus{border-color:var(--cyan);box-shadow:0 0 0 2px #62e5d522}.desc{font-size:12px;line-height:1.75;color:#79a7aa}.summary{border:1px solid #1a5055;border-radius:8px;padding:13px;margin:15px 0}.summary strong{display:block;color:#fff}.summary span{font-size:12px;color:#79b7b6}.nums{display:grid;grid-template-columns:1fr 1fr;gap:10px}.num{border:1px solid #19434a;border-radius:6px;padding:10px;color:#cceeea}.primary{background:var(--cyan)!important;color:#052125!important;border-color:var(--cyan)!important;font-weight:800}
+    .stage{display:grid;grid-template-rows:50px 1fr 38px 74px}.stage-head,.stage-foot{display:flex;align-items:center;justify-content:space-between;padding:0 14px;border-bottom:1px solid #12383d}.stage-head strong{font-size:15px}.map{position:relative;overflow:hidden;background:linear-gradient(160deg,#173440,#102f3a);background-image:radial-gradient(circle at 62% 42%,#1b3c47 0 13%,transparent 13.5%)}.ship,.drone,.target{position:absolute;filter:drop-shadow(0 7px 4px #0006)}.ship{width:28px;height:18px;background:#e9f5f4;border:4px solid #d7eded;transform:rotate(35deg)}.ship:after{content:"";position:absolute;inset:3px;background:#ff4f4f}.drone{width:22px;height:22px}.drone:before,.drone:after{content:"";position:absolute;left:9px;top:0;width:4px;height:22px;background:#102126}.drone:after{transform:rotate(90deg)}.drone i{position:absolute;inset:6px;background:#ff4545;transform:rotate(45deg)}.target{width:42px;height:20px;background:#6d6964;transform:rotate(24deg);border-radius:4px}.target:after{content:"";position:absolute;left:7px;top:4px;width:16px;height:8px;background:#333}.focus-ring{position:absolute;width:54px;height:54px;border:2px solid var(--amber);transform:rotate(45deg);left:42%;top:45%;box-shadow:0 0 18px #ffc85744}.legend{position:absolute;right:18px;top:18px;background:#062126cc;border:1px solid #1b5055;border-radius:6px;padding:9px 12px;color:#ccf5f0;font-size:11px}.missionbar{display:flex;gap:24px;align-items:center;padding:0 14px;border-top:1px solid #10383e;color:#8cb8bb;font-size:12px}.missionbar b{color:#fff}.stage-foot{border:0;border-top:1px solid #153e43}.stage-foot button,.ghost,.action{border:1px solid #20545a;border-radius:6px;background:#082327;color:#91bfbd;padding:8px 14px;cursor:pointer}.stage-foot .start{color:#4ee9b5;border-color:#2a7d68}.steps{display:flex;gap:11px;color:#5f8c8e;font-size:11px}.steps b{width:22px;height:22px;border-radius:50%;border:1px solid #24545b;display:grid;place-items:center}.steps .on{color:#14221d;background:var(--amber);border-color:var(--amber)}
+    .inspector{display:flex;flex-direction:column;min-width:0}.tabs{height:48px;display:grid;grid-template-columns:repeat(4,1fr);border-bottom:1px solid #163a40;padding:0 9px}.tabs button{border:0;background:transparent;color:#6f9da0;font-size:12px;cursor:pointer;position:relative}.tabs button.active{color:#e5fffb;font-weight:800}.tabs button.active:after{content:"";position:absolute;left:13px;right:13px;bottom:0;height:2px;background:var(--cyan)}
+    .pane{display:none;flex:1;overflow:auto;padding:14px}.pane.active{display:block}.headcard{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px}.headcard h2{font-size:16px;margin:0}.headcard h2 span{color:var(--cyan)}.badge{font-size:10px;border:1px solid #2e7775;border-radius:20px;padding:4px 8px;color:var(--cyan)}
+    .runtime{border:1px solid #174b50;background:#09262a;border-radius:8px;padding:10px;margin-bottom:11px}.runtime .run{font-size:11px;color:#75c9c3;margin-bottom:9px}.metrics{display:grid;grid-template-columns:repeat(3,1fr);gap:5px}.metrics div{border-left:1px solid #15464a;padding-left:8px}.metrics span{display:block;font-size:9px;color:#6c979a}.metrics b{font-size:11px;color:#bff5ef}
+    .section{border:1px solid #17454a;border-radius:8px;background:#071f23;margin:10px 0;overflow:hidden}.section-title{padding:10px 11px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid #153e43;font-size:12px;font-weight:800}.section-title em{font-style:normal;color:var(--cyan);font-size:10px}.section-body{padding:11px}.hint{font-size:10px;color:#719fa2;line-height:1.55;margin:7px 0}.command textarea{height:66px;resize:none}.row{display:flex;gap:8px;margin-top:8px}.row button{flex:1}.record{color:var(--cyan)}.parse{background:#0d373b;color:#adf5ed}.quick{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}.chip{border:1px solid #1b5358;background:#0a292d;color:#78bab7;border-radius:16px;padding:5px 9px;font-size:9px;cursor:pointer}.chip:hover{border-color:var(--cyan);color:var(--cyan)}
+    .device-card{border-color:#256963;box-shadow:0 0 0 1px #2d8a7a1f}.selected{display:flex;justify-content:space-between;align-items:end;margin-bottom:8px}.selected span{font-size:9px;color:#6d999c}.selected strong{font-size:20px;color:var(--amber)}.authority{display:grid;grid-template-columns:1fr 1fr;margin-top:9px;border:1px solid #153e43;border-radius:6px}.authority div{padding:8px 10px}.authority span{display:block;color:#668f91;font-size:9px}.authority b{font-size:11px;color:#baf2ec}.authority b.operator{color:var(--amber)}.actions{display:grid;grid-template-columns:1fr 1fr;gap:7px;margin-top:9px}.action{font-size:11px;padding:9px}.action:hover:not(:disabled){border-color:var(--cyan);color:#fff}.action:disabled{opacity:.35;cursor:not-allowed}.action.danger{color:#ff8585}.action.good{color:#59e4a8}.taken{display:none;margin-top:10px;background:#0c2d2e;border:1px solid #2a7469;border-radius:6px;padding:8px 9px}.taken.show{display:flex;justify-content:space-between;align-items:center}.taken strong{font-size:11px}.taken span{font-size:10px;color:var(--amber)}
+    .receipt{display:none;border-left:3px solid var(--green);background:#0b302d;padding:9px 10px;margin-top:10px;border-radius:4px}.receipt.show{display:block}.receipt strong{display:block;font-size:11px;color:#7af0c0}.receipt span{font-size:9px;color:#86b4b0}.empty-pane{display:grid;place-items:center;height:70%;text-align:center;color:#709b9e}.empty-pane b{display:block;color:#d6f5f0;margin-bottom:8px}.toast{position:fixed;right:414px;bottom:24px;background:#0c3532;border:1px solid #3ba989;color:#cffff0;border-radius:8px;padding:11px 16px;font-size:11px;opacity:0;transform:translateY(12px);transition:.25s;pointer-events:none}.toast.show{opacity:1;transform:none}
+    .mission-actions{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:12px}.mission-actions button{min-height:67px;text-align:left;border:1px solid #20545a;border-radius:6px;background:#0a292e;color:#d9f7f3;padding:10px;cursor:pointer}.mission-actions strong{display:block;font-size:13px;margin-bottom:7px}.mission-actions small{display:block;font-size:10px;color:#78a5a8;line-height:1.4}.mission-actions button:hover:not(:disabled){border-color:var(--cyan)}.mission-actions button:disabled{opacity:.38;cursor:not-allowed}.mission-tools{display:flex;justify-content:space-between;gap:12px;margin:10px 0 14px}.mission-tools button{border:0;background:none;color:#87bebb;padding:5px 0;font-size:11px;cursor:pointer}.mission-tools button:hover{color:var(--cyan)}
+    /* Compact typography for the merged control panel. */
+    body{font-size:13px}.brand small{font-size:10px}.title{font-size:15px}.stage-head strong{font-size:13px}.switch button{font-size:13px}.online,.field label,.desc,.summary span,.missionbar{font-size:11px}.num,select,textarea{font-size:12px}.tabs button{font-size:11px}.headcard h2{font-size:14px}.section-title{font-size:11px}.row button{font-size:12px}.selected strong{font-size:18px}.mission-actions strong{font-size:12px}.mission-actions small,.mission-tools button,.action{font-size:10px}.stage-foot button{font-size:12px}
+    /* Compact spacing keeps task and device controls together in one viewport. */
+    body{min-width:1060px}.app{grid-template-columns:48px 210px minmax(0,1fr) 350px;grid-template-rows:46px minmax(0,1fr);gap:7px;padding:8px}
+    .top{padding:0 12px;border-radius:7px}.brand small{margin-right:9px}.switch button{padding:7px 22px}.rail{gap:12px;padding:7px 0}.logo,.rail button{width:32px;height:32px;border-radius:6px;font-size:18px}
+    .config,.stage,.inspector{min-height:0;border-radius:7px}.config{padding:12px;overflow:auto}.field{margin-top:12px}.field label{margin-bottom:5px}.desc{line-height:1.5;margin:10px 0}.summary{padding:9px;margin:10px 0}.nums{gap:7px}.num{padding:7px}.stage{grid-template-rows:38px minmax(0,1fr) 30px 48px}.stage-head,.stage-foot{padding:0 10px}.stage-head>div{display:flex;align-items:center;flex-wrap:wrap;justify-content:flex-end;gap:3px}.missionbar{gap:12px;padding:0 10px;flex-wrap:wrap;font-size:10px}.stage-foot button,.ghost,.action{padding:6px 10px}.steps{gap:7px;font-size:10px}.steps b{width:18px;height:18px}.legend{right:12px;top:12px;padding:6px 9px}
+    .tabs{height:36px;flex-shrink:0;padding:0 6px}.pane{min-height:0;padding:9px;scrollbar-gutter:stable}.headcard{margin-bottom:7px}.headcard h2{font-size:13px}.badge{padding:2px 6px}.runtime{padding:7px;margin-bottom:7px;border-radius:6px}.runtime .run{margin-bottom:5px;font-size:10px}.metrics div{padding-left:6px}.metrics b{font-size:10px}
+    .section{margin:7px 0;border-radius:6px}.section-title{padding:7px 8px}.section-body{padding:8px}select,textarea{padding:6px 8px;font-size:11px}.command textarea{display:block;height:44px}.row{gap:6px;margin-top:6px}.row button{font-size:11px}.quick{gap:4px;margin-top:6px}.chip{padding:3px 6px}.hint{line-height:1.4;margin:5px 0}
+    .mission-actions{gap:6px;margin-top:7px}.mission-actions button{min-height:48px;padding:7px 8px}.mission-actions strong{font-size:11px;margin-bottom:3px}.mission-actions small{font-size:9px;line-height:1.3}.mission-tools{gap:8px;margin:5px 0}.mission-tools button{padding:3px 0}#missionFeedback{font-size:9px;margin:4px 0}
+    .selected{margin-bottom:5px}.selected strong{font-size:16px}.authority{margin-top:6px}.authority div{padding:5px 8px}.authority b{font-size:10px}.actions{gap:5px;margin-top:6px}.action{min-height:28px;padding:5px 8px}.taken{margin-top:6px;padding:5px 7px}.receipt{margin-top:7px;padding:6px 8px}.toast{right:374px;bottom:16px;padding:8px 12px}
+    @media(max-width:1350px){.app{grid-template-columns:44px 190px minmax(0,1fr) 330px}.config{padding:10px}.steps{display:none}.top .brand small{display:block;margin:0 0 2px}.switch button{padding:6px 18px}.toast{right:350px}}
+    @media(max-width:1100px){body{min-width:760px}.app{grid-template-columns:36px 160px minmax(0,1fr) 310px;gap:5px;padding:6px}.top{padding:0 8px}.top .online{font-size:9px}.switch button{padding:6px 12px;font-size:11px}.config{padding:8px}.title{font-size:13px}.stage-head{gap:6px}.stage-head strong{flex-shrink:0;font-size:12px}.stage-head>div>span{font-size:9px!important;margin-right:0!important}.pane{padding:7px}.toast{right:330px}}
+  </style>
+</head>
+<body>
+  <div class="app">
+    <nav class="rail"><div class="logo">✈</div><button>▣</button><button class="active">⌁</button><button>⌘</button><button>◎</button><button>♙</button></nav>
+    <header class="top"><div class="brand"><small>UAV-USV 协同仿真平台</small>算法仿真</div><div class="switch"><button>系统总览</button><button class="on">算法仿真</button></div><div class="online">独立仿真 WebGL · ONLINE</div></header>
+    <aside class="config">
+      <div class="title">场景配置 <small>V3 PROTOCOL</small></div>
+      <div class="field"><label>算法</label><select><option>智能粒球仿真护航（单设备控制）</option></select></div>
+      <p class="desc">算法负责护航编队、意图识别、掩护撤离、协同拦截与动态围控。当前模式支持单设备临时接管与安全归队。</p>
+      <div class="summary"><strong>1 护航目标 · 1 敌船</strong><span>5 UAV · 5 USV · 世界 360×280 m</span></div>
+      <div class="nums"><div><div class="hint">UAV 数量</div><div class="num">5</div></div><div><div class="hint">USV 数量</div><div class="num">5</div></div><div><div class="hint">UAV 巡航速度</div><div class="num">5 m/s</div></div><div><div class="hint">USV 巡航速度</div><div class="num">3 m/s</div></div></div>
+      <div class="row"><button class="ghost primary">⟳ 生成场景</button><button class="ghost">◉ 重置</button></div>
+    </aside>
+    <main class="stage">
+      <div class="stage-head"><strong>算法仿真</strong><div><span style="color:#ffc857;font-size:12px;margin-right:14px">5 UAV · 5 USV · 1 护航目标 · 1 敌船</span><span class="online">UNITY WEBGL ONLINE</span></div></div>
+      <div class="map">
+        <div class="legend">● UNITY WEBGL ONLINE</div><div class="focus-ring"></div>
+        <div class="drone" style="left:31%;top:25%"><i></i></div><div class="drone" style="left:48%;top:17%"><i></i></div><div class="drone" style="left:65%;top:31%"><i></i></div><div class="drone" style="left:37%;top:63%"><i></i></div><div class="drone" style="left:58%;top:67%"><i></i></div>
+        <div class="ship" style="left:38%;top:43%"></div><div class="ship" style="left:47%;top:37%"></div><div class="ship" style="left:52%;top:57%"></div><div class="ship" style="left:64%;top:50%"></div><div class="ship" style="left:41%;top:57%"></div><div class="target" style="left:72%;top:70%"></div>
+      </div>
+      <div class="missionbar"><span>● 阶段 <b>编队护航 · THREAT-001</b></span><span>综合进度 <b>18%</b></span><span>可见目标 <b>2</b></span><span>已捕获 <b>0/1</b></span><span>仿真时长 <b>00:24</b></span></div>
+      <div class="stage-foot"><div><button class="start">▷ 开始</button> <button>Ⅱ 暂停</button> <button>⊙ 停止</button></div><div class="steps"><b class="on">1</b>编队护航 <b>2</b>意图识别 <b>3</b>分向守卫 <b>4</b>协同拦截 <b>5</b>动态围捕</div></div>
+    </main>
+    <aside class="inspector">
+      <div class="tabs"><button class="active" data-pane="voice">语音控制</button><button data-pane="status">任务态势</button><button data-pane="protocol">协议状态</button><button data-pane="logs">运行日志</button></div>
+      <section class="pane active" id="voice">
+        <div class="headcard"><h2><span>▥</span> 语音任务控制</h2><div class="badge">真实 API</div></div>
+        <div class="runtime"><div class="run">● 运行 1790920024759 · RUNNING · 帧 184</div><div class="metrics"><div><span>任务状态</span><b>RUNNING</b></div><div><span>场景状态</span><b>READY</b></div><div><span>接入设备</span><b>12 台</b></div></div></div>
+        <article class="section command" id="command">
+          <div class="section-title"><span>语音 / 文本指令</span><em>平台接口</em></div>
+          <div class="section-body"><textarea id="commandText" placeholder="例如：第一架无人机悬停"></textarea><div class="row"><button class="ghost record" id="recordBtn">◉ 开始录音</button><button class="ghost parse" id="parseBtn">✦ 解析并执行</button></div><div class="quick"><button class="chip">第一架无人机悬停</button><button class="chip">第一架无人机归队</button><button class="chip">第一艘无人艇驻留</button></div><p class="hint" id="inputHint">明确口令将自动提交本地仿真；一句只执行一个动作。</p></div>
+        </article>
+        <div class="mission-actions" aria-label="整队任务控制">
+          <button data-mission="start"><strong>开始任务</strong><small>创建并校对指令提案</small></button>
+          <button data-mission="pause"><strong>暂停任务</strong><small>创建并校对指令提案</small></button>
+          <button data-mission="resume"><strong>继续任务</strong><small>创建并校对指令提案</small></button>
+          <button data-mission="stop"><strong>停止任务</strong><small>创建并校对指令提案</small></button>
+        </div>
+        <div class="mission-tools"><button id="refreshContext">⟳ 刷新上下文</button><button id="bindDisplay">建立展示绑定</button></div>
+        <p class="hint" id="missionFeedback" role="status">交互原型：按钮演示任务状态变化。</p>
+        <article class="section device-card" id="device">
+          <div class="section-title"><span>单设备控制</span><em>10 ONLINE</em></div>
+          <div class="section-body">
+            <div class="selected"><div><span>当前目标</span><strong id="deviceName">未选择</strong></div><span>Python 权威运动</span></div>
+            <select id="deviceSelect"><option value="">请选择 UAV 或 USV</option><option>UAV-001</option><option>UAV-002</option><option>UAV-003</option><option>UAV-004</option><option>UAV-005</option><option>USV-001</option><option>USV-002</option><option>USV-003</option><option>USV-004</option><option>USV-005</option></select>
+            <div class="authority"><div><span>控制权</span><b id="authority">ALGORITHM</b></div><div><span>运动状态</span><b id="motion">ACTIVE</b></div></div>
+            <div class="actions"><button class="action" data-action="HOLDING" disabled>悬停 / 驻留</button><button class="action danger" data-action="STOPPED" disabled>单机停止</button><button class="action" data-action="RETURNING" disabled>独立返航</button><button class="action good" data-action="ACTIVE" disabled>安全归队</button></div>
+            <div class="taken" id="taken"><strong id="takenName">UAV-001</strong><span id="takenState">悬停 / 驻留</span></div>
+            <p class="hint">被接管设备暂时退出当前任务输出，其他设备继续运行群体算法；安全归队会把控制权交还算法。</p>
+          </div>
+        </article>
+        <div class="receipt" id="receipt"><strong>算法执行成功</strong><span id="receiptText">UAV-001 · 无人机悬停 · Python 权威帧已确认</span></div>
+      </section>
+      <section class="pane" id="status"><div class="empty-pane"><div><b>任务态势</b>综合进度 18% · 编队护航<br>这里保留原有任务指标与目标列表。</div></div></section>
+      <section class="pane" id="protocol"><div class="empty-pane"><div><b>协议状态</b>Unity WebGL ONLINE<br>V3 · VIRTUAL_SIMULATION · READY</div></div></section>
+      <section class="pane" id="logs"><div class="empty-pane"><div><b>运行日志</b><span id="logText">等待单设备操作…</span></div></div></section>
+    </aside>
+  </div>
+  <div class="toast" id="toast">已执行</div>
+  <script>
+    const $=s=>document.querySelector(s), $$=s=>[...document.querySelectorAll(s)];
+    const toast=(text)=>{const el=$('#toast');el.textContent=text;el.classList.add('show');setTimeout(()=>el.classList.remove('show'),1800)};
+    $$('.tabs button').forEach(btn=>btn.onclick=()=>{$$('.tabs button').forEach(x=>x.classList.toggle('active',x===btn));$$('.pane').forEach(x=>x.classList.toggle('active',x.id===btn.dataset.pane))});
+    $$('.chip').forEach(btn=>btn.onclick=()=>{$('#commandText').value=btn.textContent;$('#inputHint').textContent='已填入口令，点击“解析并执行”查看联动效果。'});
+    const select=$('#deviceSelect'), name=$('#deviceName'), authority=$('#authority'), motion=$('#motion'), taken=$('#taken'), receipt=$('#receipt');
+    function selectDevice(code){select.value=code;name.textContent=code||'未选择';$$('.action').forEach(x=>x.disabled=!code)}
+    select.onchange=()=>selectDevice(select.value);
+    function applyAction(state,source='手动控制'){
+      if(!select.value)return; const active=state==='ACTIVE'; authority.textContent=active?'ALGORITHM':'OPERATOR';authority.classList.toggle('operator',!active);motion.textContent=state;
+      taken.classList.toggle('show',!active);$('#takenName').textContent=select.value;$('#takenState').textContent={HOLDING:'悬停 / 驻留',STOPPED:'已停止',RETURNING:'独立返航中'}[state]||state;
+      receipt.classList.add('show');$('#receiptText').textContent=`${select.value} · ${source} · Python 权威帧已确认`;$('#logText').textContent=`${new Date().toLocaleTimeString()} ${select.value} ${state} SUCCESS`;toast(`${select.value}：${state}`)
+    }
+    $$('.action').forEach(btn=>btn.onclick=()=>applyAction(btn.dataset.action,btn.textContent.trim()));
+    let missionState='RUNNING';
+    const missionRules={start:['PREPARED'],pause:['RUNNING'],resume:['PAUSED'],stop:['PREPARED','RUNNING','PAUSED']};
+    function renderMission(){
+      $('.runtime .run').textContent=`● 运行 1790920024759 · ${missionState} · 帧 184`;
+      $('.metrics b').textContent=missionState;
+      $$('[data-mission]').forEach(button=>{button.disabled=!missionRules[button.dataset.mission].includes(missionState);button.querySelector('small').textContent=button.disabled?`状态 ${missionState} 不允许此操作`:'创建并校对指令提案'});
+    }
+    function runMission(action){
+      if(!missionRules[action].includes(missionState)){toast(`状态 ${missionState} 不允许此操作`);return}
+      missionState={start:'RUNNING',pause:'PAUSED',resume:'RUNNING',stop:'STOPPED'}[action];renderMission();
+      const label={start:'开始任务',pause:'暂停任务',resume:'继续任务',stop:'停止任务'}[action];
+      $('#missionFeedback').textContent=`原型演示：${label}成功 · ${missionState}`;
+      $('#logText').textContent=`${new Date().toLocaleTimeString()} ${label} ${missionState}`;toast(`${label} · ${missionState}`);
+    }
+    $$('[data-mission]').forEach(button=>button.onclick=()=>runMission(button.dataset.mission));
+    $('#refreshContext').onclick=()=>{renderMission();$('#missionFeedback').textContent=`上下文已刷新 · ${missionState} · ${new Date().toLocaleTimeString()}`;toast('上下文已刷新（原型演示）')};
+    $('#bindDisplay').onclick=()=>{$('#bindDisplay').textContent='重新接管展示';$('#missionFeedback').textContent='展示绑定已建立（原型演示）';toast('展示绑定已建立')};
+    $('.config .primary').onclick=()=>{missionState='PREPARED';renderMission();$('#missionFeedback').textContent='场景已准备，可点击开始任务（原型演示）';toast('场景已准备')};
+    renderMission();
+    $('#parseBtn').onclick=()=>{const text=$('#commandText').value.trim();const teamAction={'开始任务':'start','暂停任务':'pause','继续任务':'resume','停止任务':'stop'}[text];if(teamAction){runMission(teamAction);return}const match=text.match(/第([一二三四五六七八九十])(?:架无人机|艘无人艇)/);if(!match){toast('请明确设备编号');return}const nums='一二三四五六七八九十',n=nums.indexOf(match[1])+1,code=text.includes('无人艇')?`USV-${String(n).padStart(3,'0')}`:`UAV-${String(n).padStart(3,'0')}`;selectDevice(code);$('#device').scrollIntoView({behavior:'smooth',block:'nearest'});if(/归队|继续/.test(text))applyAction('ACTIVE','安全归队');else if(/返航|返回/.test(text))applyAction('RETURNING','独立返航');else if(/停止|降落|停船/.test(text))applyAction('STOPPED','单机停止');else if(/悬停|驻留|待命|保持|暂停/.test(text))applyAction('HOLDING',text.includes('无人艇')?'无人艇驻留':'无人机悬停');else toast('请明确一个动作')};
+    $('#recordBtn').onclick=()=>{const b=$('#recordBtn');b.textContent='● 正在录音 00:03';b.style.color='#ff8585';setTimeout(()=>{b.textContent='◉ 开始录音';b.style.color='';$('#commandText').value='第一架无人机悬停';$('#inputHint').textContent='识别完成：第一架无人机悬停'},1300)};
+  </script>
+</body>
+</html>
