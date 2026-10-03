@@ -91,6 +91,10 @@ function pendingKey(scope: UnityRuntimeScope, requestId: string) {
   return `${scope}:${requestId}`
 }
 
+function isPoseMessage(scope: UnityRuntimeScope, type: string) {
+  return type === 'poseFrame' || (scope === 'VIRTUAL_FLEET' && type === 'applyPoseBatch')
+}
+
 function removePendingCommandAck(scope: UnityRuntimeScope, requestId: string) {
   const key = pendingKey(scope, requestId)
   const pending = pendingCommandAcks.get(key)
@@ -257,7 +261,7 @@ export const useUnityBridgeStore = defineStore('unityBridge', {
       const latestPose = channel.latestPoseFrame
       const latestRunId = String(latestPose?.payload.runId ?? '')
       if (latestPose && latestRunId === wireRunId) {
-        channel.outbox = channel.outbox.filter(message => message.type !== 'poseFrame')
+        channel.outbox = channel.outbox.filter(message => !isPoseMessage(scope, message.type))
         channel.outbox.push(latestPose)
       }
     },
@@ -320,23 +324,23 @@ export const useUnityBridgeStore = defineStore('unityBridge', {
         channel.rejectReason = ''
         channel.latestPoseFrame = null
         channel.outbox = channel.outbox.filter(
-          queued => queued.type !== 'loadScenario' && queued.type !== 'poseFrame',
+          queued => queued.type !== 'loadScenario' && !isPoseMessage(scope, queued.type),
         )
         // Scenario selection must reach Unity before any command retained in
         // the channel from the previous view state.
         channel.outbox.unshift(message)
         return requestId
       }
-      if (type === 'poseFrame') {
+      if (isPoseMessage(scope, type)) {
         const runId = String(payload.runId ?? '')
         if (!runId) {
-          channel.rejectReason = `poseFrame invalid runId: ${String(payload.runId ?? '')}`
-          console.warn('[unityBridge] poseFrame rejected', { scope, rejectReason: channel.rejectReason })
+          channel.rejectReason = `${type} invalid runId: ${String(payload.runId ?? '')}`
+          console.warn(`[unityBridge] ${type} rejected`, { scope, rejectReason: channel.rejectReason })
           return requestId
         }
         if (String(channel.scenarioRunId ?? '') !== runId) {
-          channel.rejectReason = `poseFrame run mismatch: expected=${channel.scenarioRunId ?? 'none'}, received=${runId}`
-          console.warn('[unityBridge] poseFrame rejected', { scope, rejectReason: channel.rejectReason })
+          channel.rejectReason = `${type} run mismatch: expected=${channel.scenarioRunId ?? 'none'}, received=${runId}`
+          console.warn(`[unityBridge] ${type} rejected`, { scope, rejectReason: channel.rejectReason })
           return requestId
         }
         channel.latestPoseFrame = message
@@ -344,7 +348,7 @@ export const useUnityBridgeStore = defineStore('unityBridge', {
         // Keeping every 10 Hz sample caused a synchronous burst and the
         // apparent "teleport then freeze" behaviour after returning to 3-D.
         channel.outbox = channel.outbox.filter(
-          queued => queued.type !== 'poseFrame',
+          queued => !isPoseMessage(scope, queued.type),
         )
         if (String(channel.scenarioReadyRunId ?? '') !== runId) return requestId
       }

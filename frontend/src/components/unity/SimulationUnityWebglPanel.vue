@@ -193,7 +193,9 @@ function flushOutbox() {
   while (message) {
     try {
       postEnvelope(message)
-      if (message.type === 'poseFrame') bridge.markPoseSentFor(RUNTIME_SCOPE, message.payload)
+      if (message.type === 'poseFrame' || message.type === 'applyPoseBatch') {
+        bridge.markPoseSentFor(RUNTIME_SCOPE, message.payload)
+      }
       bridge.removeNextFor(RUNTIME_SCOPE)
       message = bridge.peekNextFor(RUNTIME_SCOPE)
     } catch (error) {

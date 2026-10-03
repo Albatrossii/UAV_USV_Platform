@@ -300,6 +300,35 @@ describe('VoiceP0ControlPanel presentation recovery UI', () => {
     wrapper.unmount()
   })
 
+  it('requests a frame challenge for a new pending START after an older resync was waiting', async () => {
+    const wrapper = mountPanel('STALE')
+    const store = useVoiceControlStore()
+    store.takePresentationBinding = vi.fn().mockImplementation(async () => {
+      store.presentationBinding = {
+        bindingId: '77777777-7777-4777-8777-777777777777',
+        runtimeGeneration: context.runtimeGeneration,
+      }
+    })
+    store.requestPresentationChallenge = vi.fn().mockResolvedValue(null)
+
+    await wrapper.setProps({ unitySession: { connected: true, unityInstanceId: 'unity-test', sceneRevision: 1 } })
+    await nextTick()
+    await wrapper.vm.$.setupState.resyncPresentation()
+    store.execution = {
+      ...execution('PENDING'),
+      executionId: '99999999-9999-4999-8999-999999999999',
+    }
+    await nextTick()
+    await wrapper.vm.handleUnityPresentationMessage({ type: 'PRESENTATION_READY', payload: {
+      protocolVersion: 'unity.presentation.v1', runtimeRef: context.runtimeRef, runtimeGeneration: context.runtimeGeneration,
+      bindingId: '77777777-7777-4777-8777-777777777777', unityInstanceId: 'unity-test', sceneRevision: 1, scenarioReady: true,
+    } })
+    await vi.advanceTimersByTimeAsync(1000)
+
+    expect(store.requestPresentationChallenge).toHaveBeenCalledWith('FRAME_APPLIED', store.execution.executionId)
+    wrapper.unmount()
+  })
+
   it('keeps an in-flight presentation challenge across heartbeat refreshes but clears it for a new scene', async () => {
     const wrapper = mountPanel('NOT_REQUIRED')
     const store = useVoiceControlStore()
@@ -353,6 +382,7 @@ describe('VoiceP0ControlPanel presentation recovery UI', () => {
   beforeEach(() => {
     vi.useFakeTimers()
     vi.stubEnv('VITE_VOICE_P1_PREPARATION', 'true')
+    vi.stubEnv('VITE_VOICE_ASR_ONLY', 'false')
     setActivePinia(createPinia())
     useAuthStore().user = { username: 'admin', role: 'ADMIN' }
   })
@@ -362,6 +392,20 @@ describe('VoiceP0ControlPanel presentation recovery UI', () => {
 
     expect(wrapper.text()).toContain('Unity 展示已过期')
     expect(wrapper.get('button.presentation-resync').text()).toContain('重新同步画面')
+    wrapper.unmount()
+  })
+
+  it('shows the authoritative applied state over an older auto-resync message', async () => {
+    const wrapper = mountPanel('STALE')
+    const store = useVoiceControlStore()
+    wrapper.vm.$.setupState.presentationBridgeStatus = 'Unity 展示过期，正在自动恢复（2/3）'
+    await nextTick()
+    expect(wrapper.text()).toContain('展示桥：Unity 展示过期，正在自动恢复（2/3）')
+
+    store.execution = execution('REPORTED_APPLIED')
+    await nextTick()
+    expect(wrapper.text()).toContain('展示桥：展示证据已提交')
+    expect(wrapper.text()).not.toContain('正在自动恢复')
     wrapper.unmount()
   })
 

@@ -1718,7 +1718,7 @@ watch(
           </div>
 
           <Teleport
-            v-if="dashboardViewActive"
+            v-if="dashboardViewActive && route.query.workspace !== 'simulation'"
             to="#unity-runtime-overlay-system-overview-overview-unity-01"
           >
             <div

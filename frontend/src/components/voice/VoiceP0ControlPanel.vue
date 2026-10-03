@@ -103,6 +103,12 @@ const runtimeEnded = computed(() => !!context.value && (
 const activeVoiceContext = computed(() => context.value && !runtimeEnded.value ? context.value : null)
 const presentationBridgeReady = ref(false)
 const presentationBridgeStatus = ref(presentationBridgeEnabled ? '等待展示绑定' : 'E03 未启用')
+const presentationBridgeDisplay = computed(() => execution.value?.state === 'SUCCEEDED'
+  && execution.value.presentationStatus === 'REPORTED_APPLIED'
+  && execution.value.runtimeRef === context.value?.runtimeRef
+  && execution.value.runtimeGeneration === context.value?.runtimeGeneration
+  ? '展示证据已提交'
+  : presentationBridgeStatus.value)
 const helloAttempts = ref(0)
 const lastSceneProbeAt = ref<number | null>(null)
 const lastAutoBindingKey = ref('')
@@ -452,7 +458,10 @@ async function resyncPresentation() {
   }
   // A stale or expired challenge cannot be reused. Explicit recovery always
   // asks the backend for a fresh one-time FRAME_APPLIED challenge.
-  if (!store.clearStalePresentationRecovery()) return
+  if (!store.clearStalePresentationRecovery()) {
+    pendingFrameResync = false
+    return
+  }
   await requestPresentationProbe(true)
   pendingFrameResync = presentationChallenge.value?.kind === 'FRAME_APPLIED'
 }
@@ -487,6 +496,7 @@ async function handleUnityPresentationMessage(message: UnityWindowMessage) {
   presentationBridgeStatus.value = accepted
     ? (report.applied ? '展示证据已提交' : 'Unity 报告未应用')
     : '展示报告提交失败'
+  if (accepted && report.kind === 'FRAME_APPLIED') pendingFrameResync = false
 }
 
 async function takePresentationBinding() {
@@ -547,6 +557,7 @@ watch([
   () => props.unitySession.unityInstanceId,
   () => props.unitySession.sceneRevision,
 ], async () => {
+  pendingFrameResync = false
   presentationBridgeReady.value = false
   helloAttempts.value = 0
   store.presentationChallenge = null
@@ -567,9 +578,18 @@ watch(() => [execution.value?.state, execution.value?.presentationStatus], ([sta
 }, { immediate: true })
 
 watch(() => execution.value?.executionId, executionId => {
+  pendingFrameResync = false
   autoResyncExecutionId = executionId ?? ''
   autoResyncAttempts = 0
   lastAutoResyncAt = null
+})
+
+watch(() => execution.value?.presentationStatus, status => {
+  if (status !== 'REPORTED_APPLIED') return
+  pendingFrameResync = false
+  autoResyncAttempts = 0
+  lastAutoResyncAt = null
+  presentationBridgeStatus.value = '展示证据已提交'
 })
 
 watch(runtimeEnded, ended => {
@@ -614,7 +634,10 @@ onMounted(async () => {
         if (presentationChallenge.value && Date.parse(presentationChallenge.value.expiresAt) <= Date.now()) {
           store.presentationChallenge = null
         }
-        if (pendingFrameResync) void resyncPresentation()
+        if (execution.value?.state === 'SUCCEEDED' && execution.value.presentationStatus === 'PENDING') {
+          pendingFrameResync = false
+          void requestPresentationProbe()
+        } else if (pendingFrameResync) void resyncPresentation()
         else if (presentationCanResync && execution.value) {
           if (autoResyncExecutionId !== execution.value.executionId) {
             autoResyncExecutionId = execution.value.executionId
@@ -674,7 +697,7 @@ onBeforeUnmount(() => {
     <p v-else-if="responseUnknown" class="recovery-note">上次写请求结果未知，不能换新幂等键重发。</p>
     <p v-else-if="!recoveryAvailable" class="error">本地恢复日志不可用，写操作已阻止。</p>
     <p v-if="presentationBinding?.bindingId" class="scope-note" :title="presentationBinding.bindingId">展示绑定已建立。</p>
-    <p v-if="presentationBridgeEnabled" class="scope-note">展示桥：{{ presentationBridgeStatus }}</p>
+    <p v-if="presentationBridgeEnabled" class="scope-note">展示桥：{{ presentationBridgeDisplay }}</p>
 
     <LocalAsrInput v-if="asrOnly" :operator-scope="operatorScope" :disabled="authStore.user?.role !== 'ADMIN' || authStore.loading" />
     <VoiceIntelligenceInput
