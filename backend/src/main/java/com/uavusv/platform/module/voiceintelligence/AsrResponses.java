@@ -37,7 +37,7 @@ public final class AsrResponses {
         return switch (c) {
             case "VOICE_NO_SPEECH" -> "未识别到有效语音，请重新录制";
             case "VOICE_REQUEST_IN_PROGRESS" -> "原请求仍在处理中";
-            case "VOICE_REQUEST_OUTCOME_UNKNOWN" -> "原请求结果无法安全恢复，请重新录制后提交";
+            case "VOICE_REQUEST_OUTCOME_UNKNOWN" -> "原请求结果无法安全恢复，请保留请求编号并联系管理员核对";
             case "VOICE_REQUEST_EXPIRED" -> "原请求结果已过期，请重新录制后提交";
             case "VOICE_TRANSCRIPTION_TIMEOUT" -> "识别等待超时，请联系管理员检查服务";
             case "VOICE_INTERPRETATION_TIMEOUT" -> "意图解析超时，请稍后重试";
