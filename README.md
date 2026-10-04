@@ -14,6 +14,7 @@
 - [总体架构说明](docs/architecture.md)
 - [前后端模块规划](docs/frontend-backend-roadmap.md)
 - [任务管理模块设计](docs/mission-management-design.md)
+- [阿里云语音控制快速启动](docs/voice-control-p1/ALIYUN-QUICKSTART.md)
 
 ## 当前开发状态
 

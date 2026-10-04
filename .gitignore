@@ -19,3 +19,6 @@ __pycache__/
 
 .local-tools/
 .venv-p0/
+
+# Per-machine Aliyun demo credentials and database settings.
+config/aliyun-demo.local.psd1
