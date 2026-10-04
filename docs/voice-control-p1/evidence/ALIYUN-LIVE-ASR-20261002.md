@@ -121,3 +121,13 @@
 - 对应运行 `1791104188350` 的后端最终状态为 `COMPLETED`，最后帧序号为 939；悬停和返航两条设备执行分别为 `7aba673e-0032-4576-a20b-cb87dde332ce`、`a7cc3f7c-f11b-4cf5-9862-72814a80806a`，均为 `SUCCEEDED / SUCCESS / NOT_REQUIRED`。
 
 本次复测补齐了此前未验收的浏览器实体麦克风，以及此前只用文字输入验证的 RESUME。真实无人机/无人艇、ROS/Gateway 实机链路、临时 Token 自动刷新和云端限流/超时故障注入仍未覆盖。
+
+## 2026-10-04 AccessKey 自动获取 Token 验收
+
+在被 Git 忽略的本机配置中保留 AppKey 和 RAM 用户 AccessKey，并清空手工 Token 后，先用独立诊断脚本按照阿里云 `CreateToken` 签名规范请求官方接口。接口返回 HTTP 200 和未来的 `ExpireTime`；诊断输出不包含 AccessKey、签名或 Token 值。该结果确认本机网络、RAM 权限和凭据有效。
+
+首次启动完整平台后，页面上传有效格式的静音 WAV 返回 HTTP 503 / `VOICE_PROVIDER_UNAVAILABLE`。定位发现，启动脚本设置了 `ALIYUN_AK_ID` 与 `ALIYUN_AK_SECRET`，但正式加载的 `application.yml` 没有将它们映射到 `AsrSettings`；映射只存在于不会被 Spring 自动加载的 `application-local.example.yml`。因此后端实际读取到空 AccessKey，并未发起 `CreateToken` 请求。
+
+修复正式配置映射、重新打包并重启后，再从 `http://localhost:5177/?workspace=simulation` 的文件入口上传同一静音 WAV，页面返回 HTTP 422 / `VOICE_NO_SPEECH`（“未识别到语音，请重新录音”），不再返回 503。该结果证明后端已在没有手工 Token 的情况下自动取得 Token，并成功进入阿里云一句话识别链路。`AliyunCredentialBindingTests`、`AliyunTokenManagerTests` 与 `AliyunAsrProviderTests` 定向测试通过。
+
+本轮验证了首次自动取 Token；缓存命中已有单元测试覆盖。由于没有等待真实 Token 接近过期，本轮尚未现场验证过期前自动刷新；云端限流、超时和 AccessKey 失效故障注入仍未覆盖。凭据仍只保存在被 Git 忽略的本机文件中。

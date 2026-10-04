@@ -33,6 +33,12 @@ management:
       show-details: never
 
 app:
+  voiceintelligence:
+    # Keep long-lived credentials outside the repository. Spring resolves these
+    # standard Aliyun environment variables at runtime; the backend then creates
+    # and refreshes short-lived NLS tokens in memory.
+    aliyun-access-key-id: ${ALIYUN_AK_ID:}
+    aliyun-access-key-secret: ${ALIYUN_AK_SECRET:}
   voicecontrol:
     enabled: ${VOICE_CONTROL_ENABLED:false}
     poll-ms: 100
