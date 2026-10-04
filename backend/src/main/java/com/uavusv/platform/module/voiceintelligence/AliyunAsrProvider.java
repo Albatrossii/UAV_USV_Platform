@@ -43,6 +43,7 @@ public class AliyunAsrProvider implements SpeechProvider {
     private final AsrSettings settings;
     private final ObjectMapper json;
     private final URI testEndpoint;
+    private final AliyunTokenManager tokens;
     private final HttpClient client =
             HttpClient.newBuilder()
                     .connectTimeout(Duration.ofSeconds(3))
@@ -51,11 +52,19 @@ public class AliyunAsrProvider implements SpeechProvider {
 
     @Autowired
     public AliyunAsrProvider(AsrSettings settings, ObjectMapper json) {
-        this(settings, json, null);
+        this(settings, json, null, new AliyunTokenManager(settings, json));
     }
 
     // Only tests in this package may substitute a loopback HTTP server. Production uses fixed HTTPS hosts.
     AliyunAsrProvider(AsrSettings settings, ObjectMapper json, URI testEndpoint) {
+        this(settings, json, testEndpoint, new AliyunTokenManager(settings, json));
+    }
+
+    AliyunAsrProvider(
+            AsrSettings settings,
+            ObjectMapper json,
+            URI testEndpoint,
+            AliyunTokenManager tokens) {
         if (testEndpoint != null
                 && !("http".equals(testEndpoint.getScheme())
                         && "127.0.0.1".equals(testEndpoint.getHost()))) {
@@ -64,21 +73,21 @@ public class AliyunAsrProvider implements SpeechProvider {
         this.settings = settings;
         this.json = json;
         this.testEndpoint = testEndpoint;
+        this.tokens = tokens;
     }
 
     @Override
     public Transcript transcribe(Audio audio, long deadlineNanos) {
         URI endpoint = endpoint();
-        String appKey = settings.getAliyunAppKey(), token = settings.getAliyunToken();
+        String appKey = settings.getAliyunAppKey();
         if (appKey == null || !appKey.matches("[A-Za-z0-9]{1,128}")
-                || token == null || token.isBlank() || token.length() > 4096
-                || token.chars().anyMatch(c -> c < 0x21 || c > 0x7e)
                 || settings.getAliyunModelAlias() == null
                 || settings.getAliyunModelAlias().isBlank()
                 || settings.getAliyunModelAlias().length() > 96) {
             throw new AsrFailure(503, "VOICE_PROVIDER_UNAVAILABLE");
         }
         Wav wav = wav(audio, deadlineNanos);
+        String token = tokens.token(deadlineNanos);
         long remaining = deadlineNanos - System.nanoTime();
         if (remaining <= 0) throw timeout(false);
         String query = "appkey=" + URLEncoder.encode(appKey, StandardCharsets.UTF_8)

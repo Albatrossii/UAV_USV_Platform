@@ -5,12 +5,12 @@
 ## 本机配置
 
 1. 将 `backend/src/main/resources/application-local.example.yml` 复制成同目录下被 Git 忽略的 `application-local.yml`，按现有方式配置数据库和登录信息。
-2. 在本机后端配置 `APP_VOICEINTELLIGENCE_ENABLED=true` 和 `APP_VOICEINTELLIGENCE_PROVIDER=aliyun`。填写 `APP_VOICEINTELLIGENCE_ALIYUN_APP_KEY` 与临时 `APP_VOICEINTELLIGENCE_ALIYUN_TOKEN`。AppKey 是项目标识，Token 是临时鉴权凭证；不要把它们写进前端、Git、聊天记录或测试日志。
+2. 在本机后端配置 `APP_VOICEINTELLIGENCE_ENABLED=true` 和 `APP_VOICEINTELLIGENCE_PROVIDER=aliyun`。填写 `APP_VOICEINTELLIGENCE_ALIYUN_APP_KEY`，并选择一种鉴权方式：临时调试可填写 `APP_VOICEINTELLIGENCE_ALIYUN_TOKEN`；长期运行应把 RAM 用户的凭证放入后端环境变量 `ALIYUN_AK_ID` 与 `ALIYUN_AK_SECRET`。AppKey 是项目标识，Token 和 AccessKey 都是敏感凭证；不要把它们写进前端、Git、聊天记录或测试日志。
 3. 按项目所在地域设置 `APP_VOICEINTELLIGENCE_ALIYUN_REGION`，可选 `cn-shanghai`、`cn-beijing`、`cn-shenzhen`，默认上海。可通过 `APP_VOICEINTELLIGENCE_ALIYUN_MODEL_ALIAS` 设置展示名称。
 4. 浏览器麦克风通常产生 WebM/Opus。要让后端真正转码，请安装可执行的 FFmpeg，并使其在后端进程 `PATH` 中，或通过 `APP_VOICEINTELLIGENCE_ALIYUN_FFMPEG_PATH` 指向其绝对路径。已符合要求的 PCM WAV 可直接使用；改 MIME 名称不能代替转码。
 5. 前端按现有流程启用真实后端语音入口：`VITE_VOICE_P1_PREPARATION=true`、`VITE_VOICE_P1_BACKEND=true`、`VITE_VOICE_P1_MOCK=false`。仅验收转文字时设 `VITE_VOICE_ASR_ONLY=true`；联调控制时改为 `false` 并重启前端。
 
-切回本地识别时，把 `APP_VOICEINTELLIGENCE_PROVIDER` 设为 `local`，保留原本本地 ASR 的 `base-url`、`token` 和 `model-revision` 配置。当前云端模式使用临时 Token，过期后需在本机替换；长期运行前再接服务端自动获取、缓存和刷新 Token。
+切回本地识别时，把 `APP_VOICEINTELLIGENCE_PROVIDER` 设为 `local`，保留原本本地 ASR 的 `base-url`、`token` 和 `model-revision` 配置。云端模式同时兼容手工 Token 和自动 Token：当 `APP_VOICEINTELLIGENCE_ALIYUN_TOKEN` 非空时优先使用它；该项为空且 AccessKey 两项齐全时，后端通过阿里云 `CreateToken` OpenAPI 获取 Token，按照响应中的 `ExpireTime` 缓存，并默认提前 300 秒刷新。可用 `APP_VOICEINTELLIGENCE_ALIYUN_TOKEN_REFRESH_SKEW_SECONDS` 调整提前量（实现会限制在 60—3600 秒）。RAM 用户需具有 `nls:CreateToken` 权限，例如授予 `AliyunNLSSpeechServiceAccess`。生产环境建议使用最小权限 RAM 用户，不要使用主账号 AccessKey。
 
 ## 真人录音验收顺序
 

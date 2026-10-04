@@ -24,6 +24,9 @@ app:
     model-alias: ${APP_VOICEINTELLIGENCE_MODEL_ALIAS:whisper-small-cpu-int8-r1}
     aliyun-app-key: ${APP_VOICEINTELLIGENCE_ALIYUN_APP_KEY:}
     aliyun-token: ${APP_VOICEINTELLIGENCE_ALIYUN_TOKEN:}
+    aliyun-access-key-id: ${ALIYUN_AK_ID:}
+    aliyun-access-key-secret: ${ALIYUN_AK_SECRET:}
+    aliyun-token-refresh-skew-seconds: ${APP_VOICEINTELLIGENCE_ALIYUN_TOKEN_REFRESH_SKEW_SECONDS:300}
     aliyun-region: ${APP_VOICEINTELLIGENCE_ALIYUN_REGION:cn-shanghai}
     aliyun-ffmpeg-path: ${APP_VOICEINTELLIGENCE_ALIYUN_FFMPEG_PATH:ffmpeg}
     aliyun-model-alias: ${APP_VOICEINTELLIGENCE_ALIYUN_MODEL_ALIAS:aliyun-shiyinshi-v1}

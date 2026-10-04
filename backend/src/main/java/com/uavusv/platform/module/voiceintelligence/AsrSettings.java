@@ -14,6 +14,8 @@ public class AsrSettings {
             modelAlias = "whisper-small-cpu-int8-r1",
             aliyunAppKey = "",
             aliyunToken = "",
+            aliyunAccessKeyId = "",
+            aliyunAccessKeySecret = "",
             aliyunRegion = "cn-shanghai",
             aliyunFfmpegPath = "ffmpeg",
             aliyunModelAlias = "aliyun-shiyinshi-v1",
@@ -23,6 +25,7 @@ public class AsrSettings {
             llmModel = "qwen2.5-1.5b-instruct-q4_k_m",
             resultEncryptionKey = "";
     private int llmTimeoutMs = 20000;
+    private int aliyunTokenRefreshSkewSeconds = 300;
 
     public boolean isEnabled() {
         return enabled;
@@ -86,6 +89,30 @@ public class AsrSettings {
 
     public void setAliyunToken(String v) {
         aliyunToken = v;
+    }
+
+    public String getAliyunAccessKeyId() {
+        return aliyunAccessKeyId;
+    }
+
+    public void setAliyunAccessKeyId(String v) {
+        aliyunAccessKeyId = v;
+    }
+
+    public String getAliyunAccessKeySecret() {
+        return aliyunAccessKeySecret;
+    }
+
+    public void setAliyunAccessKeySecret(String v) {
+        aliyunAccessKeySecret = v;
+    }
+
+    public int getAliyunTokenRefreshSkewSeconds() {
+        return aliyunTokenRefreshSkewSeconds;
+    }
+
+    public void setAliyunTokenRefreshSkewSeconds(int v) {
+        aliyunTokenRefreshSkewSeconds = v;
     }
 
     public String getAliyunRegion() {
