@@ -1,5 +1,7 @@
 # 光电视觉电子探测仪 ROS 接入约定
 
+> **历史文档提示：** 本文包含联调前的早期 Protobuf `radar_scan` 设想，已不再代表当前 SAN60 实现。当前权威状态与正式 JSON `spectrum_frame` 协议请查看 `docs/optical-vision-san60-integration-handoff.md`。
+
 ## 结论
 
 电子探测仪不新增 TCP/UDP 端口。ROS Gateway 继续使用现有连接：
@@ -99,4 +101,3 @@ body         = radar_scan
 ```text
 uav_01 uav_02 uav_03 usv_01 usv_02 usv_03
 ```
-
