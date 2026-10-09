@@ -5,6 +5,7 @@ import com.uavusv.platform.module.device.entity.Device;
 import com.uavusv.platform.module.device.entity.DeviceType;
 import com.uavusv.platform.module.device.repository.DeviceRepository;
 import com.uavusv.platform.module.mission.repository.MissionRunRepository;
+import com.uavusv.platform.module.mission.service.AlgorithmRuntimeManager;
 import com.uavusv.platform.module.monitoring.service.RuntimeStateService;
 import com.uavusv.platform.module.runtimecontrol.dispatch.CommandDispatchResult;
 import com.uavusv.platform.module.runtimecontrol.dispatch.RuntimeCommandDispatcher;
@@ -21,6 +22,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.springframework.context.ApplicationEventPublisher;
+import org.springframework.test.util.ReflectionTestUtils;
 
 import java.util.Optional;
 
@@ -109,6 +111,22 @@ class RuntimeControlServiceSafetyStopTests {
         assertThrows(BusinessException.class,
                 () -> service.issueCommand(request(CommandType.USV_RETURN, 31L), "test"));
 
+        verify(commandDispatcher, never()).dispatch(any(), any());
+    }
+
+    @Test
+    void standaloneSingleDeviceCommandIsRoutedToAlgorithmRuntime() {
+        AlgorithmRuntimeManager algorithmRuntimeManager = mock(AlgorithmRuntimeManager.class);
+        when(algorithmRuntimeManager.isStandaloneSingleDeviceRun(31L)).thenReturn(true);
+        ReflectionTestUtils.setField(service, "algorithmRuntimeManager", algorithmRuntimeManager);
+
+        RuntimeCommandResponse response = service.issueCommand(
+                new RuntimeCommandRequest(CommandType.USV_RETURN, 31L, "usv-01", "{}",
+                        CommandType.USV_RETURN.name(), RuntimeScope.MISSION_CENTER,
+                        "ALGORITHM_RUN:31"), "test");
+
+        assertEquals(CommandStatus.SUCCEEDED, response.status());
+        verify(algorithmRuntimeManager).controlDevice(31L, "usv-01", "USV_RETURN");
         verify(commandDispatcher, never()).dispatch(any(), any());
     }
 
