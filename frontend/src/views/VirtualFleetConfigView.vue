@@ -16,6 +16,8 @@ import {
 import ConsoleLayout from '@/components/layout/ConsoleLayout.vue'
 import { ApiClientError } from '@/api/http'
 import VoiceP0ControlPanel from '@/components/voice/VoiceP0ControlPanel.vue'
+import ExperimentArchive from '@/components/voice/ExperimentArchive.vue'
+import { appendExperimentFrame, archiveError } from '@/services/experimentArchive'
 import {
   simulationRuntime,
   enqueueTacticalNotices,
@@ -157,6 +159,9 @@ const voiceControlStore = useVoiceControlStore()
 const presentationUnityInstanceId = ref(crypto.randomUUID().toLowerCase())
 const presentationSceneRevision = ref(0)
 const currentAlgorithmFrame = ref<AlgorithmRuntimeFrame | null>(restoredRuntime?.currentAlgorithmFrame ?? null)
+const frameConnectionError = ref('')
+const frameFailures = ref(0)
+let nextFramePollAt = 0
 const tacticalHistory = simulationRuntime.tacticalHistory
 const consumedTacticalEventIds = new Set<string>()
 const initialScenarioPoses = ref<ScenarioInitialPose[]>(restoredRuntime?.initialScenarioPoses ?? [])
@@ -527,6 +532,7 @@ function send(type: string, payload: Record<string, unknown> = {}) {
   if (type === 'loadScenario') {
     presentationSceneRevision.value += 1
     savedScenario = JSON.parse(JSON.stringify(payload))
+    if (currentAlgorithmFrame.value?.runId === state.runId) recordExperimentFrame(currentAlgorithmFrame.value)
     // Recreating only the renderer must not erase its final authoritative
     // positions. In particular, a completed run no longer polls new frames.
     if (!recoveringScene.value || Number(latestPoseBatch?.runId) !== Number(payload.runId)) {
@@ -607,6 +613,8 @@ function finishSceneRecovery() {
   if (restoredCamera.deviceCode) send('selectDevice', { deviceCode: restoredCamera.deviceCode })
   send('setCameraMode', restoredCamera)
   missionActionMessage.value = ''
+  frameConnectionError.value = ''
+  frameFailures.value = 0
   unityPanel.value?.syncViewport()
   algorithmPrepared.value = !isTerminalMissionState(state.mission)
   if (state.mission === 'RUNNING' || state.mission === 'COMPLETING') {
@@ -917,6 +925,8 @@ async function generateScenario() {
   state.runId = Date.now()
   state.sequence = 0
   state.mission = 'STOPPED'
+  frameConnectionError.value = ''
+  frameFailures.value = 0
   pendingTerminalSequence.value = null
   pendingTerminalStatus.value = null
   missionActionMessage.value = ''
@@ -1233,6 +1243,7 @@ async function applyAlgorithmFrame(
   )
   previousAlgorithmPoses = adapted.nextState
   currentAlgorithmFrame.value = frame
+  recordExperimentFrame(frame)
   consumeTacticalEvents(frame)
   state.sequence = frame.sequence
   const trackedPose = adapted.payload.vehicles.find((pose) => pose.deviceCode === 'UAV-001')
@@ -1315,9 +1326,17 @@ async function synchronizeInitialAlgorithmFrame(): Promise<boolean> {
   }
 }
 
+function recordExperimentFrame(frame: AlgorithmRuntimeFrame) {
+  appendExperimentFrame(authStore.user?.username ?? '', frame, {
+    algorithm: state.algorithm, uavCount: state.uavCount, usvCount: state.usvCount,
+    uavSpeed: state.uavSpeed, usvSpeed: state.usvSpeed, scenario: savedScenario,
+  })
+}
+
 async function pollAlgorithmFrame() {
   if (
     algorithmPollInFlight
+    || Date.now() < nextFramePollAt
     || (
       state.mission !== 'RUNNING'
       && !(isCaptureAlgorithm.value && state.mission === 'STOPPED')
@@ -1328,13 +1347,23 @@ async function pollAlgorithmFrame() {
     || recoveringScene.value
   ) return
   algorithmPollInFlight = true
+  const polledRunId = state.runId
   try {
-    const frames = await fetchAlgorithmFrames(state.runId, state.sequence)
+    const frames = await fetchAlgorithmFrames(polledRunId, state.sequence)
+    if (polledRunId !== state.runId) return
+    frameFailures.value = 0
+    frameConnectionError.value = ''
+    nextFramePollAt = 0
     for (const frame of frames) {
       await applyAlgorithmFrame(frame)
     }
   } catch (error) {
-    addLog(`algorithm frame failed: ${error instanceof Error ? error.message : String(error)}`)
+    if (polledRunId !== state.runId) return
+    frameFailures.value++
+    const delay = Math.min(10000, 500 * 2 ** Math.min(frameFailures.value - 1, 5))
+    nextFramePollAt = Date.now() + delay
+    frameConnectionError.value = `仿真帧连接异常，画面保留最后状态；${delay / 1000} 秒后重试，不会重发控制指令。`
+    if (frameFailures.value === 1) addLog(`algorithm frame failed: ${error instanceof Error ? error.message : String(error)}`)
   } finally {
     algorithmPollInFlight = false
   }
@@ -1342,6 +1371,9 @@ async function pollAlgorithmFrame() {
 
 function startAlgorithmPolling() {
   stopAlgorithmPolling()
+  nextFramePollAt = 0
+  frameFailures.value = 0
+  frameConnectionError.value = ''
   void pollAlgorithmFrame()
   algorithmPollTimer = window.setInterval(() => {
     void pollAlgorithmFrame()
@@ -1422,7 +1454,6 @@ simulationRuntime.events = { ready: onUnityReady, loading: onUnityLoading, messa
 simulationRuntime.requested.value = true
 watch(webglExpanded, () => window.dispatchEvent(new CustomEvent('unity-runtime-track')))
 let lastVoiceVisualStateVersion = -1
-let lostRuntimeResetInFlight = false
 watch(
   () => [
     voiceControlStore.context?.algorithmRunId ?? '',
@@ -1434,15 +1465,14 @@ watch(
     lastVoiceVisualStateVersion = stateVersion
     if (runtimeState === 'LOST') {
       if (restoreAuthoritativeTerminalSnapshot()) return
-      if (lostRuntimeResetInFlight) return
-      lostRuntimeResetInFlight = true
       algorithmPrepared.value = false
-      addLog(`voice runtime synchronized: LOST stateVersion=${stateVersion}; rebuilding preview`)
-      try {
-        await resetMission()
-      } finally {
-        lostRuntimeResetInFlight = false
-      }
+      state.mission = 'STOPPED'
+      pauseMissionClock()
+      stopAlgorithmPolling()
+      frameFailures.value = 0
+      frameConnectionError.value = '算法运行进程已结束，已保留最后画面与实验记录。请点击“生成场景”创建新运行；未自动恢复或重发指令。'
+      send('missionStop', { runtimeMode: 'VIRTUAL_SIMULATION', runId: state.runId })
+      addLog(`voice runtime synchronized: LOST stateVersion=${stateVersion}; last picture preserved`)
     } else if (runtimeState === 'RUNNING') {
       const resuming = state.mission === 'PAUSED'
       state.mission = 'RUNNING'
@@ -1509,7 +1539,12 @@ onBeforeUnmount(() => {
           <i></i>
           独立仿真 WebGL · {{ unityReady ? 'ONLINE' : 'CONNECTING' }}
         </div>
+        <ExperimentArchive :owner="authStore.user?.username ?? ''" />
       </header>
+      <p v-if="frameConnectionError || archiveError" class="vf-recovery-notice" role="status">
+        {{ frameConnectionError || archiveError }}
+        <button v-if="frameConnectionError && frameFailures > 0" type="button" @click="nextFramePollAt = 0; pollAlgorithmFrame()">立即查询</button>
+      </p>
 
       <div
         class="vf-workbench"
@@ -1671,6 +1706,7 @@ onBeforeUnmount(() => {
               ref="voiceControlPanel"
               :refined="true"
               :runtime-hint="voiceRuntimeHint"
+              :frame="currentAlgorithmFrame"
               :unity-session="voiceUnitySession"
               @presentation-message="sendPresentationMessage"
             />
@@ -1682,6 +1718,8 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
+.vf-recovery-notice { margin: 0; padding: 8px 14px; color: #ffd487; background: #253020; font-size: 12px; }
+.vf-recovery-notice button { margin-left: 12px; color: inherit; background: transparent; border: 1px solid #806c42; border-radius: 4px; cursor: pointer; }
 .virtual-fleet-page { display: flex; height: calc(100dvh - 70px); min-height: 0; gap: 12px; overflow: hidden; flex-direction: column; }
 .vf-app-header { display: grid; min-height: 58px; padding: 0 16px; align-items: center; color: #eafffb; background: rgba(5, 20, 25, .97); border: 1px solid rgba(108, 228, 213, .17); border-radius: 8px; grid-template-columns: minmax(220px, 1fr) auto minmax(220px, 1fr); }
 .vf-app-title { display: flex; align-items: baseline; gap: 14px; }

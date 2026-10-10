@@ -364,8 +364,8 @@ describe('VirtualFleetConfigView return infrastructure payloads', () => {
     expect(controlAlgorithmRun).not.toHaveBeenCalled()
   })
 
-  it('keeps an authoritative final picture when voice-context polling subsequently reports LOST', async () => {
-    const original = await savedFinalPose('COMPLETED')
+  it.each(['COMPLETED', 'RUNNING'] as const)('keeps the last %s picture when voice-context polling subsequently reports LOST', async mission => {
+    const original = await savedFinalPose(mission)
     original.postToUnity.mockClear()
     const store = useVoiceControlStore()
     const lost: VoiceRuntimeContext = {
@@ -380,7 +380,7 @@ describe('VirtualFleetConfigView return infrastructure payloads', () => {
     store.selectedRuntimeRef = lost.runtimeRef
     store.expectedAlgorithmRunId = lost.algorithmRunId
     await flushPromises()
-    expect(original.setup.state.mission).toBe('COMPLETED')
+    expect(original.setup.state.mission).toBe(mission === 'COMPLETED' ? 'COMPLETED' : 'STOPPED')
     expect(original.setup.currentAlgorithmFrame?.sequence).toBe(77)
     expect(original.setup.algorithmPrepared).toBe(false)
     expect(original.postToUnity.mock.calls.some(([type]) => type === 'missionReset')).toBe(false)

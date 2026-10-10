@@ -12,7 +12,7 @@ import java.time.Instant;
 import java.util.List;
 import java.util.Set;
 
-/** Durable two-step coordinator. Child commands still use the existing audited dispatcher. */
+/** Durable 2–4 step coordinator; never replay an already-created child command. */
 @Service
 public class VoiceSequenceExecutor {
     private static final Logger log = LoggerFactory.getLogger(VoiceSequenceExecutor.class);
@@ -62,7 +62,7 @@ public class VoiceSequenceExecutor {
     private void advance(String id) {
         ObjectNode parent = store.get("voice_execution", id);
         if (parent == null || !"EXECUTING".equals(parent.path("state").asText())) return;
-        if (!time.now().isBefore(Instant.parse(parent.path("createdAt").asText()).plusSeconds(30))) {
+        if (!time.now().isBefore(Instant.parse(parent.path("createdAt").asText()).plusSeconds(600))) {
             fail(parent, "TIMED_OUT", "SEQUENCE_TIMEOUT");
             return;
         }
@@ -79,22 +79,39 @@ public class VoiceSequenceExecutor {
         }
         ObjectNode step = (ObjectNode) parent.path("steps").path(index);
         JsonNode frozenStep = parent.path("_plan").path("steps").path(index);
+        if ("WAIT".equals(frozenStep.path("action").asText())) {
+            // A user stop/disconnection must never become a delayed resume.
+            String expected = parent.path("_waitingRuntimeState").asText("");
+            String current = context.path("state").asText();
+            if (!Set.of("RUNNING", "PAUSED").contains(current)
+                    || (!expected.isEmpty() && !expected.equals(current))) {
+                fail(parent, "INVALIDATED", "INVALID_STATE");
+                return;
+            }
+            parent.put("_waitingRuntimeState", current);
+            if (!step.has("startedAt")) step.put("startedAt", time.stamp()).put("state", "EXECUTING");
+            if (time.now().isBefore(Instant.parse(step.path("startedAt").asText()).plusSeconds(frozenStep.path("waitSeconds").asInt()))) {
+                parent.put("sequenceStatus", "WAITING_STEP_PRECONDITION").put("updatedAt", time.stamp());
+                store.save("voice_execution", parent);
+                return;
+            }
+            completeStep(parent, step, index);
+            return;
+        }
         String childId = step.path("executionId").asText("");
         if (childId.isEmpty()) {
             try {
-                if (index == 0) {
-                    if (!"START".equals(frozenStep.path("action").asText()))
-                        throw VoiceFailure.conflict("SEQUENCE_POLICY_VIOLATION");
-                    runtimes.check(context, "START", true);
+                if (!"DEVICE_COMMAND".equals(frozenStep.path("action").asText())) {
+                    runtimes.check(context, frozenStep.path("action").asText(), true);
                 } else {
-                    if (!"RUNNING".equals(context.path("state").asText())) return;
                     String target = frozenStep.path("targetDeviceCode").asText();
                     String commandType = frozenStep.path("deviceCommandType").asText();
-                    if (!("UAV_HOVER".equals(commandType) || "USV_HOLD".equals(commandType)))
+                    if (!VoiceSequencePolicy.DEVICE_COMMANDS.contains(commandType))
                         throw VoiceFailure.conflict("SEQUENCE_POLICY_VIOLATION");
                     runtimes.checkDevice(context, target, commandType);
                 }
                 childId = commands.enqueueSequenceChild(parent, context, frozenStep);
+                parent.put("_stepFrameAtDispatch", context.path("latestFrameSequence").asLong());
                 step.put("executionId", childId)
                         .put("state", "QUEUED")
                         .put("startedAt", time.stamp());
@@ -122,7 +139,6 @@ public class VoiceSequenceExecutor {
             store.save("voice_execution", parent);
             return;
         }
-        step.put("completedAt", time.stamp());
         if (!"SUCCEEDED".equals(childState)) {
             String parentState = "TIMED_OUT".equals(childState) ? "TIMED_OUT"
                     : "INVALIDATED".equals(childState) ? "INVALIDATED"
@@ -130,6 +146,25 @@ public class VoiceSequenceExecutor {
             fail(parent, parentState, child.path("errorCode").asText("SEQUENCE_STEP_FAILED"));
             return;
         }
+        // A successful command receipt is not an arrival receipt. Movement
+        // commands wait for a newer authoritative frame before continuing.
+        if ("DEVICE_COMMAND".equals(frozenStep.path("action").asText())
+                && Set.of("UAV_RETURN", "USV_RETURN", "UAV_RESUME", "USV_RESUME", "UAV_LAND")
+                        .contains(frozenStep.path("deviceCommandType").asText())
+                && (context.path("latestFrameSequence").asLong() <= parent.path("_stepFrameAtDispatch").asLong()
+                    || !VoiceSequencePolicy.deviceCompleted(context, frozenStep))) {
+            step.put("state", "EXECUTING");
+            parent.put("sequenceStatus", "WAITING_STEP_PRECONDITION");
+            store.save("voice_execution", parent);
+            return;
+        }
+        completeStep(parent, step, index);
+    }
+
+    private void completeStep(ObjectNode parent, ObjectNode step, int index) {
+        parent.remove("_stepFrameAtDispatch");
+        parent.remove("_waitingRuntimeState");
+        step.put("completedAt", time.stamp());
         step.put("state", "SUCCEEDED").putNull("errorCode");
         if (index + 1 < parent.path("steps").size()) {
             parent.put("currentStepIndex", index + 1)

@@ -1,4 +1,4 @@
-import type { DeviceCommandType, VoiceAction, VoiceIntent } from './voiceControl'
+import type { DeviceCommandType, VoiceAction, VoiceIntent, VoiceSequencePlanStep } from './voiceControl'
 
 export type VoiceInputStage =
   | 'IDLE'
@@ -59,12 +59,7 @@ export interface VoiceIntentCandidate {
   action: VoiceAction | 'DEVICE_COMMAND' | 'SEQUENCE'
   targetDeviceCode?: string
   deviceCommandType?: DeviceCommandType
-  steps?: Array<{
-    index: number
-    action: 'START' | 'DEVICE_COMMAND'
-    targetDeviceCode?: string
-    deviceCommandType?: 'UAV_HOVER' | 'USV_HOLD'
-  }>
+  steps?: VoiceSequencePlanStep[]
   normalizedText: string
   confidence: number | null
   provider: string

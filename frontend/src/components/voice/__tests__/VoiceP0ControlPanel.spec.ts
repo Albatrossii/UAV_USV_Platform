@@ -109,7 +109,7 @@ describe('VoiceP0ControlPanel presentation recovery UI', () => {
     wrapper.vm.$.setupState.dialogOpen = true
     await nextTick()
 
-    expect(wrapper.text()).toContain('受控双步骤指令')
+    expect(wrapper.text()).toContain('受控顺序指令')
     expect(wrapper.text()).toContain('开始任务')
     expect(wrapper.text()).toContain('UAV-001 · 无人机悬停')
 

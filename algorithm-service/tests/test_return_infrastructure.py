@@ -65,10 +65,11 @@ def return_to_slot(subject: SingleDeviceControlAdapter, code: str) -> RuntimeFra
     raise AssertionError("return did not settle within its bounded test horizon")
 
 
-def test_uav_returns_via_safe_altitude_and_speed_limited_vertical_landing() -> None:
+@pytest.mark.parametrize("command", ["UAV_RETURN", "UAV_LAND"])
+def test_uav_returns_via_safe_altitude_and_speed_limited_vertical_landing(command) -> None:
     subject = adapter()
     previous = pose(subject.step(), "UAV-001")
-    assert subject.control_device("UAV-001", "UAV_RETURN") == "RETURNING"
+    assert subject.control_device("UAV-001", command) == "RETURNING"
     seen = set()
     for _ in range(2000):
         frame = subject.step()

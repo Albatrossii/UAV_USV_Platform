@@ -78,7 +78,6 @@ public class IntentService {
                     Pattern.CASE_INSENSITIVE | Pattern.UNICODE_CASE);
     private static final Pattern TASK_CLAUSE =
             Pattern.compile("(?:开始|启动|执行|暂停|继续|恢复|停止|终止|结束)(?:执行|当前|运行)?任务");
-    private static final Pattern EXTRA_SEQUENCE_CLAUSE = Pattern.compile("之后|以后|然后|接着|再|后|[，,。；;]");
     // Conservative ASR repairs for unmistakable device nouns. Keep aligned
     // with the browser's automatic-execution guard; do not add fuzzy matching.
     private static final Map<String, String> DEVICE_TERM_CORRECTIONS =
@@ -269,6 +268,17 @@ public class IntentService {
 
     public record TargetedCandidate(String deviceCode, String commandType) {}
 
+    public com.fasterxml.jackson.databind.node.ArrayNode requireSequenceSteps(
+            long user, String interpretationId, ObjectNode runtime) {
+        requireCandidate(user, interpretationId, "SEQUENCE", runtime);
+        Entry entry;
+        synchronized (this) { entry = entries.get(new Key(user, interpretationId)); }
+        if (entry == null || entry.runtimeRef == null)
+            throw new AsrFailure(409, "VOICE_INTERPRETATION_INVALID");
+        return ((com.fasterxml.jackson.databind.node.ArrayNode)
+                ((ObjectNode) entry.outcome.body().get("data")).path("steps")).deepCopy();
+    }
+
     public TargetedCandidate requireSequenceCandidate(
             long user, String interpretationId, ObjectNode runtime) {
         if (interpretationId == null || !AudioMultipart.UUID.matcher(interpretationId).matches())
@@ -331,12 +341,14 @@ public class IntentService {
                     "NEGATED_ACTION",
                     "检测到否定表达，为避免误执行，请重新明确指令。",
                     null);
-        Matcher sequence = CONTROLLED_SEQUENCE.matcher(text);
-        if (sequence.matches()) return parseControlledSequence(sequence.group(2), allowed, runtime);
+        IntentClassification sequence = parseSequence(text, allowed, runtime);
+        if (sequence != null) return sequence;
         if (TARGETED.matcher(text).find()
                 || (DEVICE_CUE.matcher(text).find()
                         && Pattern.compile("悬停|驻留|待命|保持|返航|返回|归队|继续|停止|降落|停船").matcher(text).find()))
             return parseTargeted(text, runtime);
+        if (text.contains("设备") && Pattern.compile("悬停|驻留|返航|归队|降落|停止").matcher(text).find())
+            return new IntentClassification("NEEDS_CLARIFICATION", "AMBIGUOUS_TARGET", "请明确无人机或无人艇，以及设备编号。", null);
         if (UNSUPPORTED.matcher(text).find())
             return new IntentClassification(
                     "UNSUPPORTED",
@@ -393,36 +405,48 @@ public class IntentService {
         return parsed;
     }
 
-    private IntentClassification parseControlledSequence(
-            String deviceClause, JsonNode allowed, ObjectNode runtime) {
-        if (EXTRA_SEQUENCE_CLAUSE.matcher(deviceClause).find())
-            return new IntentClassification(
-                    "NEEDS_CLARIFICATION", "AMBIGUOUS_ACTION",
-                    "当前支持两步指令：开始任务，再让一个设备悬停或驻留；请分开下发后续动作。", null);
-        boolean startAllowed = false;
-        for (JsonNode action : allowed) startAllowed |= "START".equals(action.asText());
-        if (!startAllowed)
-            return new IntentClassification(
-                    "UNSUPPORTED",
-                    "UNSUPPORTED_CAPABILITY",
-                    "当前运行实例不允许开始任务，不能生成顺序指令。",
-                    null);
-        IntentClassification targeted = parseTargeted(deviceClause, runtime);
-        if (!"CANDIDATE".equals(targeted.status())) return targeted;
-        if (!"DEVICE_COMMAND".equals(targeted.action())
-                || !Set.of("UAV_HOVER", "USV_HOLD").contains(targeted.deviceCommandType()))
-            return new IntentClassification(
-                    "UNSUPPORTED",
-                    "UNSUPPORTED_CAPABILITY",
-                    "当前仅支持“开始任务后指定无人机悬停”或“开始任务后指定无人艇驻留”。",
-                    null);
-        return new IntentClassification(
-                "CANDIDATE",
-                null,
-                null,
-                "SEQUENCE",
-                targeted.targetDeviceCode(),
-                targeted.deviceCommandType());
+    private IntentClassification parseSequence(String text, JsonNode allowed, ObjectNode runtime) {
+        String separated = text;
+        Matcher compact = CONTROLLED_SEQUENCE.matcher(text);
+        if (compact.matches()) separated = compact.group(1) + "，" + compact.group(2);
+        String[] clauses = separated.split("(?:[，,。；;]*(?:然后|接着|之后|以后|再)[，,。；;]*|[，,。；;]+)", -1);
+        if (clauses.length == 1) return null;
+        if (clauses.length < 2 || clauses.length > 4)
+            return new IntentClassification("NEEDS_CLARIFICATION", "AMBIGUOUS_ACTION", "请一次说明 2–4 个顺序动作。", null);
+        var steps = json.mapper.createArrayNode();
+        String lastTarget = null;
+        String lastCommand = null;
+        for (String raw : clauses) {
+            String clause = raw.replaceFirst("^(?:请)?(?:先)?(?:让)?", "");
+            String action = EXACT_COMMANDS.get(clause);
+            var step = steps.addObject().put("index", steps.size() - 1);
+            if (action != null) {
+                boolean capable = false;
+                for (JsonNode a : allowed) capable |= action.equals(a.asText());
+                if (!capable) return new IntentClassification("UNSUPPORTED", "UNSUPPORTED_CAPABILITY", "当前场景不支持序列中的任务动作。", null);
+                step.put("action", action);
+                lastTarget = null;
+            } else {
+                Matcher wait = Pattern.compile("^(?:等待|等)([一二三四五六七八九十]|\\d{1,2})秒$").matcher(clause);
+                if (wait.matches()) {
+                    int seconds = chineseNumber(wait.group(1));
+                    if (steps.size() == 1 || seconds < 1 || seconds > 60)
+                        return new IntentClassification("NEEDS_CLARIFICATION", "AMBIGUOUS_ACTION", "等待须放在动作之后，时长为 1–60 秒。", null);
+                    step.put("action", "WAIT").put("waitSeconds", seconds);
+                    continue;
+                }
+                if (lastTarget != null && clause.matches("(?:它)?(?:悬停|驻留|待命|返航|返回|归队|继续|停止|降落|停船)"))
+                    clause = lastTarget + clause.replaceFirst("^它", "");
+                if (!TARGETED.matcher(clause).find())
+                    return new IntentClassification("NEEDS_CLARIFICATION", "AMBIGUOUS_ACTION", "请明确每一步的任务动作或设备编号与动作。", null);
+                IntentClassification target = parseTargeted(clause, runtime);
+                if (!"CANDIDATE".equals(target.status())) return target;
+                lastTarget = target.targetDeviceCode();
+                lastCommand = target.deviceCommandType();
+                step.put("action", "DEVICE_COMMAND").put("targetDeviceCode", lastTarget).put("deviceCommandType", lastCommand);
+            }
+        }
+        return new IntentClassification("CANDIDATE", null, null, "SEQUENCE", lastTarget, lastCommand, steps);
     }
 
     private IntentClassification parseTargeted(String text, ObjectNode runtime) {
@@ -570,6 +594,8 @@ public class IntentService {
         String normalized = text.trim().replaceAll("\\s+", "").replaceAll("[。！？!?，,]+$", "");
         for (Map.Entry<String, String> correction : DEVICE_TERM_CORRECTIONS.entrySet())
             normalized = normalized.replace(correction.getKey(), correction.getValue());
+        normalized = normalized.replaceAll("(第?[一二三四五六七八九十\\d]+)(?:号|架)(?:飞机|机)(?!无人)", "$1号无人机")
+                .replaceAll("(第?[一二三四五六七八九十\\d]+)(?:号|艘)(?:船|艇)(?!无人)", "$1号无人艇");
         return normalized;
     }
 

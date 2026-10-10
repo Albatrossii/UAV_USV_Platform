@@ -62,9 +62,10 @@ export interface VoiceFrozenPlan {
 
 export interface VoiceSequencePlanStep {
   index: number
-  action: 'START' | 'DEVICE_COMMAND'
+  action: VoiceAction | 'DEVICE_COMMAND' | 'WAIT'
   targetDeviceCode?: string
-  deviceCommandType?: 'UAV_HOVER' | 'USV_HOLD'
+  deviceCommandType?: DeviceCommandType
+  waitSeconds?: number
 }
 
 export interface VoiceSequenceExecutionStep extends VoiceSequencePlanStep {

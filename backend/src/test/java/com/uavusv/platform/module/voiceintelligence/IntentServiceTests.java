@@ -246,8 +246,8 @@ class IntentServiceTests {
         ObjectNode returned = (ObjectNode) service.interpret(
                 7, returnId, request(returnId, "开始任务后一号无人机返航", hint()))
                 .body().get("data");
-        assertEquals("UNSUPPORTED", returned.path("status").asText());
-        assertEquals("UNSUPPORTED_CAPABILITY", returned.path("reason").asText());
+        assertEquals("CANDIDATE", returned.path("status").asText());
+        assertEquals("UAV_RETURN", returned.path("steps").path(1).path("deviceCommandType").asText());
 
         String ambiguousId = java.util.UUID.randomUUID().toString();
         ObjectNode ambiguous = (ObjectNode) service.interpret(
@@ -259,21 +259,47 @@ class IntentServiceTests {
     }
 
     @Test
-    void compoundCommandsNeverSilentlyDropAnUnsupportedTaskOrThirdStep() {
+    void compoundCommandsNeverSilentlyDropAnUnsupportedClauseOrFifthStep() {
         ObjectNode runtime = runtime("START");
         ((com.fasterxml.jackson.databind.node.ArrayNode) runtime.path("capabilities")).add("DEVICE_COMMAND");
         runtime.put("_algorithmCode", "GB_SFLA_CS_SINGLE_DEVICE");
         runtime.putArray("_members").add("UAV-001").add("USV-001");
         when(runtimes.require(REF, 7)).thenReturn(runtime);
         for (String text : java.util.List.of(
-                "暂停任务让一号无人艇驻留", "一号无人艇驻留然后开始任务",
-                "开始任务让一号无人艇驻留然后停止任务", "开始任务让一号无人艇驻留再驻留",
+                "暂停任务让一号无人艇驻留",
+                "开始任务，一号无人艇驻留，等待2秒，归队，再驻留",
                 "开始任务让一号无人艇驻留然后拍照")) {
             String id = java.util.UUID.randomUUID().toString();
             ObjectNode data = (ObjectNode) service.interpret(
                     7, id, request(id, text, hint())).body().get("data");
             assertEquals("NEEDS_CLARIFICATION", data.path("status").asText(), text);
             assertEquals("AMBIGUOUS_ACTION", data.path("reason").asText(), text);
+        }
+    }
+
+    @Test
+    void sharedRegressionCorpusKeepsEveryStepAndDeviceIdentity() throws Exception {
+        ObjectNode runtime = runtime("START");
+        ((com.fasterxml.jackson.databind.node.ArrayNode) runtime.path("capabilities"))
+                .add("PAUSE").add("RESUME").add("STOP").add("DEVICE_COMMAND");
+        runtime.put("_algorithmCode", "GB_SFLA_CS");
+        runtime.putArray("_members").add("UAV-001").add("USV-001").add("USV-002");
+        when(runtimes.require(REF, 7)).thenReturn(runtime);
+        var path = java.nio.file.Path.of("../docs/voice-control-p1/voice-command-regression.json");
+        var corpus = json.mapper.readTree(java.nio.file.Files.readString(path));
+        for (var sample : corpus) {
+            String id = java.util.UUID.randomUUID().toString();
+            String text = sample.path("text").asText();
+            var data = (ObjectNode) service.interpret(7, id, request(id, text, hint())).body().get("data");
+            assertEquals(sample.path("status").asText(), data.path("status").asText(), text);
+            if (!sample.has("actions")) continue;
+            var actual = "SEQUENCE".equals(data.path("action").asText()) ? data.path("steps") : json.mapper.createArrayNode().add(data);
+            assertEquals(sample.path("actions").size(), actual.size(), text);
+            for (int i = 0; i < actual.size(); i++) {
+                var step = actual.get(i);
+                assertEquals(sample.path("actions").get(i).asText(), step.path("deviceCommandType").asText(step.path("action").asText()), text);
+                assertEquals(sample.path("targets").get(i).asText(), step.path("targetDeviceCode").asText(""), text);
+            }
         }
     }
 

@@ -170,7 +170,7 @@ def _device_command_receipt(adapter, command: dict, runtime_state: str = "RUNNIN
             "USV_RETURN": {"RETURNING", "RETURNED"},
             "UAV_RESUME": {"REJOINING", "ACTIVE"},
             "USV_RESUME": {"REJOINING", "ACTIVE"},
-            "UAV_LAND": {"STOPPED"},
+            "UAV_LAND": {"RETURNING", "RETURNED"},
             "USV_STOP": {"STOPPED"},
         }
         success = device_status in expected_statuses.get(command_type, set())

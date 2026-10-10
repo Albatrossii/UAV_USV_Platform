@@ -11,7 +11,12 @@ record IntentClassification(
         String message,
         String action,
         String targetDeviceCode,
-        String deviceCommandType) {
+        String deviceCommandType,
+        com.fasterxml.jackson.databind.node.ArrayNode sequenceSteps) {
+    IntentClassification(String status, String reason, String message, String action,
+            String targetDeviceCode, String deviceCommandType) {
+        this(status, reason, message, action, targetDeviceCode, deviceCommandType, null);
+    }
     IntentClassification(String status, String reason, String message, String action) {
         this(status, reason, message, action, null, null);
     }
@@ -33,6 +38,7 @@ record IntentClassification(
                     .put("action", "DEVICE_COMMAND")
                     .put("targetDeviceCode", targetDeviceCode)
                     .put("deviceCommandType", deviceCommandType);
+            if (sequenceSteps != null) steps = sequenceSteps.deepCopy();
             node.put("intent", "COMMAND_SEQUENCE")
                     .put("action", action)
                     .set("steps", steps);

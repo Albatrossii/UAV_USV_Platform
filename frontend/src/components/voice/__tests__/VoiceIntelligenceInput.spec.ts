@@ -449,10 +449,10 @@ describe('VoiceIntelligenceInput', () => {
     await flushPromises()
 
     expect(wrapper.emitted('voiceCandidate')).toBeUndefined()
-    expect(wrapper.text()).toContain('受控双步骤')
+    expect(wrapper.text()).toContain('受控顺序指令')
     expect(wrapper.text()).toContain('开始任务')
     expect(wrapper.text()).toContain('UAV-001 · 无人机悬停')
-    expect(wrapper.text()).toContain('第一步失败时不会下发第二步')
+    expect(wrapper.text()).toContain('任何一步失败都会停止后续步骤')
 
     await wrapper.get('.candidate button').trigger('click')
     expect(wrapper.emitted('candidate')).toEqual([['COMMAND_SEQUENCE', expect.any(String)]])
@@ -713,7 +713,7 @@ describe('VoiceIntelligenceInput refined mode', () => {
     expect(wrapper.emitted('voiceCandidate')).toEqual([[intent, parse.mock.calls[0]![0].requestId, expect.any(Object)]])
     expect(wrapper.emitted('candidate')).toBeUndefined()
     expect(wrapper.find('.refined-preview').exists()).toBe(false)
-    expect(wrapper.text()).toContain('语音识别后自动执行，双步骤按顺序完成')
+    expect(wrapper.text()).toContain('语音识别后自动执行，支持 2–4 步顺序指令')
     await flushPromises()
     expect(wrapper.emitted('voiceCandidate')).toHaveLength(1)
     wrapper.unmount()
@@ -847,7 +847,26 @@ describe('VoiceIntelligenceInput refined mode', () => {
     wrapper.unmount()
   })
 
-  it('rejects a three-step sequence or a sequence without a spoken START', async () => {
+  it('automatically accepts four matched steps including a bounded wait and same-sentence target', async () => {
+    installMicrophone()
+    const parse: VoiceIntelligenceAdapter['parse'] = async input => ({
+      status: 'CANDIDATE', requestId: input.requestId, normalizedText: input.text,
+      provider: 'local-rules', model: 'rules-sequence-v1', confidence: null,
+      action: 'SEQUENCE', intent: 'COMMAND_SEQUENCE', steps: [
+        { index: 0, action: 'START' },
+        { index: 1, action: 'DEVICE_COMMAND', targetDeviceCode: 'UAV-001', deviceCommandType: 'UAV_HOVER' },
+        { index: 2, action: 'WAIT', waitSeconds: 5 },
+        { index: 3, action: 'DEVICE_COMMAND', targetDeviceCode: 'UAV-001', deviceCommandType: 'UAV_RESUME' },
+      ],
+    })
+    const wrapper = mountRefined(speechAdapter('开始任务，让一号机悬停，等待5秒，然后归队', parse))
+    await recordSpeech(wrapper)
+    expect(wrapper.emitted('voiceCandidate')).toEqual([['COMMAND_SEQUENCE', expect.any(String), expect.objectContaining({ sequenceFirstAction: 'START' })]])
+    expect(wrapper.emitted('candidate')).toBeUndefined()
+    wrapper.unmount()
+  })
+
+  it('rejects extra unspoken steps or a sequence without its spoken first action', async () => {
     installMicrophone()
     const parse: VoiceIntelligenceAdapter['parse'] = async input => {
       const parsed = await sequenceParse()(input)

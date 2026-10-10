@@ -22,6 +22,11 @@ import type {
 import type { UnityWindowMessage } from '@/utils/unityWebglProtocol'
 import { unwrapUnityPresentationMessage } from '@/utils/unityWebglProtocol'
 import VoiceIntelligenceInput from './VoiceIntelligenceInput.vue'
+import { sequenceStateValid, voiceStepLabel } from '@/utils/voiceSequence'
+import { deviceActionProgress } from '@/utils/deviceActionProgress'
+import { appendExperimentEvent } from '@/services/experimentArchive'
+import type { VoiceParseResult } from '@/types/voiceIntelligence'
+import type { AlgorithmRuntimeFrame } from '@/types/mission'
 import LocalAsrInput from './LocalAsrInput.vue'
 
 interface UnityPresentationSession {
@@ -34,6 +39,7 @@ const props = withDefaults(defineProps<{
   runtimeHint: VoiceMockRuntimeHint
   unitySession: UnityPresentationSession
   refined?: boolean
+  frame?: AlgorithmRuntimeFrame | null
 }>(), { refined: false })
 const emit = defineEmits<{ presentationMessage: [message: UnityPresentationOutgoing] }>()
 const store = useVoiceControlStore()
@@ -54,6 +60,30 @@ const voiceP1BackendEnabled = import.meta.env.VITE_VOICE_P1_BACKEND === 'true'
 const asrOnly = import.meta.env.VITE_VOICE_ASR_ONLY === 'true'
 const voiceAutomationStatus = ref('')
 const automaticProposalId = ref<string | null>(null)
+const deviceActionStartSequence = ref(0)
+function recordInterpretation(event: { text: string; origin: string; result: VoiceParseResult }) {
+  appendExperimentEvent(authStore.user?.username ?? '', Number(props.runtimeHint.algorithmRunId), {
+    id: `interpretation:${event.result.requestId}`, at: new Date().toISOString(), kind: '语义解析',
+    detail: { text: event.text, origin: event.origin, ...event.result },
+  })
+}
+watch(() => execution.value && JSON.stringify(execution.value), () => {
+  const item = execution.value
+  if (!item || item.runtimeRef !== context.value?.runtimeRef) return
+  appendExperimentEvent(authStore.user?.username ?? '', Number(props.runtimeHint.algorithmRunId), {
+    id: `${item.executionId}:${item.state}:${item.currentStepIndex ?? 0}:${item.sequenceStatus ?? ''}`,
+    at: new Date().toISOString(), kind: '执行回执',
+    detail: { executionId: item.executionId, action: item.action, state: item.state,
+      steps: item.steps, outcome: item.outcome, errorCode: item.errorCode,
+      targetDeviceCode: proposal.value?.plan.targetDeviceCode, deviceCommandType: proposal.value?.plan.deviceCommandType },
+  })
+})
+watch(() => execution.value?.executionId, () => { deviceActionStartSequence.value = props.frame?.sequence ?? 0 })
+const deviceProgress = computed(() => execution.value?.state === 'SUCCEEDED'
+  && execution.value.action === 'DEVICE_COMMAND'
+  && execution.value.proposalId === proposal.value?.proposalId
+  && String(props.frame?.runId) === props.runtimeHint.algorithmRunId
+    ? deviceActionProgress(props.frame, proposal.value?.plan.targetDeviceCode, proposal.value?.plan.deviceCommandType, deviceActionStartSequence.value) : null)
 const voiceActionStartedAt = ref<number | null>(null)
 const voiceActionFinishedAt = ref<number | null>(null)
 const voiceActionIncludesRecognition = ref(false)
@@ -136,7 +166,7 @@ const stateRules: Record<VoiceAction, string[]> = {
   START: ['PREPARED', 'PREVIEW'], PAUSE: ['RUNNING'], RESUME: ['PAUSED'], STOP: ['PREPARED', 'PREVIEW', 'RUNNING', 'PAUSED'],
 }
 const actionLabels: Record<string, string> = {
-  START: '开始任务', PAUSE: '暂停任务', RESUME: '继续任务', STOP: '停止任务', DEVICE_COMMAND: '单设备控制', SEQUENCE: '受控双步骤指令',
+  START: '开始任务', PAUSE: '暂停任务', RESUME: '继续任务', STOP: '停止任务', DEVICE_COMMAND: '单设备控制', SEQUENCE: '受控顺序指令',
   UAV_HOVER: '无人机悬停', UAV_RESUME: '无人机归队', UAV_RETURN: '无人机返航', UAV_LAND: '无人机降落',
   USV_HOLD: '无人艇驻留', USV_RESUME: '无人艇归队', USV_RETURN: '无人艇返航', USV_STOP: '无人艇停止',
 }
@@ -199,7 +229,7 @@ const refinedPlanSteps = computed(() => {
   if (!plan) return []
   if (plan.action === 'SEQUENCE') return (plan.steps ?? []).map(step => ({
     index: step.index,
-    label: step.action === 'START' ? '开始任务' : `${step.targetDeviceCode} · ${actionLabels[step.deviceCommandType ?? ''] ?? step.deviceCommandType}`,
+    label: voiceStepLabel(step),
   }))
   return [{ index: 0, label: plan.action === 'DEVICE_COMMAND'
     ? `${plan.targetDeviceCode} · ${actionLabels[plan.deviceCommandType ?? ''] ?? plan.deviceCommandType}`
@@ -222,7 +252,12 @@ const refinedConfirmReason = computed(() => {
     if (!heartbeatFresh.value) return '设备连接暂时中断，请稍后重试'
     return ''
   }
-  return disabledReason(plan.action === 'SEQUENCE' ? 'START' : plan.action, true)
+  if (plan.action === 'SEQUENCE') {
+    const first = plan.steps?.[0]?.action
+    return first === 'DEVICE_COMMAND' ? context.value?.state === 'RUNNING' ? '' : '任务尚未运行'
+      : first && first !== 'WAIT' ? disabledReason(first, true) : '顺序指令不能以等待开始'
+  }
+  return disabledReason(plan.action, true)
 })
 const displayError = computed(() => errorLabels[errorCode.value] ?? error.value)
 const heartbeatFresh = computed(() => {
@@ -439,18 +474,17 @@ function automaticFrozenPlanValid(plan: VoiceFrozenPlan) {
     || plan.explicitDeviceCodes.some(code => !members.includes(code))) return false
   if (plan.action !== 'SEQUENCE') return ['START', 'PAUSE', 'RESUME', 'STOP'].includes(plan.action)
   const steps = plan.steps
-  if (!context.value?.capabilities.includes('DEVICE_COMMAND') || steps?.length !== 2) return false
-  const [first, second] = steps
-  return first?.index === 0 && first.action === 'START'
-    && !first.targetDeviceCode && !first.deviceCommandType
-    && second?.index === 1 && second.action === 'DEVICE_COMMAND'
-    && ['UAV_HOVER', 'USV_HOLD'].includes(second.deviceCommandType ?? '')
-    && automaticDeviceTargetValid(second.targetDeviceCode, second.deviceCommandType)
+  if (!steps || !sequenceStateValid(steps, context.value?.state ?? '')) return false
+  return steps.every((step, index) => step.index === index && (step.action === 'DEVICE_COMMAND'
+    ? !!context.value?.capabilities.includes('DEVICE_COMMAND') && automaticDeviceTargetValid(step.targetDeviceCode, step.deviceCommandType)
+    : step.action === 'WAIT' ? index > 0 && Number.isInteger(step.waitSeconds) && step.waitSeconds! >= 1 && step.waitSeconds! <= 60
+      : ['START', 'PAUSE', 'RESUME', 'STOP'].includes(step.action) && !step.targetDeviceCode && !step.deviceCommandType))
 }
 
 async function handleRefinedAutomaticVoiceCandidate(
   intent: VoiceIntent,
   interpretationId: string,
+  sequenceFirstAction = 'START',
 ) {
   // Only a newly recognised utterance enters this path. Polling/recovery and
   // manually edited text never auto-confirm a stored proposal.
@@ -474,7 +508,7 @@ async function handleRefinedAutomaticVoiceCandidate(
     const received = Date.parse(context.value?.lastHeartbeatReceivedAt ?? '')
     return Number.isFinite(received) && Date.now() - received <= 5000
   }
-  const action = intent === 'COMMAND_SEQUENCE' ? 'START'
+  const action = intent === 'COMMAND_SEQUENCE' ? sequenceFirstAction === 'DEVICE_COMMAND' ? null : sequenceFirstAction as VoiceAction
     : intent === 'SINGLE_DEVICE_CONTROL' ? null : intent.replace('MISSION_', '') as VoiceAction
   const unavailable = action ? refinedActionDisabledReason(action)
     : runtime.state !== 'RUNNING' || !runtime.capabilities.includes('DEVICE_COMMAND')
@@ -537,10 +571,10 @@ function markVoicePipelineFinished() {
 async function handleAutomaticVoiceCandidate(
   intent: VoiceIntent,
   interpretationId: string,
-  timing: { startedAt: number; asrRequestMs: number; parseMs: number },
+  timing: { startedAt: number; asrRequestMs: number; parseMs: number; sequenceFirstAction?: string },
 ) {
   if (props.refined) {
-    await handleRefinedAutomaticVoiceCandidate(intent, interpretationId)
+    await handleRefinedAutomaticVoiceCandidate(intent, interpretationId, timing.sequenceFirstAction)
     return
   }
   automaticProposalId.value = null
@@ -979,9 +1013,10 @@ onBeforeUnmount(() => {
         @draft-change="invalidateRefinedDraft"
         @candidate="handleVoiceCandidate"
         @voice-candidate="handleAutomaticVoiceCandidate"
+        @interpretation="recordInterpretation"
       >
         <section v-if="activeProposal && proposal && !refinedAutomaticRunning && proposal.proposalId !== refinedAutomaticPlanId" class="refined-plan" aria-label="指令预览">
-          <div class="refined-section-title"><h3>{{ proposal.proposalId === refinedRestoredProposalId ? '恢复的待确认指令' : '指令预览' }}</h3><span>{{ proposal.plan.action === 'SEQUENCE' ? '受控双步骤' : '单步指令' }}</span></div>
+          <div class="refined-section-title"><h3>{{ proposal.proposalId === refinedRestoredProposalId ? '恢复的待确认指令' : '指令预览' }}</h3><span>{{ proposal.plan.action === 'SEQUENCE' ? '受控顺序指令' : '单步指令' }}</span></div>
           <ol>
             <li v-for="step in refinedPlanSteps" :key="step.index"><b>{{ step.index + 1 }}</b><span>{{ step.label }}</span></li>
           </ol>
@@ -998,9 +1033,10 @@ onBeforeUnmount(() => {
       <p v-else class="refined-notice">语音控制尚未启用，请检查服务配置。</p>
 
       <article v-if="execution" class="refined-result" :class="execution.outcome.toLowerCase()" role="status" aria-live="polite">
-        <div class="refined-result-head"><Check v-if="execution.state === 'SUCCEEDED'" :size="16" /><strong>{{ executionLabels[execution.state] ?? execution.state }}</strong></div>
+        <div class="refined-result-head"><Check v-if="execution.state === 'SUCCEEDED'" :size="16" /><strong>{{ deviceProgress ? deviceProgress.complete ? '设备动作已完成' : '指令已接受 · 设备执行中' : executionLabels[execution.state] ?? execution.state }}</strong></div>
+        <p v-if="deviceProgress" class="device-action-progress">{{ deviceProgress.label }}</p>
         <ol v-if="execution.action === 'SEQUENCE' && execution.steps" class="refined-execution-steps">
-          <li v-for="step in execution.steps" :key="step.index"><span>{{ step.action === 'START' ? '开始任务' : `${step.targetDeviceCode} · ${actionLabels[step.deviceCommandType ?? ''] ?? step.deviceCommandType}` }}</span><small>{{ step.state === 'PENDING' ? '等待前一步' : executionLabels[step.state] ?? step.state }}</small></li>
+          <li v-for="step in execution.steps" :key="step.index"><span>{{ voiceStepLabel(step) }}</span><small>{{ step.state === 'PENDING' ? '等待前一步' : executionLabels[step.state] ?? step.state }}</small></li>
         </ol>
         <p v-else>{{ execution.action === 'DEVICE_COMMAND' ? `${proposal?.plan.targetDeviceCode ?? ''} · ${actionLabels[proposal?.plan.deviceCommandType ?? ''] ?? '单设备控制'}` : actionLabels[execution.action] }}</p>
         <p v-if="execution.errorCode" class="refined-notice">{{ errorLabels[execution.errorCode] ?? execution.errorCode }}</p>
@@ -1015,7 +1051,7 @@ onBeforeUnmount(() => {
         <button v-if="!runtimeEnded && context && !presentationBridgeReady && helloAttempts >= 30" class="refined-recovery" type="button" :disabled="loading || responseUnknown" @click="takePresentationBinding">恢复画面连接</button>
       </div>
     </div>
-    <p class="refined-footer">{{ autoExecuteSimulationVoice ? '语音自动执行 · 双步骤依次完成 · 文字编辑后需确认' : '先核对设备编号与动作，再确认执行' }}</p>
+    <p class="refined-footer">{{ autoExecuteSimulationVoice ? '语音自动执行 · 2–4 步依次完成 · 文字编辑后需确认' : '先核对设备编号与动作，再确认执行' }}</p>
   </section>
   <section v-else class="voice-p0">
     <header class="voice-head">
@@ -1064,6 +1100,7 @@ onBeforeUnmount(() => {
       :action-disabled-reason="disabledReason"
       @candidate="handleVoiceCandidate"
       @voice-candidate="handleAutomaticVoiceCandidate"
+      @interpretation="recordInterpretation"
     />
 
     <div class="action-grid">

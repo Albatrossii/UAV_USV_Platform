@@ -6,6 +6,7 @@ import { voiceRecoveryInfo } from '@/services/voiceIntelligenceRecovery'
 import { normalizeVoiceAudioType, VOICE_AUDIO_MAX_BYTES } from '@/api/voiceIntelligence'
 import { evaluateSpeechRecording, SPEECH_RECORDING_HINT, SPEECH_RECORDING_MAX_MS } from '@/utils/speechRecordingPolicy'
 import { normalizeVoiceDeviceTerms } from '@/utils/voiceTranscriptNormalization'
+import { sequenceMatchesSpeech, voiceStepLabel } from '@/utils/voiceSequence'
 import type { VoiceIntent } from '@/types/voiceControl'
 import type {
   VoiceAction,
@@ -36,8 +37,9 @@ const props = withDefaults(defineProps<{
 })
 const emit = defineEmits<{
   candidate: [intent: VoiceIntent, interpretationId?: string]
-  voiceCandidate: [intent: VoiceIntent, interpretationId: string, timing: { startedAt: number; asrRequestMs: number; parseMs: number }]
+  voiceCandidate: [intent: VoiceIntent, interpretationId: string, timing: { startedAt: number; asrRequestMs: number; parseMs: number; sequenceFirstAction?: string }]
   draftChange: []
+  interpretation: [event: { text: string; origin: string; result: VoiceParseResult }]
 }>()
 const adapter = props.adapter ?? createVoiceIntelligenceAdapter()
 const draft = ref('')
@@ -88,7 +90,9 @@ const candidateDisabledReason = computed(() => {
     : '本地解析 MOCK 无后端来源记录，仅可与 P0 MOCK 演示'
   if (candidate.value?.action === 'DEVICE_COMMAND') return ''
   if (candidate.value?.action === 'SEQUENCE') {
-    return props.actionDisabledReason ? props.actionDisabledReason('START') : ''
+    const first = candidate.value.steps?.[0]?.action
+    return first && ['START', 'PAUSE', 'RESUME', 'STOP'].includes(first) && props.actionDisabledReason
+      ? props.actionDisabledReason(first as VoiceAction) : ''
   }
   return candidate.value && props.actionDisabledReason ? props.actionDisabledReason(candidate.value.action) : ''
 })
@@ -135,7 +139,7 @@ const recordingSecondsLeft = computed(() => Math.ceil(evaluateSpeechRecording({ 
 const captureNote = computed(() => stage.value === 'RECORDING' ? `说完再次点击结束；停顿不会截断 · 剩余 ${recordingSecondsLeft.value} 秒`
   : stage.value === 'TRANSCRIBING' ? '请稍候，无需重复录音'
     : permissionPending.value ? '请在浏览器中允许使用麦克风'
-      : automaticSpeech.value ? '语音识别后自动执行，双步骤按顺序完成' : '点击麦克风说话，核对文字后预览指令')
+      : automaticSpeech.value ? '语音识别后自动执行，支持 2–4 步顺序指令' : '点击麦克风说话，核对文字后预览指令')
 const examples = [
   { label: '开始任务 → 一号机悬停', text: '开始任务，然后让一号无人机悬停。' },
   { label: '二号艇驻留', text: '二号无人艇驻留。' },
@@ -223,7 +227,6 @@ const missionIntents: Record<VoiceAction, VoiceIntent> = {
 }
 const deviceCommands = new Set(['UAV_HOVER', 'UAV_RESUME', 'UAV_RETURN', 'UAV_LAND', 'USV_HOLD', 'USV_RESUME', 'USV_RETURN', 'USV_STOP'])
 const taskClause = /(?:开始|启动|执行|暂停|继续|恢复|停止|终止|结束)(?:执行|当前|运行)?任务/u
-const controlledSequence = /^(?:请)?(?:先)?(?:开始(?:执行|当前)?任务|启动(?:当前)?任务|执行任务)[，,。；;]?(?:(?:之后|以后|后|然后|再|接着)[，,。；;]?)?(?:再)?(?:让|请)?(.+)$/u
 function normalizedSpeech(text: string) {
   return normalizeVoiceDeviceTerms(text.trim().replace(/\s+/gu, '')).replace(/[。！？!?，,]+$/, '')
 }
@@ -256,15 +259,9 @@ function safeSpeechCandidate(parsed: VoiceIntentCandidate, input: VoiceParseRequ
   }
   if (parsed.action === 'SEQUENCE') {
     const steps = parsed.steps
-    const deviceClause = normalizedSpeech(input.text).match(controlledSequence)?.[1]
     return props.refined && parsed.intent === 'COMMAND_SEQUENCE' && parsed.provider === 'local-rules'
-      && parsed.model === 'rules-sequence-v1' && props.allowedActions.includes('START')
-      && !!deviceClause && !taskClause.test(deviceClause)
-      && !/之后|以后|然后|接着|再|后|[，,。；;]/u.test(deviceClause)
-      && steps?.length === 2 && steps[0]?.index === 0 && steps[0].action === 'START'
-      && steps[1]?.index === 1 && steps[1].action === 'DEVICE_COMMAND'
-      && ['UAV_HOVER', 'USV_HOLD'].includes(steps[1].deviceCommandType ?? '')
-      && validDeviceTarget(steps[1].targetDeviceCode, steps[1].deviceCommandType, deviceClause)
+      && parsed.model === 'rules-sequence-v1' && !!steps
+      && sequenceMatchesSpeech(input.text, steps, validDeviceTarget)
   }
   // Automatic fleet commands must be explicit; in particular an inferred STOP
   // must never broaden an ambiguous utterance into a whole-fleet shutdown.
@@ -274,6 +271,7 @@ function safeSpeechCandidate(parsed: VoiceIntentCandidate, input: VoiceParseRequ
     && (parsed.action !== 'STOP' || parsed.provider === 'local-rules')
 }
 function handleParsed(parsed: VoiceParseResult, input: VoiceParseRequest, origin: 'speech' | 'manual') {
+  emit('interpretation', { text: input.text, origin, result: parsed })
   result.value = parsed
   stage.value = parsed.status === 'NOT_ACTIONABLE' ? 'NEEDS_CLARIFICATION' : parsed.status
   if (parsed.status !== 'CANDIDATE') {
@@ -300,12 +298,13 @@ function handleParsed(parsed: VoiceParseResult, input: VoiceParseRequest, origin
     speechFallbackAvailable.value = false
     message.value = parsed.action === 'DEVICE_COMMAND'
       ? '单设备指令已识别，正在校验目标和动作并自动提交至本地仿真。'
-      : parsed.action === 'SEQUENCE' ? '受控双步骤已识别，正在自动串行执行；第一步失败时不会下发第二步。'
+      : parsed.action === 'SEQUENCE' ? '顺序指令已识别，前一步完成后继续；第一步失败时不会下发第二步。'
         : '明确口令已识别，正在自动提交仿真动作并等待回执。'
     emit('voiceCandidate', parsed.intent, parsed.requestId, {
       startedAt: origin === 'speech' ? audioPipelineStartedAt ?? Date.now() : Date.now(),
       asrRequestMs: origin === 'speech' ? audioRequestElapsedMs : 0,
       parseMs: parseElapsedMs,
+      sequenceFirstAction: parsed.steps?.[0]?.action,
     })
   } else {
     speechFallbackAvailable.value = origin === 'speech'
@@ -698,13 +697,13 @@ onBeforeUnmount(() => window.clearInterval(elapsedTimer))
       <button type="button" :disabled="busy || coolingDown" @click="discardPending">放弃本页恢复（新请求可能重复计费）</button>
     </div>
     <article v-if="candidate" class="candidate">
-      <div><strong>{{ candidate.action === 'DEVICE_COMMAND' ? candidate.targetDeviceCode : candidate.action === 'SEQUENCE' ? '受控双步骤' : candidate.action }}</strong><small>{{ candidate.action === 'DEVICE_COMMAND' ? candidate.deviceCommandType : candidate.intent }}</small></div>
+      <div><strong>{{ candidate.action === 'DEVICE_COMMAND' ? candidate.targetDeviceCode : candidate.action === 'SEQUENCE' ? '受控顺序指令' : candidate.action }}</strong><small>{{ candidate.action === 'DEVICE_COMMAND' ? candidate.deviceCommandType : candidate.intent }}</small></div>
       <ol v-if="candidate.action === 'SEQUENCE'" class="sequence-preview">
         <li v-for="step in candidate.steps" :key="step.index">
-          {{ step.action === 'START' ? '开始任务' : `${step.targetDeviceCode} · ${step.deviceCommandType === 'UAV_HOVER' ? '无人机悬停' : '无人艇驻留'}` }}
+          {{ voiceStepLabel(step) }}
         </li>
       </ol>
-      <p>{{ candidate.action === 'DEVICE_COMMAND' ? '请核对设备类型、编号和动作；修改后的文字需确认执行。' : candidate.action === 'SEQUENCE' ? '两个步骤将严格串行执行；第一步失败时不会下发第二步。' : '请核对识别文字与动作；不符合预期时修改文字后重新解析。' }}</p>
+      <p>{{ candidate.action === 'DEVICE_COMMAND' ? '请核对设备类型、编号和动作；修改后的文字需确认执行。' : candidate.action === 'SEQUENCE' ? '各步骤严格串行执行；任何一步失败都会停止后续步骤。' : '请核对识别文字与动作；不符合预期时修改文字后重新解析。' }}</p>
       <button type="button" :disabled="submissionDisabled || !!candidateDisabledReason" :title="candidateDisabledReason" @click="submitCandidate">
         {{ candidateDisabledReason || '生成待确认提案' }}
       </button>

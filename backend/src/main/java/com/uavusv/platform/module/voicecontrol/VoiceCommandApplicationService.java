@@ -126,6 +126,7 @@ public class VoiceCommandApplicationService {
                     boolean sequence = "COMMAND_SEQUENCE".equals(intent);
                     String action = targeted ? "DEVICE_COMMAND" : sequence ? "SEQUENCE" : intent.substring(8);
                     IntentService.TargetedCandidate target = null;
+                    com.fasterxml.jackson.databind.node.ArrayNode sequenceSteps = null;
                     if (interpretationId != null) {
                         if (intents == null) throw VoiceFailure.conflict("VOICE_INTERPRETATION_INVALID");
                         try {
@@ -147,17 +148,16 @@ public class VoiceCommandApplicationService {
                         if (intents == null || interpretationId == null)
                             throw VoiceFailure.conflict("VOICE_INTERPRETATION_INVALID");
                         try {
-                            target = intents.requireSequenceCandidate(u, interpretationId, c);
+                            sequenceSteps = intents.requireSequenceSteps(u, interpretationId, c);
                         } catch (com.uavusv.platform.module.voiceintelligence.AsrFailure e) {
                             throw VoiceFailure.conflict(e.code);
                         }
-                        r.check(c, "START", true);
-                        r.checkSequenceTarget(c, target.deviceCode(), target.commandType());
+                        VoiceSequencePolicy.validate(sequenceSteps, c, r);
                     } else {
                         r.check(c, action, true);
                     }
                     var p = sequence
-                            ? newSequenceProposal(c, u, target.deviceCode(), target.commandType())
+                            ? newSequenceProposal(c, u, sequenceSteps)
                             : targeted
                             ? newProposal(c, u, action, target.deviceCode(), target.commandType())
                             : newProposal(c, u, action);
@@ -208,12 +208,7 @@ public class VoiceCommandApplicationService {
                     if (targeted)
                         r.checkDevice(c, plan.path("targetDeviceCode").asText(), plan.path("deviceCommandType").asText());
                     else if (sequence) {
-                        JsonNode step = plan.path("steps").path(1);
-                        r.check(c, "START", true);
-                        r.checkSequenceTarget(
-                                c,
-                                step.path("targetDeviceCode").asText(),
-                                step.path("deviceCommandType").asText());
+                        VoiceSequencePolicy.validate(plan.path("steps"), c, r);
                     }
                     else r.check(c, plan.path("action").asText(), true);
                     if (s.busy(c.path("_id").asText()))
@@ -313,7 +308,7 @@ public class VoiceCommandApplicationService {
     }
 
     private ObjectNode newSequenceProposal(
-            ObjectNode c, long u, String targetDeviceCode, String deviceCommandType) {
+            ObjectNode c, long u, com.fasterxml.jackson.databind.node.ArrayNode steps) {
         var plan = j.object();
         plan.put("runtimeRef", c.path("runtimeRef").asText())
                 .put("runtimeGeneration", c.path("runtimeGeneration").asText());
@@ -322,14 +317,7 @@ public class VoiceCommandApplicationService {
         plan.put("action", "SEQUENCE");
         plan.set("explicitDeviceCodes", c.path("_members").deepCopy());
         plan.put("policyVersion", POLICY_VERSION);
-        var steps = j.mapper.createArrayNode();
-        steps.addObject().put("index", 0).put("action", "START");
-        steps.addObject()
-                .put("index", 1)
-                .put("action", "DEVICE_COMMAND")
-                .put("targetDeviceCode", targetDeviceCode)
-                .put("deviceCommandType", deviceCommandType);
-        plan.set("steps", steps);
+        plan.set("steps", steps.deepCopy());
         var p = j.object();
         String id = VoiceJson.uuid();
         p.put("_id", id)

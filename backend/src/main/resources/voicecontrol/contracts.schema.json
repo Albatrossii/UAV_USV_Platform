@@ -64,16 +64,80 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "index": { "type": "integer", "minimum": 0, "maximum": 3 },
-        "action": { "type": "string", "enum": ["START", "DEVICE_COMMAND"] },
-        "targetDeviceCode": { "type": "string", "minLength": 1, "maxLength": 96, "pattern": "^[A-Za-z0-9_.:-]+$" },
-        "deviceCommandType": { "type": "string", "enum": ["UAV_HOVER", "USV_HOLD"] }
+        "index": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 3
+        },
+        "action": {
+          "type": "string",
+          "enum": [
+            "START",
+            "PAUSE",
+            "RESUME",
+            "STOP",
+            "DEVICE_COMMAND",
+            "WAIT"
+          ]
+        },
+        "targetDeviceCode": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 96,
+          "pattern": "^[A-Za-z0-9_.:-]+$"
+        },
+        "deviceCommandType": {
+          "type": "string",
+          "enum": [
+            "UAV_HOVER",
+            "UAV_RESUME",
+            "UAV_RETURN",
+            "UAV_LAND",
+            "USV_HOLD",
+            "USV_RESUME",
+            "USV_RETURN",
+            "USV_STOP"
+          ]
+        },
+        "waitSeconds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 60
+        }
       },
-      "required": ["index", "action"],
+      "required": [
+        "index",
+        "action"
+      ],
       "allOf": [
         {
-          "if": { "properties": { "action": { "const": "DEVICE_COMMAND" } } },
-          "then": { "required": ["targetDeviceCode", "deviceCommandType"] }
+          "if": {
+            "properties": {
+              "action": {
+                "const": "DEVICE_COMMAND"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "targetDeviceCode",
+              "deviceCommandType"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "action": {
+                "const": "WAIT"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "waitSeconds"
+            ]
+          }
         }
       ]
     },
@@ -81,17 +145,115 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "index": { "type": "integer", "minimum": 0, "maximum": 3 },
-        "action": { "type": "string", "enum": ["START", "DEVICE_COMMAND"] },
-        "targetDeviceCode": { "type": "string", "minLength": 1, "maxLength": 96, "pattern": "^[A-Za-z0-9_.:-]+$" },
-        "deviceCommandType": { "type": "string", "enum": ["UAV_HOVER", "USV_HOLD"] },
-        "state": { "type": "string", "enum": ["PENDING", "QUEUED", "DISPATCHED", "ACCEPTED", "EXECUTING", "SUCCEEDED", "REJECTED", "FAILED", "INVALIDATED", "TIMED_OUT"] },
-        "executionId": { "anyOf": [{ "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" }, { "type": "null" }] },
-        "errorCode": { "anyOf": [{ "type": "string", "pattern": "^[A-Z][A-Z0-9_]{0,63}$" }, { "type": "null" }] },
-        "startedAt": { "type": "string", "format": "date-time" },
-        "completedAt": { "type": "string", "format": "date-time" }
+        "index": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 3
+        },
+        "action": {
+          "type": "string",
+          "enum": [
+            "START",
+            "PAUSE",
+            "RESUME",
+            "STOP",
+            "DEVICE_COMMAND",
+            "WAIT"
+          ]
+        },
+        "targetDeviceCode": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 96,
+          "pattern": "^[A-Za-z0-9_.:-]+$"
+        },
+        "deviceCommandType": {
+          "type": "string",
+          "enum": [
+            "UAV_HOVER",
+            "UAV_RESUME",
+            "UAV_RETURN",
+            "UAV_LAND",
+            "USV_HOLD",
+            "USV_RESUME",
+            "USV_RETURN",
+            "USV_STOP"
+          ]
+        },
+        "state": {
+          "type": "string",
+          "enum": [
+            "PENDING",
+            "QUEUED",
+            "DISPATCHED",
+            "ACCEPTED",
+            "EXECUTING",
+            "SUCCEEDED",
+            "REJECTED",
+            "FAILED",
+            "INVALIDATED",
+            "TIMED_OUT"
+          ]
+        },
+        "executionId": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "errorCode": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[A-Z][A-Z0-9_]{0,63}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "startedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "completedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "waitSeconds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 60
+        }
       },
-      "required": ["index", "action", "state", "executionId", "errorCode"]
+      "required": [
+        "index",
+        "action",
+        "state",
+        "executionId",
+        "errorCode"
+      ],
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "action": {
+                "const": "WAIT"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "waitSeconds"
+            ]
+          }
+        }
+      ]
     },
     "Plan": {
       "type": "object",
@@ -134,7 +296,16 @@
         },
         "deviceCommandType": {
           "type": "string",
-          "enum": ["UAV_HOVER", "UAV_RESUME", "UAV_RETURN", "UAV_LAND", "USV_HOLD", "USV_RESUME", "USV_RETURN", "USV_STOP"]
+          "enum": [
+            "UAV_HOVER",
+            "UAV_RESUME",
+            "UAV_RETURN",
+            "UAV_LAND",
+            "USV_HOLD",
+            "USV_RESUME",
+            "USV_RETURN",
+            "USV_STOP"
+          ]
         },
         "explicitDeviceCodes": {
           "type": "array",
@@ -153,9 +324,11 @@
         },
         "steps": {
           "type": "array",
-          "items": { "$ref": "#/definitions/SequenceStepPlan" },
+          "items": {
+            "$ref": "#/definitions/SequenceStepPlan"
+          },
           "minItems": 2,
-          "maxItems": 2
+          "maxItems": 4
         }
       },
       "required": [
@@ -169,15 +342,39 @@
       ],
       "allOf": [
         {
-          "if": { "properties": { "action": { "const": "DEVICE_COMMAND" } } },
+          "if": {
+            "properties": {
+              "action": {
+                "const": "DEVICE_COMMAND"
+              }
+            }
+          },
           "then": {
-            "required": ["targetDeviceCode", "deviceCommandType"],
-            "properties": { "explicitDeviceCodes": { "minItems": 1, "maxItems": 1 } }
+            "required": [
+              "targetDeviceCode",
+              "deviceCommandType"
+            ],
+            "properties": {
+              "explicitDeviceCodes": {
+                "minItems": 1,
+                "maxItems": 1
+              }
+            }
           }
         },
         {
-          "if": { "properties": { "action": { "const": "SEQUENCE" } } },
-          "then": { "required": ["steps"] }
+          "if": {
+            "properties": {
+              "action": {
+                "const": "SEQUENCE"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "steps"
+            ]
+          }
         }
       ]
     },
@@ -483,16 +680,28 @@
           "format": "date-time",
           "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]{1,6})?Z$"
         },
-        "currentStepIndex": { "type": "integer", "minimum": 0, "maximum": 3 },
+        "currentStepIndex": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 3
+        },
         "sequenceStatus": {
           "type": "string",
-          "enum": ["EXECUTING_START", "WAITING_STEP_PRECONDITION", "EXECUTING_DEVICE_COMMAND", "SUCCEEDED", "FAILED"]
+          "enum": [
+            "EXECUTING_START",
+            "WAITING_STEP_PRECONDITION",
+            "EXECUTING_DEVICE_COMMAND",
+            "SUCCEEDED",
+            "FAILED"
+          ]
         },
         "steps": {
           "type": "array",
-          "items": { "$ref": "#/definitions/SequenceStepExecution" },
+          "items": {
+            "$ref": "#/definitions/SequenceStepExecution"
+          },
           "minItems": 2,
-          "maxItems": 2
+          "maxItems": 4
         }
       },
       "required": [
@@ -680,8 +889,20 @@
           }
         },
         {
-          "if": { "properties": { "action": { "const": "SEQUENCE" } } },
-          "then": { "required": ["currentStepIndex", "sequenceStatus", "steps"] }
+          "if": {
+            "properties": {
+              "action": {
+                "const": "SEQUENCE"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "currentStepIndex",
+              "sequenceStatus",
+              "steps"
+            ]
+          }
         }
       ]
     },

@@ -17,5 +17,6 @@ export function normalizeVoiceDeviceTerms(text: string) {
   return DEVICE_TERM_CORRECTIONS.reduce(
     (value, [source, replacement]) => value.split(source).join(replacement),
     text,
-  )
+  ).replace(/(第?[一二三四五六七八九十\d]+)(?:号|架)(?:飞机|机)(?!无人)/gu, '$1号无人机')
+    .replace(/(第?[一二三四五六七八九十\d]+)(?:号|艘)(?:船|艇)(?!无人)/gu, '$1号无人艇')
 }

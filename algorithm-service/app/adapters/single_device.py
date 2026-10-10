@@ -68,6 +68,11 @@ class SingleDeviceControlAdapter(AlgorithmAdapter):
     def control_device(self, device_code: str, command_type: str) -> str:
         code = str(device_code).strip().upper().replace("_", "-")
         command = str(command_type).strip().upper()
+        # A landing command must reach an actual helipad, never freeze in midair.
+        if command == "UAV_LAND":
+            if not self._return_infrastructure or code not in self._parking_slots:
+                raise ValueError("LANDING_SITE_UNAVAILABLE: 未配置原场景停机坪，不能执行降落")
+            command = "UAV_RETURN"
         if command not in self.SUPPORTED_COMMANDS:
             raise ValueError("unsupported single-device command")
         if command.startswith("UAV_") and not code.startswith("UAV-"):
@@ -122,7 +127,7 @@ class SingleDeviceControlAdapter(AlgorithmAdapter):
             if previous is not None and previous.mode in {"RETURNING", "RETURNED"}:
                 return previous.mode
             mode = "RETURNING"
-        elif command in {"UAV_LAND", "USV_STOP"}:
+        elif command == "USV_STOP":
             mode = "STOPPED"
         else:
             mode = "HOLDING"

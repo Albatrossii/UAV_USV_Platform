@@ -864,7 +864,7 @@ describe('VoiceP0ControlPanel refined controls', () => {
     await flushPromises()
     expect(store.propose).toHaveBeenCalledExactlyOnceWith('COMMAND_SEQUENCE', interpretationId)
     expect(store.confirm).not.toHaveBeenCalled()
-    expect(wrapper.get('.refined-plan').text()).toContain('受控双步骤')
+    expect(wrapper.get('.refined-plan').text()).toContain('受控顺序指令')
     expect(wrapper.findAll('.refined-plan li b').map(badge => badge.text())).toEqual(['1', '2'])
     expect(wrapper.findAll('.refined-plan li > span').map(step => step.text())).toEqual(['开始任务', 'UAV-001 · 无人机悬停'])
     expect(wrapper.get('.refined-confirm').attributes('disabled')).toBeUndefined()

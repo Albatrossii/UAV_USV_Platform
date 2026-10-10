@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from app.adapters.base import AlgorithmAdapter
 from app.adapters.single_device import SingleDeviceControlAdapter
 from app.schemas import AgentFrame, RuntimeFrame
@@ -95,6 +97,14 @@ def test_hold_overrides_only_selected_device() -> None:
     assert untouched.x == 2.0
     assert frame.algorithmCode == "ESCORT_GUARD_SINGLE_DEVICE"
     assert frame.metrics["operatorControlledDeviceCount"] == 1
+
+
+def test_landing_without_a_real_helipad_is_rejected_not_frozen_over_water() -> None:
+    subject = adapter()
+    subject.step()
+    with pytest.raises(ValueError, match="LANDING_SITE_UNAVAILABLE"):
+        subject.control_device("UAV-001", "UAV_LAND")
+    assert subject.step().agents[0].status == "ACTIVE"
 
 
 def test_resume_rejoins_live_algorithm_without_jumping() -> None:

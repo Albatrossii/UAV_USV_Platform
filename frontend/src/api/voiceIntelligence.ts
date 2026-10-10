@@ -104,13 +104,16 @@ function isCandidate(value: unknown): value is VoiceIntentCandidate {
       const sequence = value as unknown as Record<string, unknown>
       if (!hasOnlyKeys(sequence, ['status', 'requestId', 'intent', 'action', 'steps', 'normalizedText', 'confidence', 'provider', 'model'])
         || sequence.status !== 'CANDIDATE' || sequence.intent !== 'COMMAND_SEQUENCE' || sequence.action !== 'SEQUENCE'
-        || sequence.confidence !== null || !Array.isArray(sequence.steps) || sequence.steps.length !== 2) return false
-      const [start, device] = sequence.steps as Array<Record<string, unknown>>
-      return hasOnlyKeys(start!, ['index', 'action']) && start!.index === 0 && start!.action === 'START'
-        && hasOnlyKeys(device!, ['index', 'action', 'targetDeviceCode', 'deviceCommandType'])
-        && device!.index === 1 && device!.action === 'DEVICE_COMMAND'
-        && boundedString(device!.targetDeviceCode, 1, 96)
-        && (device!.deviceCommandType === 'UAV_HOVER' || device!.deviceCommandType === 'USV_HOLD')
+        || sequence.confidence !== null || !Array.isArray(sequence.steps) || sequence.steps.length < 2 || sequence.steps.length > 4) return false
+      return (sequence.steps as Array<Record<string, unknown>>).every((step, index) => {
+        if (!step || step.index !== index) return false
+        if (step.action === 'WAIT') return index > 0 && hasOnlyKeys(step, ['index', 'action', 'waitSeconds'])
+          && Number.isInteger(step.waitSeconds) && Number(step.waitSeconds) >= 1 && Number(step.waitSeconds) <= 60
+        if (typeof step.action === 'string' && actions.has(step.action)) return hasOnlyKeys(step, ['index', 'action'])
+        return step.action === 'DEVICE_COMMAND' && hasOnlyKeys(step, ['index', 'action', 'targetDeviceCode', 'deviceCommandType'])
+          && boundedString(step.targetDeviceCode, 1, 96) && typeof step.deviceCommandType === 'string'
+          && deviceCommands.has(step.deviceCommandType) && step.targetDeviceCode.startsWith(`${step.deviceCommandType.slice(0, 3)}-`)
+      })
     })()
 }
 

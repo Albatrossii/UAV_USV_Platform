@@ -246,6 +246,15 @@ public class RuntimeContextRegistry {
                         bump(c);
                     }
                     c.put("latestFrameSequence", sequence);
+                    var states = json.object();
+                    for (var agent : frame.path("agents")) {
+                        String code = agent.path("deviceCode").asText();
+                        var state = states.putObject(code);
+                        state.put("motionState", agent.path("status").asText("ACTIVE"));
+                        JsonNode override = frame.path("metrics").path("deviceControlStates").path(code);
+                        if (override.isObject()) state.setAll((ObjectNode) override);
+                    }
+                    c.set("_deviceStates", states);
                     store.save("voice_runtime_context", c);
                     return null;
                 });
