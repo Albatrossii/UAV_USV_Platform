@@ -198,6 +198,34 @@ class IntentServiceTests {
     }
 
     @Test
+    void contextualHoldRepairPreservesIdentityAndNeverGuessesOutsideWholeCommand() {
+        ObjectNode runtime = runtime("DEVICE_COMMAND");
+        runtime.put("_algorithmCode", "GB_SFLA_CS");
+        runtime.putArray("_members").add("UAV-001").add("USV-001").add("USV-002");
+        when(runtimes.require(REF, 7)).thenReturn(runtime);
+        for (String text : java.util.List.of("一号无人挺住。留。", "一号无人艇住留", "一号无人艇驻。 留。", "请让1号无人挺驻留")) {
+            String id = java.util.UUID.randomUUID().toString();
+            var data = (ObjectNode) service.interpret(7, id, request(id, text, hint())).body().get("data");
+            assertEquals("CANDIDATE", data.path("status").asText(), text);
+            assertEquals("USV-001", data.path("targetDeviceCode").asText(), text);
+            assertEquals("USV_HOLD", data.path("deviceCommandType").asText(), text);
+            assertTrue(data.path("normalizedText").asText().contains("无人艇驻留"));
+        }
+        for (String text : java.util.List.of("挺住", "无人挺住。留。", "一号设备住留", "一号无人机住。留。",
+                "不要让一号无人挺住。留。", "一号无人挺住。留？", "一号无人挺住留吗", "如果一号无人挺住留",
+                "一号无人挺住留或者返航", "一号无人挺住留返航", "一号无人挺归队", "一号无人挺返航",
+                "开始任务，然后一号无人挺住。留。", "一号无人挺住留，然后二号无人艇驻留",
+                "报告一号无人挺住留", "一号和二号无人挺住留", "一号无人挺住。不要。留。", "99号无人挺住留")) {
+            String id = java.util.UUID.randomUUID().toString();
+            var data = (ObjectNode) service.interpret(7, id, request(id, text, hint())).body().get("data");
+            assertNotEquals("CANDIDATE", data.path("status").asText(), text);
+        }
+        String secondId = java.util.UUID.randomUUID().toString();
+        var second = (ObjectNode) service.interpret(7, secondId, request(secondId, "请让二号无人挺住。留。", hint())).body().get("data");
+        assertEquals("USV-002", second.path("targetDeviceCode").asText());
+    }
+
+    @Test
     void controlledTwoStepSequenceProducesFrozenCandidate() {
         ObjectNode runtime = runtime("START");
         ((com.fasterxml.jackson.databind.node.ArrayNode) runtime.path("capabilities"))

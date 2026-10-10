@@ -5,7 +5,7 @@ import { createVoiceIntelligenceAdapter } from '@/services/voiceIntelligence'
 import { voiceRecoveryInfo } from '@/services/voiceIntelligenceRecovery'
 import { normalizeVoiceAudioType, VOICE_AUDIO_MAX_BYTES } from '@/api/voiceIntelligence'
 import { evaluateSpeechRecording, SPEECH_RECORDING_HINT, SPEECH_RECORDING_MAX_MS } from '@/utils/speechRecordingPolicy'
-import { normalizeVoiceDeviceTerms } from '@/utils/voiceTranscriptNormalization'
+import { normalizeVoiceDeviceTerms, repairContextualUsvHold } from '@/utils/voiceTranscriptNormalization'
 import { sequenceMatchesSpeech, voiceStepLabel } from '@/utils/voiceSequence'
 import type { VoiceIntent } from '@/types/voiceControl'
 import type {
@@ -296,8 +296,11 @@ function handleParsed(parsed: VoiceParseResult, input: VoiceParseRequest, origin
     result.value = null
     automaticallySubmitted.value = true
     speechFallbackAvailable.value = false
+    const repairedHold = repairContextualUsvHold(input.text)
     message.value = parsed.action === 'DEVICE_COMMAND'
-      ? '单设备指令已识别，正在校验目标和动作并自动提交至本地仿真。'
+      ? repairedHold !== input.text
+        ? `已按完整驻留口令纠错为“${normalizedSpeech(repairedHold)}”；正在校验并提交至 ${parsed.targetDeviceCode}。`
+        : '单设备指令已识别，正在校验目标和动作并自动提交至本地仿真。'
       : parsed.action === 'SEQUENCE' ? '顺序指令已识别，前一步完成后继续；第一步失败时不会下发第二步。'
         : '明确口令已识别，正在自动提交仿真动作并等待回执。'
     emit('voiceCandidate', parsed.intent, parsed.requestId, {

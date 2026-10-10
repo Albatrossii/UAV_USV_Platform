@@ -80,6 +80,10 @@ public class IntentService {
             Pattern.compile("(?:开始|启动|执行|暂停|继续|恢复|停止|终止|结束)(?:执行|当前|运行)?任务");
     // Conservative ASR repairs for unmistakable device nouns. Keep aligned
     // with the browser's automatic-execution guard; do not add fuzzy matching.
+    // Keep exactly aligned with repairContextualUsvHold in the frontend.
+    // Only a complete affirmative HOLD utterance may repair this ASR confusion.
+    private static final Pattern CONTEXTUAL_USV_HOLD = Pattern.compile(
+            "^((?:请)?(?:让)?第?(?:[一二三四五六七八九十]|[0-9]{1,3})号)无人[艇挺庭廷停][驻住][。．.,，]{0,2}留([。！!，,]*)$");
     private static final Map<String, String> DEVICE_TERM_CORRECTIONS =
             Map.ofEntries(
                     Map.entry("艇无人", "无人艇"),
@@ -591,7 +595,10 @@ public class IntentService {
     }
 
     private static String normalize(String text) {
-        String normalized = text.trim().replaceAll("\\s+", "").replaceAll("[。！？!?，,]+$", "");
+        String normalized = text.trim().replaceAll("\\s+", "");
+        // Match before trimming final punctuation, so questions cannot become commands.
+        normalized = CONTEXTUAL_USV_HOLD.matcher(normalized).replaceFirst("$1无人艇驻留$2");
+        normalized = normalized.replaceAll("[。！？!?，,]+$", "");
         for (Map.Entry<String, String> correction : DEVICE_TERM_CORRECTIONS.entrySet())
             normalized = normalized.replace(correction.getKey(), correction.getValue());
         normalized = normalized.replaceAll("(第?[一二三四五六七八九十\\d]+)(?:号|架)(?:飞机|机)(?!无人)", "$1号无人机")

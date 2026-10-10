@@ -768,6 +768,37 @@ describe('VoiceIntelligenceInput refined mode', () => {
     wrapper.unmount()
   })
 
+  it.each([
+    ['一号无人挺住。留。', 'USV-001', 'USV_HOLD', true],
+    ['一号无人挺住。留。', 'UAV-001', 'UAV_HOVER', false],
+    ['一号无人挺住。留。', 'USV-002', 'USV_HOLD', false],
+    ['一号无人挺住。留。', 'USV-001', 'USV_RETURN', false],
+    ['不要一号无人挺住。留。', 'USV-001', 'USV_HOLD', false],
+    ['一号无人挺住。留？', 'USV-001', 'USV_HOLD', false],
+    ['一号无人挺住留返航', 'USV-001', 'USV_HOLD', false],
+    ['开始任务，然后一号无人挺住。留。', 'USV-001', 'USV_HOLD', false],
+  ])('bounds contextual repair and automatic dispatch: %s / %s / %s', async (text, targetDeviceCode, deviceCommandType, automatic) => {
+    installMicrophone()
+    const parse = vi.fn<VoiceIntelligenceAdapter['parse']>(async input => ({
+      status: 'CANDIDATE', action: 'DEVICE_COMMAND', intent: 'SINGLE_DEVICE_CONTROL',
+      requestId: input.requestId, normalizedText: '一号无人艇驻留',
+      targetDeviceCode, deviceCommandType,
+      provider: 'local-rules', model: 'rules-v1', confidence: null,
+    }))
+    const wrapper = mountRefined(speechAdapter(text, parse))
+    await wrapper.setProps({ deviceCodes: ['UAV-001', 'USV-001', 'USV-002'] })
+    await recordSpeech(wrapper)
+    expect((wrapper.get('textarea').element as HTMLTextAreaElement).value).toBe(text)
+    if (automatic) {
+      expect(wrapper.emitted('voiceCandidate')).toHaveLength(1)
+      expect(wrapper.text()).toContain('已按完整驻留口令纠错')
+      expect(wrapper.text()).toContain('USV-001')
+    } else {
+      expect(wrapper.emitted('voiceCandidate')).toBeUndefined()
+    }
+    wrapper.unmount()
+  })
+
   const sequenceParse = (targetDeviceCode = 'UAV-001', deviceCommandType: 'UAV_HOVER' | 'USV_HOLD' = 'UAV_HOVER'): VoiceIntelligenceAdapter['parse'] => async input => ({
     status: 'CANDIDATE', action: 'SEQUENCE', intent: 'COMMAND_SEQUENCE', requestId: input.requestId,
     normalizedText: input.text, provider: 'local-rules', model: 'rules-sequence-v1', confidence: null,
