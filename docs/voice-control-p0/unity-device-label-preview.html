@@ -1,0 +1,211 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Unity 设备编号与语音控制预览</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #031417;
+      --panel: rgba(5, 29, 34, .94);
+      --panel-2: rgba(8, 39, 45, .9);
+      --line: rgba(105, 219, 205, .22);
+      --cyan: #67e7d9;
+      --cyan-soft: #a9ddd7;
+      --muted: #668f8b;
+      --yellow: #ffc95c;
+      --red: #ff7268;
+      --green: #57e397;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-width: 1180px;
+      min-height: 100vh;
+      overflow: hidden;
+      color: #d6f3ef;
+      background:
+        radial-gradient(circle at 52% 45%, rgba(29, 93, 102, .18), transparent 34%),
+        linear-gradient(145deg, #031216 0%, #061f24 58%, #031216 100%);
+      font: 12px/1.45 Inter, "Microsoft YaHei", system-ui, sans-serif;
+    }
+    button, input { font: inherit; }
+    .app { display: grid; height: 100vh; grid-template-rows: 56px 1fr; }
+    header {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 0 18px; border-bottom: 1px solid var(--line);
+      background: rgba(2, 15, 18, .96); box-shadow: 0 10px 30px rgba(0,0,0,.18);
+    }
+    .brand { display: flex; align-items: center; gap: 12px; }
+    .brand-mark {
+      display: grid; width: 34px; height: 34px; place-items: center;
+      color: #001b1d; background: var(--cyan); border-radius: 8px; font-weight: 900;
+      transform: rotate(-8deg);
+    }
+    .brand strong { display: block; color: #f0fffd; letter-spacing: .04em; }
+    .brand small { color: var(--muted); letter-spacing: .12em; }
+    .top-status { display: flex; gap: 16px; align-items: center; color: var(--muted); }
+    .online { color: var(--cyan); }
+    .dot { display: inline-block; width: 7px; height: 7px; margin-right: 6px; border-radius: 50%; background: currentColor; box-shadow: 0 0 10px currentColor; }
+
+    main { display: grid; min-height: 0; grid-template-columns: 210px minmax(620px, 1fr) 345px; gap: 10px; padding: 10px; }
+    .panel { border: 1px solid var(--line); border-radius: 8px; background: var(--panel); box-shadow: 0 16px 40px rgba(0,0,0,.2); }
+    .left, .right { min-height: 0; overflow: auto; }
+    .left { padding: 14px; }
+    h2, h3, p { margin: 0; }
+    h2 { color: #effffc; font-size: 14px; }
+    h3 { color: #dff8f4; font-size: 12px; }
+    .eyebrow { color: var(--muted); font-size: 9px; letter-spacing: .14em; }
+    .section { display: grid; gap: 9px; padding: 14px 0; border-bottom: 1px solid rgba(105,219,205,.12); }
+    .stat-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; }
+    .stat { padding: 8px; border: 1px solid rgba(105,219,205,.14); border-radius: 5px; background: rgba(16,53,59,.45); }
+    .stat b { display: block; color: var(--cyan); font-size: 17px; }
+    .stat span { color: var(--muted); font-size: 9px; }
+    .toggle { display: flex; justify-content: space-between; align-items: center; color: var(--cyan-soft); }
+    .switch { width: 31px; height: 17px; padding: 2px; border-radius: 10px; background: rgba(103,231,217,.28); border: 1px solid rgba(103,231,217,.42); }
+    .switch::after { content: ""; display: block; width: 11px; height: 11px; margin-left: 14px; border-radius: 50%; background: var(--cyan); box-shadow: 0 0 8px rgba(103,231,217,.75); }
+    .legend { display: grid; gap: 8px; color: #8fb7b2; }
+    .legend i { display: inline-block; width: 10px; height: 10px; margin-right: 7px; border-radius: 2px; }
+
+    .stage-panel { display: grid; min-height: 0; grid-template-rows: 42px 1fr 42px; overflow: hidden; }
+    .stage-head, .stage-foot { display: flex; align-items: center; justify-content: space-between; padding: 0 12px; background: rgba(3,20,24,.94); }
+    .stage-head { border-bottom: 1px solid var(--line); }
+    .stage-foot { border-top: 1px solid var(--line); color: var(--muted); }
+    .badge { padding: 4px 8px; border: 1px solid rgba(103,231,217,.28); border-radius: 4px; color: var(--cyan); background: rgba(18,67,68,.28); font-size: 10px; }
+    .stage {
+      position: relative; overflow: hidden;
+      background:
+        linear-gradient(rgba(83,176,175,.045) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(83,176,175,.045) 1px, transparent 1px),
+        radial-gradient(circle at 50% 50%, rgba(17, 74, 82, .35), transparent 58%),
+        #17333f;
+      background-size: 42px 42px, 42px 42px, auto, auto;
+    }
+    .stage::before {
+      content: "UNITY WEBGL · GLOBAL ENU"; position: absolute; top: 12px; right: 14px;
+      color: rgba(167,218,212,.42); font: 700 9px monospace; letter-spacing: .12em;
+    }
+    .route { position: absolute; height: 1px; transform-origin: left; background: linear-gradient(90deg, rgba(103,231,217,.15), rgba(103,231,217,.55), rgba(103,231,217,.06)); }
+    .r1 { left: 26%; top: 32%; width: 43%; transform: rotate(20deg); }
+    .r2 { left: 28%; top: 67%; width: 38%; transform: rotate(-24deg); }
+    .r3 { left: 49%; top: 34%; width: 27%; transform: rotate(77deg); }
+    .vehicle { position: absolute; width: 126px; height: 54px; transform: translate(-50%,-50%); cursor: pointer; }
+    .vehicle .icon { position: absolute; left: 47px; top: 19px; width: 29px; height: 20px; filter: drop-shadow(0 4px 5px rgba(0,0,0,.55)); transition: transform .2s; }
+    .vehicle:hover .icon { transform: scale(1.12); }
+    .uav .icon::before, .uav .icon::after { content: ""; position: absolute; background: #0a181c; }
+    .uav .icon::before { left: 12px; top: 1px; width: 6px; height: 18px; border: 2px solid #79ded4; border-radius: 2px; background: #f44c41; }
+    .uav .icon::after { left: 0; top: 7px; width: 29px; height: 6px; border-top: 2px solid #79ded4; border-bottom: 2px solid #79ded4; }
+    .usv .icon { width: 34px; height: 17px; border: 2px solid #e8fbf8; background: #213a40; clip-path: polygon(0 0, 88% 0, 100% 50%, 79% 100%, 9% 100%); }
+    .usv .icon::after { content: ""; position: absolute; left: 13px; top: 3px; width: 9px; height: 7px; background: #ff5449; }
+    .device-label {
+      position: absolute; left: 80px; top: 4px; min-width: 98px; padding: 5px 7px;
+      border: 1px solid rgba(103,231,217,.42); border-radius: 4px;
+      background: rgba(2,18,22,.88); box-shadow: 0 5px 16px rgba(0,0,0,.38);
+      backdrop-filter: blur(5px); white-space: nowrap;
+    }
+    .device-label::before { content: ""; position: absolute; left: -10px; top: 19px; width: 10px; height: 1px; background: rgba(103,231,217,.55); }
+    .device-label strong { display: block; color: #effffc; font: 700 10px monospace; letter-spacing: .04em; }
+    .device-label small { display: flex; justify-content: space-between; gap: 8px; color: var(--muted); font-size: 8px; }
+    .device-label em { color: var(--green); font-style: normal; }
+    .selected .device-label { border-color: var(--yellow); box-shadow: 0 0 0 1px rgba(255,201,92,.14), 0 5px 20px rgba(0,0,0,.45); }
+    .selected .device-label strong { color: var(--yellow); }
+    .selected .icon { filter: drop-shadow(0 0 7px rgba(255,201,92,.75)); }
+    .hovering .device-label em { color: var(--yellow); }
+    .u1 { left: 28%; top: 30%; }.u2 { left: 55%; top: 19%; }.u3 { left: 73%; top: 41%; }
+    .s1 { left: 30%; top: 68%; }.s2 { left: 57%; top: 61%; }.s3 { left: 76%; top: 76%; }
+    .target { position: absolute; left: 51%; top: 44%; width: 38px; height: 24px; transform: rotate(28deg); border: 2px solid var(--red); background: rgba(255,75,68,.28); clip-path: polygon(0 0, 82% 0, 100% 50%, 82% 100%, 0 100%, 9% 50%); box-shadow: 0 0 18px rgba(255,75,68,.25); }
+    .target span { position: absolute; left: 42px; top: -6px; padding: 3px 5px; color: #ffaaa3; border: 1px solid rgba(255,114,104,.35); background: rgba(30,9,10,.76); font: 8px monospace; white-space: nowrap; }
+    .scale { position: absolute; left: 14px; bottom: 12px; color: rgba(190,231,226,.52); font: 9px monospace; }
+    .scale::before { content: ""; display: inline-block; width: 65px; margin-right: 6px; border-top: 2px solid rgba(190,231,226,.52); }
+
+    .right { display: grid; align-content: start; gap: 10px; padding: 12px; }
+    .run-card, .voice-card, .step-card { padding: 11px; border: 1px solid rgba(103,231,217,.18); border-radius: 6px; background: var(--panel-2); }
+    .run-line { display: flex; justify-content: space-between; margin-top: 8px; color: var(--muted); font-size: 9px; }
+    .run-line b { color: var(--cyan); }
+    .voice-card { display: grid; gap: 9px; }
+    .mic { display: flex; justify-content: space-between; align-items: center; }
+    .mic button { padding: 6px 10px; color: #031619; border: 0; border-radius: 4px; background: var(--cyan); font-weight: 700; }
+    .transcript { padding: 9px; color: #e8fcf9; border: 1px solid rgba(103,231,217,.25); border-radius: 4px; background: rgba(2,15,18,.7); }
+    .provider { color: var(--muted); font: 8px monospace; }
+    .steps { display: grid; gap: 8px; margin-top: 9px; }
+    .step { display: grid; grid-template-columns: 24px 1fr auto; align-items: center; gap: 8px; padding: 8px; border-radius: 5px; background: rgba(4,21,25,.72); }
+    .step i { display: grid; width: 22px; height: 22px; place-items: center; border: 1px solid currentColor; border-radius: 50%; color: var(--green); font-style: normal; font-weight: 800; }
+    .step strong { display: block; color: #e7faf7; font-size: 10px; }
+    .step small { color: var(--muted); font-size: 8px; }
+    .step mark { padding: 2px 5px; color: var(--green); background: rgba(87,227,151,.1); border-radius: 3px; font-size: 8px; }
+    .step.active { border: 1px solid rgba(255,201,92,.3); }
+    .step.active i, .step.active mark { color: var(--yellow); }
+    .step.active mark { background: rgba(255,201,92,.1); }
+    .control { display: grid; gap: 7px; grid-template-columns: 1fr 1fr; }
+    .control button { padding: 8px; color: var(--cyan-soft); border: 1px solid rgba(103,231,217,.22); border-radius: 4px; background: rgba(5,27,31,.7); }
+    .control .primary { color: #051719; background: var(--cyan); font-weight: 800; }
+    .hint { color: #719b96; font-size: 9px; }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <header>
+      <div class="brand"><div class="brand-mark">✈</div><div><strong>UAV-USV 协同仿真平台</strong><small>VOICE CONTROL · DEVICE ID PREVIEW</small></div></div>
+      <div class="top-status"><span>3 UAV · 3 USV · 1 航船目标</span><span class="online"><i class="dot"></i>UNITY WEBGL ONLINE</span></div>
+    </header>
+
+    <main>
+      <aside class="panel left">
+        <h2>场景配置</h2><span class="eyebrow">V3 PROTOCOL</span>
+        <section class="section">
+          <h3>智能战场仿真护航</h3>
+          <div class="stat-grid"><div class="stat"><b>3</b><span>UAV 数量</span></div><div class="stat"><b>3</b><span>USV 数量</span></div></div>
+        </section>
+        <section class="section">
+          <div class="toggle"><span>常驻显示设备编号</span><i class="switch"></i></div>
+          <div class="toggle"><span>显示运行状态</span><i class="switch"></i></div>
+          <div class="toggle"><span>标签避让</span><i class="switch"></i></div>
+        </section>
+        <section class="section legend">
+          <h3>编号图例</h3>
+          <span><i style="background:#ff5449"></i>UAV-001～003 无人机</span>
+          <span><i style="background:#dcefeb"></i>USV-001～003 无人艇</span>
+          <span><i style="background:#ffc95c"></i>语音指令当前目标</span>
+          <span><i style="background:#57e397"></i>在线 / 命令成功</span>
+        </section>
+      </aside>
+
+      <section class="panel stage-panel">
+        <div class="stage-head"><h2>算法仿真 · 设备编号覆盖层</h2><span class="badge">LABEL LAYER · ON</span></div>
+        <div class="stage">
+          <i class="route r1"></i><i class="route r2"></i><i class="route r3"></i>
+          <div class="vehicle uav u1 selected hovering"><div class="icon"></div><div class="device-label"><strong>UAV-001</strong><small><span>无人机</span><em>悬停中</em></small></div></div>
+          <div class="vehicle uav u2"><div class="icon"></div><div class="device-label"><strong>UAV-002</strong><small><span>无人机</span><em>ONLINE</em></small></div></div>
+          <div class="vehicle uav u3"><div class="icon"></div><div class="device-label"><strong>UAV-003</strong><small><span>无人机</span><em>ONLINE</em></small></div></div>
+          <div class="vehicle usv s1"><div class="icon"></div><div class="device-label"><strong>USV-001</strong><small><span>无人艇</span><em>ONLINE</em></small></div></div>
+          <div class="vehicle usv s2"><div class="icon"></div><div class="device-label"><strong>USV-002</strong><small><span>无人艇</span><em>ONLINE</em></small></div></div>
+          <div class="vehicle usv s3"><div class="icon"></div><div class="device-label"><strong>USV-003</strong><small><span>无人艇</span><em>ONLINE</em></small></div></div>
+          <div class="target"><span>THREAT-001</span></div>
+          <div class="scale">100 m</div>
+        </div>
+        <div class="stage-foot"><span><i class="dot online"></i>阶段：协同护航</span><span>语音目标：<b style="color:var(--yellow)">UAV-001</b></span><span>帧 238 · 10 FPS</span></div>
+      </section>
+
+      <aside class="panel right">
+        <div><h2>语音任务控制</h2><span class="eyebrow">ALIYUN ASR / CONTROLLED SEQUENCE</span></div>
+        <section class="run-card"><h3><i class="dot online"></i>运行 1791526706095</h3><div class="run-line"><span>任务状态 <b>RUNNING</b></span><span>设备在线 <b>6 / 6</b></span></div></section>
+        <section class="voice-card">
+          <div class="mic"><h3>语音 / 文本指令</h3><button>◉ 开始录音</button></div>
+          <div class="transcript">开始任务后，一号无人机悬停。</div>
+          <span class="provider">aliyun-asr · aliyun-shiyinshi-v1 · 置信校验通过</span>
+        </section>
+        <section class="step-card">
+          <h3>受控双步骤执行</h3>
+          <div class="steps">
+            <div class="step"><i>✓</i><div><strong>开始任务</strong><small>权威运行态已变更为 RUNNING</small></div><mark>成功</mark></div>
+            <div class="step active"><i>2</i><div><strong>UAV-001 · 无人机悬停</strong><small>Unity 中目标编号同步高亮</small></div><mark>执行中</mark></div>
+          </div>
+        </section>
+        <div class="control"><button>取消提案</button><button class="primary">确认并执行</button></div>
+        <p class="hint">编号使用算法 canonical deviceCode；标签位于 Unity 覆盖层，缩放与旋转时保持面向屏幕，并对语音当前目标使用黄色高亮。</p>
+      </aside>
+    </main>
+  </div>
+</body>
+</html>

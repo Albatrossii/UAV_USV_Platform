@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, onActivated, onBeforeUnmount, onDeactivated, onMounted, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { AudioLines, Check, RefreshCw, ShieldCheck, X } from '@lucide/vue'
 
@@ -15,6 +15,7 @@ import type {
   UnityPresentationOutgoing,
   VoiceAction,
   VoiceIntent,
+  VoiceFrozenPlan,
   VoiceMockOutcome,
   VoiceMockRuntimeHint,
 } from '@/types/voiceControl'
@@ -29,7 +30,11 @@ interface UnityPresentationSession {
   sceneRevision: number
 }
 
-const props = defineProps<{ runtimeHint: VoiceMockRuntimeHint; unitySession: UnityPresentationSession }>()
+const props = withDefaults(defineProps<{
+  runtimeHint: VoiceMockRuntimeHint
+  unitySession: UnityPresentationSession
+  refined?: boolean
+}>(), { refined: false })
 const emit = defineEmits<{ presentationMessage: [message: UnityPresentationOutgoing] }>()
 const store = useVoiceControlStore()
 const authStore = useAuthStore()
@@ -131,7 +136,7 @@ const stateRules: Record<VoiceAction, string[]> = {
   START: ['PREPARED', 'PREVIEW'], PAUSE: ['RUNNING'], RESUME: ['PAUSED'], STOP: ['PREPARED', 'PREVIEW', 'RUNNING', 'PAUSED'],
 }
 const actionLabels: Record<string, string> = {
-  START: '开始任务', PAUSE: '暂停任务', RESUME: '继续任务', STOP: '停止任务', DEVICE_COMMAND: '单设备控制',
+  START: '开始任务', PAUSE: '暂停任务', RESUME: '继续任务', STOP: '停止任务', DEVICE_COMMAND: '单设备控制', SEQUENCE: '受控双步骤指令',
   UAV_HOVER: '无人机悬停', UAV_RESUME: '无人机归队', UAV_RETURN: '无人机返航', UAV_LAND: '无人机降落',
   USV_HOLD: '无人艇驻留', USV_RESUME: '无人艇归队', USV_RETURN: '无人艇返航', USV_STOP: '无人艇停止',
 }
@@ -169,6 +174,56 @@ const secondsLeft = computed(() => proposal.value
   ? Math.max(0, Math.ceil((Date.parse(proposal.value.expiresAt) - now.value) / 1000))
   : 0)
 const activeProposal = computed(() => proposal.value?.status === 'AWAITING_CONFIRMATION')
+const refinedDraftRevision = ref(0)
+const refinedAcceptedRevision = ref(-1)
+const refinedAcceptedProposalId = ref('')
+const refinedPreparing = ref(false)
+const refinedConfirming = ref(false)
+const refinedCancelling = ref(false)
+const refinedRestoredProposalId = ref('')
+const refinedPrepareError = ref('')
+const refinedAutomaticRunning = ref(false)
+const refinedAutomaticPlanId = ref('')
+const automaticInterpretations = new Set<string>()
+let panelActive = true
+const commandInFlight = computed(() => !!execution.value
+  && !['SUCCEEDED', 'REJECTED', 'FAILED', 'INVALIDATED'].includes(execution.value.state))
+const refinedProposalStale = computed(() => proposal.value?.proposalId !== refinedAcceptedProposalId.value
+  || refinedDraftRevision.value !== refinedAcceptedRevision.value)
+const refinedProposalReady = computed(() => !!activeProposal.value && !refinedProposalStale.value && secondsLeft.value > 0)
+const refinedSubmissionDisabled = computed(() => loading.value || refinedPreparing.value || refinedConfirming.value || refinedCancelling.value
+  || recoveryPending.value || responseUnknown.value || !recoveryAvailable.value
+  || !activeVoiceContext.value || commandInFlight.value)
+const refinedPlanSteps = computed(() => {
+  const plan = proposal.value?.plan
+  if (!plan) return []
+  if (plan.action === 'SEQUENCE') return (plan.steps ?? []).map(step => ({
+    index: step.index,
+    label: step.action === 'START' ? '开始任务' : `${step.targetDeviceCode} · ${actionLabels[step.deviceCommandType ?? ''] ?? step.deviceCommandType}`,
+  }))
+  return [{ index: 0, label: plan.action === 'DEVICE_COMMAND'
+    ? `${plan.targetDeviceCode} · ${actionLabels[plan.deviceCommandType ?? ''] ?? plan.deviceCommandType}`
+    : actionLabels[plan.action] ?? plan.action }]
+})
+const refinedConfirmReason = computed(() => {
+  const plan = proposal.value?.plan
+  if (authStore.user?.role !== 'ADMIN' || authStore.loading) return '当前账号没有控制权限'
+  if (refinedSubmissionDisabled.value) return responseUnknown.value ? '上次请求结果待核对，请勿重复执行' : '正在同步指令状态，请稍候'
+  if (!activeProposal.value || !plan) return '请先预览指令'
+  if (secondsLeft.value === 0) return '指令已过期，请重新预览'
+  if (refinedProposalStale.value) return '文字或场景已变化，请重新预览指令'
+  if (plan.runtimeRef !== context.value?.runtimeRef || plan.runtimeGeneration !== context.value?.runtimeGeneration
+    || plan.contextVersion !== context.value?.contextVersion || plan.stateVersion !== context.value?.stateVersion) {
+    return '运行状态已变化，请重新预览指令'
+  }
+  if (plan.explicitDeviceCodes.some(code => !props.runtimeHint.deviceCodes.includes(code))) return '目标设备已变化，请重新预览'
+  if (plan.action === 'DEVICE_COMMAND') {
+    if (!context.value?.capabilities.includes('DEVICE_COMMAND') || context.value.state !== 'RUNNING') return '当前运行不接受单设备控制'
+    if (!heartbeatFresh.value) return '设备连接暂时中断，请稍后重试'
+    return ''
+  }
+  return disabledReason(plan.action === 'SEQUENCE' ? 'START' : plan.action, true)
+})
 const displayError = computed(() => errorLabels[errorCode.value] ?? error.value)
 const heartbeatFresh = computed(() => {
   const heartbeat = context.value?.lastHeartbeatReceivedAt
@@ -216,9 +271,16 @@ const autoExecuteSimulationVoice = computed(() => voiceP1PreparationEnabled
   && authStore.user?.role === 'ADMIN'
   && context.value?.runtimeScope === 'MISSION_CENTER'
   && context.value.runtimeKind === 'STANDALONE_ALGORITHM'
-  && context.value.executionBackend === 'PYTHON_SIMULATION')
+  && context.value.executionBackend === 'PYTHON_SIMULATION'
+  && context.value.protocolVersion === 'algorithm.command.v1')
 
-function disabledReason(action: VoiceAction) {
+function isLocalSimulationResume(action: VoiceAction | null) {
+  return action === 'RESUME'
+    && context.value?.runtimeKind === 'STANDALONE_ALGORITHM'
+    && context.value.executionBackend === 'PYTHON_SIMULATION'
+}
+
+function disabledReason(action: VoiceAction, ignoreActiveProposal = false) {
   if (recoveryPending.value || responseUnknown.value) return '请先核对上一次写请求的权威结果'
   if (!context.value) return '没有后端登记的运行实例'
   if (context.value.protocolVersion !== 'algorithm.command.v1') return '旧协议实例不支持 P0 指令'
@@ -227,44 +289,240 @@ function disabledReason(action: VoiceAction) {
   if (!heartbeatFresh.value) return '算法心跳超过 5 秒或尚未建立'
   if (props.runtimeHint.deviceCodes.length === 0) return '尚未生成可冻结的设备集合'
   if (props.runtimeHint.deviceCodes.length > 200) return '设备集合超过 P0 上限 200'
-  const localSimulationResume = action === 'RESUME'
-    && context.value.runtimeKind === 'STANDALONE_ALGORITHM'
-    && context.value.executionBackend === 'PYTHON_SIMULATION'
   if (action === 'START' && !context.value.sceneReady) return 'Unity 场景尚未就绪'
-  if (action === 'RESUME' && !localSimulationResume && !context.value.sceneReady) return 'Unity 场景尚未就绪'
-  if (activeProposal.value || (execution.value && !['SUCCEEDED', 'REJECTED', 'FAILED', 'INVALIDATED'].includes(execution.value.state))) return '请先处理当前指令'
+  if (action === 'RESUME' && !isLocalSimulationResume(action) && !context.value.sceneReady) return 'Unity 场景尚未就绪'
+  if ((!ignoreActiveProposal && activeProposal.value) || commandInFlight.value) return '请先处理当前指令'
   return ''
+}
+
+function refinedActionDisabledReason(action: VoiceAction) {
+  return disabledReason(action, refinedProposalStale.value || secondsLeft.value === 0)
+}
+
+function invalidateRefinedDraft() {
+  if (!props.refined) return
+  refinedDraftRevision.value++
+  refinedPrepareError.value = ''
+}
+
+async function recoverRefinedRequest() {
+  const revision = refinedDraftRevision.value
+  const operator = operatorScope.value
+  await store.recover()
+  const recovered = proposal.value
+  if (revision !== refinedDraftRevision.value || operator !== operatorScope.value
+    || !recovered || recovered.status !== 'AWAITING_CONFIRMATION'
+    || recovered.plan.runtimeRef !== context.value?.runtimeRef
+    || recovered.plan.runtimeGeneration !== context.value?.runtimeGeneration) return
+  refinedAcceptedProposalId.value = recovered.proposalId
+  refinedAcceptedRevision.value = revision
+  refinedRestoredProposalId.value = recovered.proposalId
+  // Recovery may return a proposal whose confirmation never reached the server.
+  // Show it for explicit recovery; do not silently resume automatic execution.
+  refinedAutomaticPlanId.value = ''
+}
+
+watch([
+  operatorScope,
+  () => context.value?.runtimeRef,
+  () => context.value?.runtimeGeneration,
+  () => context.value?.contextVersion,
+  () => context.value?.stateVersion,
+  () => props.runtimeHint.algorithmRunId,
+  () => props.unitySession.unityInstanceId,
+  () => props.unitySession.sceneRevision,
+  () => props.runtimeHint.deviceCodes.join('|'),
+], invalidateRefinedDraft, { flush: 'sync' })
+
+async function prepareRefinedCandidate(intent: VoiceIntent, interpretationId?: string) {
+  if (refinedSubmissionDisabled.value || authStore.user?.role !== 'ADMIN' || authStore.loading) return
+  const revision = refinedDraftRevision.value
+  const operator = operatorScope.value
+  refinedPreparing.value = true
+  refinedPrepareError.value = ''
+  try {
+    // Editing invalidates the UI immediately; cancel the old frozen proposal
+    // with its existing guard before requesting a replacement. Never clear
+    // recovery journals or manufacture a new key for an unknown write result.
+    if (activeProposal.value && secondsLeft.value > 0) {
+      if (!refinedProposalStale.value) return
+      await store.cancel()
+      if (proposal.value?.status !== 'CANCELLED' || responseUnknown.value) return
+    }
+    if (revision !== refinedDraftRevision.value || operator !== operatorScope.value) return
+    const previousId = proposal.value?.proposalId
+    await propose(intent, interpretationId)
+    const expectedAction = intent === 'SINGLE_DEVICE_CONTROL' ? 'DEVICE_COMMAND'
+      : intent === 'COMMAND_SEQUENCE' ? 'SEQUENCE' : intent.replace('MISSION_', '')
+    const frozen = proposal.value
+    if (revision !== refinedDraftRevision.value || operator !== operatorScope.value) return
+    if (!frozen || frozen.proposalId === previousId || frozen.status !== 'AWAITING_CONFIRMATION'
+      || frozen.plan.action !== expectedAction
+      || frozen.plan.runtimeRef !== context.value?.runtimeRef
+      || frozen.plan.runtimeGeneration !== context.value?.runtimeGeneration
+      || (interpretationId ? frozen.interpretationId !== interpretationId : !voiceP0MockEnabled)) {
+      refinedPrepareError.value = displayError.value || '没有获得匹配的确认计划，请重新预览。'
+      return
+    }
+    refinedAcceptedProposalId.value = frozen.proposalId
+    refinedAcceptedRevision.value = revision
+    refinedRestoredProposalId.value = ''
+  } finally {
+    refinedPreparing.value = false
+  }
 }
 
 async function propose(intent: VoiceIntent, interpretationId?: string, automaticVoice = false) {
   await store.propose(intent, interpretationId)
-  const expectedAction = intent === 'SINGLE_DEVICE_CONTROL' ? 'DEVICE_COMMAND' : intent.replace('MISSION_', '')
+  const expectedAction = intent === 'SINGLE_DEVICE_CONTROL'
+    ? 'DEVICE_COMMAND'
+    : intent === 'COMMAND_SEQUENCE' ? 'SEQUENCE' : intent.replace('MISSION_', '')
   const proposalMatchesVoice = Boolean(interpretationId
     && proposal.value?.status === 'AWAITING_CONFIRMATION'
     && proposal.value.interpretationId === interpretationId
     && proposal.value.plan.action === expectedAction
     && proposal.value.plan.runtimeRef === context.value?.runtimeRef
     && proposal.value.plan.runtimeGeneration === context.value?.runtimeGeneration)
-  dialogOpen.value = !automaticVoice && proposal.value?.status === 'AWAITING_CONFIRMATION'
+  dialogOpen.value = !props.refined && !automaticVoice && proposal.value?.status === 'AWAITING_CONFIRMATION'
   return !automaticVoice || proposalMatchesVoice
 }
 
 async function confirm() {
-  await store.confirm()
-  if (execution.value) dialogOpen.value = false
+  if (props.refined && (refinedConfirmReason.value || !proposal.value
+    || Date.parse(proposal.value.expiresAt) <= Date.now())) return
+  if (props.refined) refinedConfirming.value = true
+  try {
+    await store.confirm()
+    if (execution.value) dialogOpen.value = false
+  } finally { refinedConfirming.value = false }
 }
 
 async function cancel() {
+  if (props.refined && (refinedSubmissionDisabled.value || !activeProposal.value)) return
   if (secondsLeft.value === 0) {
     dialogOpen.value = false
     return
   }
-  await store.cancel()
-  if (proposal.value?.status === 'CANCELLED') dialogOpen.value = false
+  if (props.refined) refinedCancelling.value = true
+  try {
+    await store.cancel()
+    if (proposal.value?.status === 'CANCELLED') dialogOpen.value = false
+  } finally { refinedCancelling.value = false }
 }
 
 async function handleVoiceCandidate(intent: VoiceIntent, interpretationId?: string) {
-  await propose(intent, interpretationId)
+  if (refinedAutomaticRunning.value || !panelActive) return
+  refinedAutomaticPlanId.value = ''
+  voiceAutomationStatus.value = ''
+  if (props.refined) await prepareRefinedCandidate(intent, interpretationId)
+  else await propose(intent, interpretationId)
+}
+
+function automaticDeviceTargetValid(target: string | undefined, command: string | undefined) {
+  if (!target || !props.runtimeHint.deviceCodes.includes(target)) return false
+  return target.startsWith('UAV-')
+    ? ['UAV_HOVER', 'UAV_RESUME', 'UAV_RETURN', 'UAV_LAND'].includes(command ?? '')
+    : target.startsWith('USV-') && ['USV_HOLD', 'USV_RESUME', 'USV_RETURN', 'USV_STOP'].includes(command ?? '')
+}
+
+function automaticFrozenPlanValid(plan: VoiceFrozenPlan) {
+  if (plan.action === 'DEVICE_COMMAND') {
+    return automaticDeviceTargetValid(plan.targetDeviceCode, plan.deviceCommandType)
+      && plan.explicitDeviceCodes.length === 1
+      && plan.explicitDeviceCodes[0] === plan.targetDeviceCode
+  }
+  // Fleet actions must retain exactly the frozen current fleet. The backend
+  // remains authoritative and checks the same plan hash/version at submission.
+  const members = props.runtimeHint.deviceCodes
+  if (!members.length || plan.explicitDeviceCodes.length !== members.length
+    || new Set(plan.explicitDeviceCodes).size !== members.length
+    || plan.explicitDeviceCodes.some(code => !members.includes(code))) return false
+  if (plan.action !== 'SEQUENCE') return ['START', 'PAUSE', 'RESUME', 'STOP'].includes(plan.action)
+  const steps = plan.steps
+  if (!context.value?.capabilities.includes('DEVICE_COMMAND') || steps?.length !== 2) return false
+  const [first, second] = steps
+  return first?.index === 0 && first.action === 'START'
+    && !first.targetDeviceCode && !first.deviceCommandType
+    && second?.index === 1 && second.action === 'DEVICE_COMMAND'
+    && ['UAV_HOVER', 'USV_HOLD'].includes(second.deviceCommandType ?? '')
+    && automaticDeviceTargetValid(second.targetDeviceCode, second.deviceCommandType)
+}
+
+async function handleRefinedAutomaticVoiceCandidate(
+  intent: VoiceIntent,
+  interpretationId: string,
+) {
+  // Only a newly recognised utterance enters this path. Polling/recovery and
+  // manually edited text never auto-confirm a stored proposal.
+  if (!panelActive || !autoExecuteSimulationVoice.value || !interpretationId
+    || refinedAutomaticRunning.value || refinedSubmissionDisabled.value) return
+  const runtime = context.value!
+  const key = `${operatorScope.value}:${runtime.runtimeRef}:${runtime.runtimeGeneration}:${interpretationId}`
+  if (automaticInterpretations.has(key)) return
+  automaticInterpretations.add(key)
+  if (automaticInterpretations.size > 128) automaticInterpretations.delete(automaticInterpretations.values().next().value!)
+
+  const revision = refinedDraftRevision.value
+  const operator = operatorScope.value
+  const stillCurrent = () => panelActive && autoExecuteSimulationVoice.value
+    && revision === refinedDraftRevision.value && operator === operatorScope.value
+    && context.value?.runtimeRef === runtime.runtimeRef
+    && context.value?.runtimeGeneration === runtime.runtimeGeneration
+    && context.value?.contextVersion === runtime.contextVersion
+    && context.value?.stateVersion === runtime.stateVersion
+  const freshHeartbeat = () => {
+    const received = Date.parse(context.value?.lastHeartbeatReceivedAt ?? '')
+    return Number.isFinite(received) && Date.now() - received <= 5000
+  }
+  const action = intent === 'COMMAND_SEQUENCE' ? 'START'
+    : intent === 'SINGLE_DEVICE_CONTROL' ? null : intent.replace('MISSION_', '') as VoiceAction
+  const unavailable = action ? refinedActionDisabledReason(action)
+    : runtime.state !== 'RUNNING' || !runtime.capabilities.includes('DEVICE_COMMAND')
+      ? '当前运行不接受单设备控制' : ''
+  // Match the backend/manual RESUME policy: display evidence has a short TTL,
+  // but a live paused local runner can resume while Unity catches up. Recheck
+  // the current context after proposal creation, not a captured readiness flag.
+  const sceneAllowsAction = () => !!context.value
+    && (context.value.sceneReady || isLocalSimulationResume(action))
+  if (!sceneAllowsAction() || !freshHeartbeat() || unavailable) {
+    voiceAutomationStatus.value = `未自动执行：${!sceneAllowsAction() ? '仿真场景尚未就绪' : unavailable || '设备连接暂时中断'}。请检查后重新录音。`
+    return
+  }
+
+  refinedAutomaticRunning.value = true
+  voiceAutomationStatus.value = '语音已识别，正在校验设备与动作并自动执行…'
+  try {
+    const previousProposalId = proposal.value?.proposalId
+    await prepareRefinedCandidate(intent, interpretationId)
+    const frozen = proposal.value
+    if (frozen?.interpretationId === interpretationId) refinedAutomaticPlanId.value = frozen.proposalId
+    if (!stillCurrent() || !sceneAllowsAction() || !freshHeartbeat() || refinedConfirmReason.value
+      || !frozen || frozen.proposalId === previousProposalId || frozen.interpretationId !== interpretationId
+      || !Number.isFinite(Date.parse(frozen.expiresAt)) || Date.parse(frozen.expiresAt) <= Date.now()
+      || !automaticFrozenPlanValid(frozen.plan)) {
+      voiceAutomationStatus.value = responseUnknown.value
+        ? '指令结果待核对，已停止自动执行；请核对上次请求，不要重复下发。'
+        : `未自动执行：${refinedPrepareError.value || refinedConfirmReason.value || '目标、动作或运行状态校验未通过'}。`
+      return
+    }
+    automaticProposalId.value = frozen.proposalId
+    await confirm()
+    const currentExecution = execution.value
+    const matched = currentExecution?.proposalId === frozen.proposalId
+      && currentExecution.runtimeRef === frozen.plan.runtimeRef
+      && currentExecution.runtimeGeneration === frozen.plan.runtimeGeneration
+      && currentExecution.action === frozen.plan.action
+    voiceAutomationStatus.value = matched
+      ? '语音指令已自动下发，执行结果见下方。'
+      : responseUnknown.value
+        ? '执行结果待核对，已停止自动重试；请核对上次请求。'
+        : `自动执行未提交：${displayError.value || '请检查当前运行状态后重新录音'}。`
+  } catch {
+    // An unknown write is never retried automatically with a new key.
+    voiceAutomationStatus.value = '自动执行未完成，请核对上次请求结果，不要重复下发。'
+  } finally {
+    refinedAutomaticRunning.value = false
+  }
 }
 
 function markVoicePipelineFinished() {
@@ -281,6 +539,10 @@ async function handleAutomaticVoiceCandidate(
   interpretationId: string,
   timing: { startedAt: number; asrRequestMs: number; parseMs: number },
 ) {
+  if (props.refined) {
+    await handleRefinedAutomaticVoiceCandidate(intent, interpretationId)
+    return
+  }
   automaticProposalId.value = null
   voiceActionStartedAt.value = timing.startedAt
   voiceActionFinishedAt.value = null
@@ -414,8 +676,16 @@ function emitHello() {
 }
 
 async function requestPresentationProbe(forceFrameResync = false) {
-  if (runtimeEnded.value || !presentationBridgeEnabled || !presentationBridgeReady.value || presentationRequestInFlight
+  if (!panelActive || runtimeEnded.value || !presentationBridgeEnabled || !presentationBridgeReady.value || presentationRequestInFlight
+    || !props.unitySession.connected || props.unitySession.sceneRevision < 1
     || presentationChallenge.value || !context.value || !presentationBinding.value?.bindingId) return
+  const identity = {
+    runtimeRef: context.value.runtimeRef,
+    runtimeGeneration: context.value.runtimeGeneration,
+    bindingId: presentationBinding.value.bindingId,
+    unityInstanceId: props.unitySession.unityInstanceId,
+    sceneRevision: props.unitySession.sceneRevision,
+  }
   const frameRequired = execution.value?.state === 'SUCCEEDED'
     && ['START', 'RESUME'].includes(execution.value.action)
     && (execution.value.presentationStatus === 'PENDING'
@@ -427,12 +697,21 @@ async function requestPresentationProbe(forceFrameResync = false) {
     const kind = frameRequired ? 'FRAME_APPLIED' : 'SCENE_READY'
     const challenge = await store.requestPresentationChallenge(kind, frameRequired ? execution.value!.executionId : null)
     if (!challenge) return
+    if (!panelActive || runtimeEnded.value || !presentationBridgeReady.value || !props.unitySession.connected
+      || context.value?.runtimeRef !== identity.runtimeRef
+      || context.value?.runtimeGeneration !== identity.runtimeGeneration
+      || presentationBinding.value?.bindingId !== identity.bindingId
+      || presentationBinding.value?.runtimeGeneration !== identity.runtimeGeneration
+      || props.unitySession.unityInstanceId !== identity.unityInstanceId
+      || props.unitySession.sceneRevision !== identity.sceneRevision
+      || challenge.runtimeGeneration !== identity.runtimeGeneration || challenge.bindingId !== identity.bindingId) {
+      // Discard only this stale response, never a newer session's challenge.
+      if (store.presentationChallenge?.requestId === challenge.requestId) store.presentationChallenge = null
+      return
+    }
     emit('presentationMessage', {
       type: 'PRESENTATION_PROBE', protocolVersion: 'unity.presentation.v1',
-      runtimeRef: context.value.runtimeRef, runtimeGeneration: context.value.runtimeGeneration,
-      bindingId: presentationBinding.value.bindingId,
-      unityInstanceId: props.unitySession.unityInstanceId,
-      sceneRevision: props.unitySession.sceneRevision,
+      ...identity,
       requestId: challenge.requestId, sequence: challenge.sequence,
       kind: challenge.kind, executionId: challenge.executionId,
     })
@@ -609,7 +888,8 @@ function onVisibilityChange() {
 onMounted(async () => {
   configureVoiceP0MockRuntime(props.runtimeHint)
   await store.selectAlgorithmRun(props.runtimeHint.algorithmRunId)
-  await store.recover()
+  if (props.refined) await recoverRefinedRequest()
+  else await store.recover()
   timer = window.setInterval(() => {
     pollTick += 1
     if (document.visibilityState !== 'visible') return
@@ -638,7 +918,7 @@ onMounted(async () => {
           pendingFrameResync = false
           void requestPresentationProbe()
         } else if (pendingFrameResync) void resyncPresentation()
-        else if (presentationCanResync && execution.value) {
+        else if (presentationCanResync.value && execution.value) {
           if (autoResyncExecutionId !== execution.value.executionId) {
             autoResyncExecutionId = execution.value.executionId
             autoResyncAttempts = 0
@@ -659,14 +939,85 @@ onMounted(async () => {
 })
 
 defineExpose({ handleUnityPresentationMessage })
+onActivated(() => { panelActive = true })
+onDeactivated(() => { panelActive = false; invalidateRefinedDraft() })
 onBeforeUnmount(() => {
+  panelActive = false
+  invalidateRefinedDraft()
   window.clearInterval(timer)
   document.removeEventListener('visibilitychange', onVisibilityChange)
 })
 </script>
 
 <template>
-  <section class="voice-p0">
+  <section v-if="refined" class="voice-p0 voice-refined" aria-label="语音控制">
+    <header class="refined-head"><h2>语音控制</h2><AudioLines :size="20" aria-hidden="true" /></header>
+    <div class="refined-content">
+      <p v-if="voiceP0MockEnabled" class="refined-notice">当前为本地演示模式，不连接真实设备。</p>
+      <p v-if="authStore.user?.role !== 'ADMIN'" class="refined-notice" role="alert">当前账号没有控制权限，请使用管理员账号。</p>
+      <p v-else-if="!context" class="refined-notice" role="status">请先生成场景，连接可控制的无人机与无人艇。</p>
+      <p v-else-if="runtimeEnded" class="refined-notice" role="status">本轮运行已结束，当前画面已保留。重新生成场景后可继续控制。</p>
+      <p v-else-if="!heartbeatFresh" class="refined-notice" role="status">设备连接暂时中断，恢复后可继续控制。</p>
+      <p v-if="recoveryPending" class="refined-notice" role="status">正在核对上一次请求，请稍候。</p>
+      <p v-else-if="responseUnknown" class="refined-notice" role="alert">上次请求结果尚未确认。请核对结果，不要重复下发指令。</p>
+      <p v-else-if="!recoveryAvailable" class="refined-notice" role="alert">无法保存指令恢复信息，已暂停下发。请检查浏览器存储后重试。</p>
+
+      <LocalAsrInput v-if="asrOnly" :operator-scope="operatorScope" :disabled="authStore.user?.role !== 'ADMIN' || authStore.loading" />
+      <VoiceIntelligenceInput
+        v-else-if="voiceP1PreparationEnabled"
+        refined
+        :proposal-ready="refinedProposalReady"
+        :allowed-actions="allowedIntelligenceActions"
+        :device-codes="runtimeHint.deviceCodes"
+        :runtime-context="intelligenceRuntimeContext"
+        :operator-scope="operatorScope"
+        :input-disabled="authStore.user?.role !== 'ADMIN' || authStore.loading"
+        :auto-execute-speech="autoExecuteSimulationVoice"
+        :allow-mock-submission="voiceP0MockEnabled"
+        :submission-disabled="refinedSubmissionDisabled || refinedAutomaticRunning"
+        :action-disabled-reason="refinedActionDisabledReason"
+        @draft-change="invalidateRefinedDraft"
+        @candidate="handleVoiceCandidate"
+        @voice-candidate="handleAutomaticVoiceCandidate"
+      >
+        <section v-if="activeProposal && proposal && !refinedAutomaticRunning && proposal.proposalId !== refinedAutomaticPlanId" class="refined-plan" aria-label="指令预览">
+          <div class="refined-section-title"><h3>{{ proposal.proposalId === refinedRestoredProposalId ? '恢复的待确认指令' : '指令预览' }}</h3><span>{{ proposal.plan.action === 'SEQUENCE' ? '受控双步骤' : '单步指令' }}</span></div>
+          <ol>
+            <li v-for="step in refinedPlanSteps" :key="step.index"><b>{{ step.index + 1 }}</b><span>{{ step.label }}</span></li>
+          </ol>
+          <p v-if="refinedProposalStale" class="refined-notice">文字或场景已变化，请重新预览。旧指令不会执行。</p>
+          <p v-else-if="secondsLeft === 0" class="refined-notice">指令已过期，请重新预览。</p>
+          <p v-else class="refined-plan-note">{{ proposal.plan.action === 'SEQUENCE' ? '前一步成功，才继续下一步。' : '请核对目标设备与动作。' }}<span>{{ secondsLeft }} 秒内有效</span></p>
+          <button v-if="refinedProposalReady" class="refined-confirm" type="button" :disabled="!!refinedConfirmReason" :title="refinedConfirmReason" @click="confirm"><Check :size="16" />确认执行</button>
+          <p v-if="refinedProposalReady && refinedConfirmReason" class="refined-notice" role="status">{{ refinedConfirmReason }}</p>
+          <button v-if="secondsLeft > 0" class="refined-cancel" type="button" :disabled="refinedSubmissionDisabled" @click="cancel">取消此指令</button>
+        </section>
+        <p v-if="refinedPreparing && !refinedAutomaticRunning" class="refined-notice" role="status">正在核对设备与动作，生成确认计划…</p>
+        <p v-if="voiceAutomationStatus" class="refined-notice" role="status">{{ voiceAutomationStatus }}</p>
+      </VoiceIntelligenceInput>
+      <p v-else class="refined-notice">语音控制尚未启用，请检查服务配置。</p>
+
+      <article v-if="execution" class="refined-result" :class="execution.outcome.toLowerCase()" role="status" aria-live="polite">
+        <div class="refined-result-head"><Check v-if="execution.state === 'SUCCEEDED'" :size="16" /><strong>{{ executionLabels[execution.state] ?? execution.state }}</strong></div>
+        <ol v-if="execution.action === 'SEQUENCE' && execution.steps" class="refined-execution-steps">
+          <li v-for="step in execution.steps" :key="step.index"><span>{{ step.action === 'START' ? '开始任务' : `${step.targetDeviceCode} · ${actionLabels[step.deviceCommandType ?? ''] ?? step.deviceCommandType}` }}</span><small>{{ step.state === 'PENDING' ? '等待前一步' : executionLabels[step.state] ?? step.state }}</small></li>
+        </ol>
+        <p v-else>{{ execution.action === 'DEVICE_COMMAND' ? `${proposal?.plan.targetDeviceCode ?? ''} · ${actionLabels[proposal?.plan.deviceCommandType ?? ''] ?? '单设备控制'}` : actionLabels[execution.action] }}</p>
+        <p v-if="execution.errorCode" class="refined-notice">{{ errorLabels[execution.errorCode] ?? execution.errorCode }}</p>
+        <small v-if="execution.presentationStatus !== 'NOT_REQUIRED'">{{ presentationLabels[execution.presentationStatus] }}</small>
+        <p v-if="presentationWaitExpired" class="refined-notice">算法已执行，但画面尚未确认同步；请勿重复下发动作。</p>
+        <button v-if="presentationCanResync" class="refined-recovery" type="button" :disabled="loading || presentationRequestInFlight" @click="resyncPresentation"><RefreshCw :size="13" />重新同步画面</button>
+      </article>
+      <p v-if="refinedPrepareError || displayError" class="refined-notice refined-error" role="alert">{{ refinedPrepareError || displayError }}</p>
+      <div v-if="responseUnknown || (!runtimeEnded && (!context || !heartbeatFresh || (!presentationBridgeReady && helloAttempts >= 30)))" class="refined-recovery-actions">
+        <button v-if="responseUnknown" class="refined-recovery" type="button" :disabled="recoveryPending || loading" @click="recoverRefinedRequest">核对上次请求</button>
+        <button v-else-if="!runtimeEnded && (!context || !heartbeatFresh)" class="refined-recovery" type="button" :disabled="loading" @click="store.refreshContexts()"><RefreshCw :size="13" />重新连接</button>
+        <button v-if="!runtimeEnded && context && !presentationBridgeReady && helloAttempts >= 30" class="refined-recovery" type="button" :disabled="loading || responseUnknown" @click="takePresentationBinding">恢复画面连接</button>
+      </div>
+    </div>
+    <p class="refined-footer">{{ autoExecuteSimulationVoice ? '语音自动执行 · 双步骤依次完成 · 文字编辑后需确认' : '先核对设备编号与动作，再确认执行' }}</p>
+  </section>
+  <section v-else class="voice-p0">
     <header class="voice-head">
       <div>
         <span class="voice-icon"><AudioLines :size="17" /></span>
@@ -741,6 +1092,12 @@ onBeforeUnmount(() => {
 
     <article v-if="execution" class="result" :class="execution.outcome.toLowerCase()">
       <div><strong>{{ executionLabels[execution.state] ?? execution.state }}</strong><span>{{ execution.action === 'DEVICE_COMMAND' ? `${proposal?.plan.targetDeviceCode ?? ''} · ${actionLabels[proposal?.plan.deviceCommandType ?? ''] ?? '单设备控制'}` : actionLabels[execution.action] }}</span></div>
+      <ol v-if="execution.action === 'SEQUENCE' && execution.steps" class="sequence-steps">
+        <li v-for="step in execution.steps" :key="step.index" :class="step.state.toLowerCase()">
+          <span>{{ step.action === 'START' ? '开始任务' : `${step.targetDeviceCode} · ${actionLabels[step.deviceCommandType ?? '']}` }}</span>
+          <strong>{{ executionLabels[step.state] ?? step.state }}</strong>
+        </li>
+      </ol>
       <p v-if="execution.errorCode">{{ errorLabels[execution.errorCode] ?? execution.errorCode }}</p>
       <small>算法结果：{{ execution.outcome }} · 展示状态：{{ presentationLabels[execution.presentationStatus] }}</small>
       <p v-if="presentationWaitExpired">算法动作已成功，但 30 秒内暂未收到画面确认；未修改服务端展示状态。</p>
@@ -769,7 +1126,7 @@ onBeforeUnmount(() => {
     </footer>
   </section>
 
-  <div v-if="dialogOpen && proposal" class="voice-modal" role="dialog" aria-modal="true" aria-label="确认冻结指令计划">
+  <div v-if="!refined && dialogOpen && proposal" class="voice-modal" role="dialog" aria-modal="true" aria-label="确认冻结指令计划">
     <section>
       <header><ShieldCheck :size="18" /><strong>确认冻结计划</strong></header>
       <p>此提案等待确认。计划内容不可在此修改。</p>
@@ -777,6 +1134,13 @@ onBeforeUnmount(() => {
         <div><dt>动作</dt><dd>{{ actionLabels[proposal.plan.action] }}</dd></div>
         <div v-if="proposal.plan.action === 'DEVICE_COMMAND'"><dt>目标设备</dt><dd>{{ proposal.plan.targetDeviceCode }}</dd></div>
         <div v-if="proposal.plan.action === 'DEVICE_COMMAND'"><dt>设备动作</dt><dd>{{ actionLabels[proposal.plan.deviceCommandType ?? ''] ?? proposal.plan.deviceCommandType }}</dd></div>
+        <div v-if="proposal.plan.action === 'SEQUENCE'"><dt>执行步骤</dt><dd>
+          <ol class="sequence-steps compact">
+            <li v-for="step in proposal.plan.steps" :key="step.index">
+              {{ step.action === 'START' ? '开始任务' : `${step.targetDeviceCode} · ${actionLabels[step.deviceCommandType ?? '']}` }}
+            </li>
+          </ol>
+        </dd></div>
         <div><dt>当前仿真</dt><dd>运行 {{ context?.algorithmRunId ?? '-' }} / {{ context?.state ?? '-' }}</dd></div>
         <div><dt>设备快照</dt><dd>{{ proposal.plan.explicitDeviceCodes.length }} 个：{{ proposal.plan.explicitDeviceCodes.join('、') }}</dd></div>
       </dl>
@@ -801,6 +1165,7 @@ onBeforeUnmount(() => {
 <style scoped>
 .voice-p0 { display:grid; min-height:100%; align-content:start; gap:12px; padding:16px; color:#bddad6; background:linear-gradient(160deg,rgba(10,36,41,.98),rgba(4,19,24,.99)); font-size:11px; }
 .voice-p0 header,.voice-p0 header > div,.voice-p0 footer,.result div { display:flex; align-items:center; justify-content:space-between; gap:8px; }
+.sequence-steps { display:grid; gap:5px; margin:7px 0 0; padding-left:20px; color:#aedad4; }.sequence-steps li { padding-left:2px; }.sequence-steps li::marker { color:#6ce4d5; }.sequence-steps li strong { float:right; color:#8fcac2; }.sequence-steps.compact { margin:0; padding-left:16px; }
 .voice-head .voice-icon { display:grid; width:30px; height:30px; padding:0; color:#70e5d6; place-items:center; background:rgba(108,228,213,.08); border:1px solid rgba(108,228,213,.2); border-radius:5px; }
 .voice-head .voice-title { display:grid; gap:2px; padding:0; border:0; border-radius:0; }
 .voice-head strong { color:#f0fffd; font-size:13px; }.voice-head small { color:#608d88; font-size:9px; letter-spacing:.08em; }
@@ -828,4 +1193,42 @@ onBeforeUnmount(() => {
 .voice-modal dt { color:#779e99; }.voice-modal dd { min-width:0; margin:0; color:#d8eeeb; word-break:break-all; }.voice-modal .hash { font:10px Consolas,monospace; }
 .voice-modal details { margin:10px 0; }.voice-modal summary { color:#79beb5; cursor:pointer; font-size:11px; }.voice-modal details dl { margin-top:8px; }
 .voice-modal .expires { color:#ffd58a; }.voice-modal footer { justify-content:flex-end; }.voice-modal button.confirm { color:#04191b; background:#6ce4d5; border-color:#6ce4d5; }.voice-modal button:disabled { opacity:.4; }
+.voice-p0.voice-refined { display:flex; min-height:100%; padding:0; gap:0; flex-direction:column; color:#ebf5f4; background:#0d1e23; font-size:12px; }
+.voice-refined .refined-head { display:flex; align-items:center; justify-content:space-between; gap:12px; min-height:65px; padding:18px 52px 18px 22px; border-bottom:1px solid #243c42; }
+.refined-head h2 { margin:0; font-size:17px; font-weight:600; letter-spacing:.02em; }
+.refined-head svg { color:#73e2cd; }
+.refined-content { display:flex; min-width:0; padding:20px 22px; gap:14px; flex:1; flex-direction:column; }
+.refined-plan { margin-top:4px; padding-top:16px; border-top:1px solid #243c42; }
+.refined-section-title { display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:12px; }
+.refined-section-title h3 { margin:0; font-size:12px; font-weight:500; color:#d8e7e5; }
+.refined-section-title > span { color:#8fa8ac; font-size:10px; }
+.refined-plan ol { display:grid; gap:12px; list-style:none; margin:0; padding:0; }
+.refined-plan li { display:flex; align-items:center; gap:10px; min-width:0; font-size:12px; }
+.refined-plan li b { display:grid; width:24px; height:24px; place-items:center; flex-shrink:0; font:11px Bahnschrift,Consolas,monospace; color:#73e2cd; background:#15322d; border:1px solid #34534e; border-radius:6px; }
+.refined-plan li > span { overflow-wrap:anywhere; }
+.refined-plan-note { display:flex; flex-wrap:wrap; justify-content:space-between; gap:5px; margin:11px 0 14px; color:#8fa8ac; font-size:10px; line-height:1.65; }
+.refined-confirm { display:flex; align-items:center; justify-content:center; gap:8px; width:100%; min-height:43px; margin-top:13px; border:1px solid #73e2cd; border-radius:8px; color:#082b24; background:#73e2cd; font-family:inherit; font-size:13px; font-weight:600; cursor:pointer; }
+.refined-confirm:hover:not(:disabled) { background:#96eddc; }
+.refined-confirm:disabled { opacity:.45; cursor:not-allowed; }
+.refined-cancel,.refined-recovery { display:inline-flex; align-items:center; justify-content:center; gap:6px; padding:6px 0; color:#a6c6c3; border:0; background:transparent; font-size:11px; cursor:pointer; }
+.refined-cancel { display:block; margin:7px auto 0; }
+.refined-cancel:disabled,.refined-recovery:disabled { cursor:not-allowed; opacity:.45; }
+.refined-recovery { color:#73e2cd; }
+.refined-notice { margin:0; color:#dfbd85; font-size:11px; line-height:1.7; overflow-wrap:anywhere; }
+.refined-plan > .refined-notice { margin-top:11px; }
+.refined-notice.refined-error { color:#ffaaa2; }
+.refined-result { padding:13px; color:#d0e6e0; background:#122a2d; border:1px solid #345052; border-radius:9px; }
+.refined-result.success { background:#13332b; border-color:#315d4f; }
+.refined-result.failed,.refined-result.rejected { border-color:#734842; }
+.refined-result-head { display:flex; align-items:center; gap:8px; color:#bde8dc; }
+.refined-result-head strong { font-size:12px; font-weight:500; }
+.refined-result p { margin:6px 0 0; font-size:11px; line-height:1.65; overflow-wrap:anywhere; }
+.refined-result > small { display:block; color:#a0bbb8; font-size:10px; margin-top:6px; }
+.refined-execution-steps { display:grid; gap:8px; margin:10px 0 0; padding:0; list-style:none; }
+.refined-execution-steps li { display:flex; flex-wrap:wrap; justify-content:space-between; gap:4px 8px; font-size:11px; }
+.refined-execution-steps small { color:#a0bbb8; font-size:10px; }
+.refined-footer { margin:0; padding:12px 16px; color:#91aab0; background:#0b1b20; border-top:1px solid #243c42; text-align:center; font-size:10px; }
+.voice-refined button:focus-visible { outline:2px solid #73e2cd; outline-offset:3px; }
+@media (max-height:850px) and (min-width:801px) { .voice-refined .refined-head { min-height:53px; padding-block:14px; } .refined-content { padding:16px 18px; gap:12px; } }
+@media (max-width:500px) { .refined-content { padding:18px; } }
 </style>

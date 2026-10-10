@@ -72,6 +72,24 @@ public class IntentService {
                     "(UAV|USV)[-_]?\\d+|(?:第?[一二三四五六七八九十\\d]+|某(?:一|个))号?(?:架|艘)?(?:无人机|无人艇)|(?:无人机|无人艇)(?:[-_]?\\d+|[一二三四五六七八九十]+)",
                     Pattern.CASE_INSENSITIVE | Pattern.UNICODE_CASE);
     private static final Pattern DEVICE_CUE = Pattern.compile("UAV|USV|无人机|无人艇", Pattern.CASE_INSENSITIVE | Pattern.UNICODE_CASE);
+    private static final Pattern CONTROLLED_SEQUENCE =
+            Pattern.compile(
+                    "^(?:请)?(?:先)?(开始(?:执行|当前)?任务|启动(?:当前)?任务|执行任务)[，,。；;]?(?:(?:之后|以后|后|然后|再|接着)[，,。；;]?)?(?:再)?(?:让|请)?(.+)$",
+                    Pattern.CASE_INSENSITIVE | Pattern.UNICODE_CASE);
+    private static final Pattern TASK_CLAUSE =
+            Pattern.compile("(?:开始|启动|执行|暂停|继续|恢复|停止|终止|结束)(?:执行|当前|运行)?任务");
+    private static final Pattern EXTRA_SEQUENCE_CLAUSE = Pattern.compile("之后|以后|然后|接着|再|后|[，,。；;]");
+    // Conservative ASR repairs for unmistakable device nouns. Keep aligned
+    // with the browser's automatic-execution guard; do not add fuzzy matching.
+    private static final Map<String, String> DEVICE_TERM_CORRECTIONS =
+            Map.ofEntries(
+                    Map.entry("艇无人", "无人艇"),
+                    Map.entry("机无人", "无人机"),
+                    Map.entry("无人庭", "无人艇"),
+                    Map.entry("无人廷", "无人艇"),
+                    Map.entry("无人停", "无人艇"),
+                    Map.entry("无人鸡", "无人机"),
+                    Map.entry("无人基", "无人机"));
 
     private record Key(long user, String requestId) {}
 
@@ -182,13 +200,15 @@ public class IntentService {
         boolean exactCommand = EXACT_COMMANDS.containsKey(text);
         IntentClassification parsed = parse(text, body.path("allowedActions"), runtime);
         boolean localLlm = "local-llm".equals(settings.getIntentProvider())
-                && !exactCommand && !"DEVICE_COMMAND".equals(parsed.action());
+                && !exactCommand
+                && !Set.of("DEVICE_COMMAND", "SEQUENCE").contains(parsed.action());
+        boolean sequence = "SEQUENCE".equals(parsed.action());
         ObjectNode data =
                 parsed.data(
                         requestId,
                         text,
                         localLlm ? "local-llm" : "local-rules",
-                        localLlm ? settings.getLlmModel() : "rules-v1",
+                        localLlm ? settings.getLlmModel() : sequence ? "rules-sequence-v1" : "rules-v1",
                         json);
         var outcome =
                 new AsrResponses.Outcome(
@@ -249,6 +269,26 @@ public class IntentService {
 
     public record TargetedCandidate(String deviceCode, String commandType) {}
 
+    public TargetedCandidate requireSequenceCandidate(
+            long user, String interpretationId, ObjectNode runtime) {
+        if (interpretationId == null || !AudioMultipart.UUID.matcher(interpretationId).matches())
+            throw new AsrFailure(409, "VOICE_INTERPRETATION_INVALID");
+        Entry entry;
+        synchronized (this) {
+            cleanup();
+            entry = entries.get(new Key(user, interpretationId));
+        }
+        if (entry == null || !"SEQUENCE".equals(entry.action)
+                || entry.targetDeviceCode == null || entry.deviceCommandType == null
+                || entry.runtimeRef == null
+                || !entry.runtimeRef.equals(runtime.path("runtimeRef").asText())
+                || !entry.generation.equals(runtime.path("runtimeGeneration").asText())
+                || entry.contextVersion == null
+                || entry.contextVersion.longValue() != runtime.path("contextVersion").asLong())
+            throw new AsrFailure(409, "VOICE_INTERPRETATION_INVALID");
+        return new TargetedCandidate(entry.targetDeviceCode, entry.deviceCommandType);
+    }
+
     public TargetedCandidate requireTargetedCandidate(
             long user, String interpretationId, ObjectNode runtime) {
         if (interpretationId == null || !AudioMultipart.UUID.matcher(interpretationId).matches())
@@ -285,6 +325,14 @@ public class IntentService {
     }
 
     private IntentClassification parse(String text, JsonNode allowed, ObjectNode runtime) {
+        if (NEGATED.matcher(text).find())
+            return new IntentClassification(
+                    "NOT_ACTIONABLE",
+                    "NEGATED_ACTION",
+                    "检测到否定表达，为避免误执行，请重新明确指令。",
+                    null);
+        Matcher sequence = CONTROLLED_SEQUENCE.matcher(text);
+        if (sequence.matches()) return parseControlledSequence(sequence.group(2), allowed, runtime);
         if (TARGETED.matcher(text).find()
                 || (DEVICE_CUE.matcher(text).find()
                         && Pattern.compile("悬停|驻留|待命|保持|返航|返回|归队|继续|停止|降落|停船").matcher(text).find()))
@@ -294,12 +342,6 @@ public class IntentService {
                     "UNSUPPORTED",
                     "UNSUPPORTED_CAPABILITY",
                     "该动作尚未接入算法能力，不能生成执行提案。",
-                    null);
-        if (NEGATED.matcher(text).find())
-            return new IntentClassification(
-                    "NOT_ACTIONABLE",
-                    "NEGATED_ACTION",
-                    "检测到否定表达，为避免误执行，请重新明确指令。",
                     null);
         IntentClassification parsed;
         String exactAction = EXACT_COMMANDS.get(text);
@@ -351,10 +393,48 @@ public class IntentService {
         return parsed;
     }
 
+    private IntentClassification parseControlledSequence(
+            String deviceClause, JsonNode allowed, ObjectNode runtime) {
+        if (EXTRA_SEQUENCE_CLAUSE.matcher(deviceClause).find())
+            return new IntentClassification(
+                    "NEEDS_CLARIFICATION", "AMBIGUOUS_ACTION",
+                    "当前支持两步指令：开始任务，再让一个设备悬停或驻留；请分开下发后续动作。", null);
+        boolean startAllowed = false;
+        for (JsonNode action : allowed) startAllowed |= "START".equals(action.asText());
+        if (!startAllowed)
+            return new IntentClassification(
+                    "UNSUPPORTED",
+                    "UNSUPPORTED_CAPABILITY",
+                    "当前运行实例不允许开始任务，不能生成顺序指令。",
+                    null);
+        IntentClassification targeted = parseTargeted(deviceClause, runtime);
+        if (!"CANDIDATE".equals(targeted.status())) return targeted;
+        if (!"DEVICE_COMMAND".equals(targeted.action())
+                || !Set.of("UAV_HOVER", "USV_HOLD").contains(targeted.deviceCommandType()))
+            return new IntentClassification(
+                    "UNSUPPORTED",
+                    "UNSUPPORTED_CAPABILITY",
+                    "当前仅支持“开始任务后指定无人机悬停”或“开始任务后指定无人艇驻留”。",
+                    null);
+        return new IntentClassification(
+                "CANDIDATE",
+                null,
+                null,
+                "SEQUENCE",
+                targeted.targetDeviceCode(),
+                targeted.deviceCommandType());
+    }
+
     private IntentClassification parseTargeted(String text, ObjectNode runtime) {
         if (NEGATED.matcher(text).find())
             return new IntentClassification(
                     "NOT_ACTIONABLE", "NEGATED_ACTION", "检测到否定表达，请重新明确指令。", null);
+        // Never discard a task-level action and execute only the device fragment.
+        // Supported START + device sequences have already removed their first clause.
+        if (TASK_CLAUSE.matcher(text).find())
+            return new IntentClassification(
+                    "NEEDS_CLARIFICATION", "AMBIGUOUS_ACTION",
+                    "检测到任务动作和设备动作；当前支持“开始任务，让一号无人机悬停”或“开始任务，让一号无人艇驻留”。", null);
         if (runtime == null || !Set.of("ESCORT_GUARD", "GB_SFLA_CS", "ESCORT_GUARD_SINGLE_DEVICE", "GB_SFLA_CS_SINGLE_DEVICE")
                 .contains(runtime.path("_algorithmCode").asText()))
             return new IntentClassification(
@@ -487,7 +567,10 @@ public class IntentService {
     }
 
     private static String normalize(String text) {
-        return text.trim().replaceAll("\\s+", "").replaceAll("[。！？!?，,]+$", "");
+        String normalized = text.trim().replaceAll("\\s+", "").replaceAll("[。！？!?，,]+$", "");
+        for (Map.Entry<String, String> correction : DEVICE_TERM_CORRECTIONS.entrySet())
+            normalized = normalized.replace(correction.getKey(), correction.getValue());
+        return normalized;
     }
 
     @Scheduled(fixedDelay = 60000)

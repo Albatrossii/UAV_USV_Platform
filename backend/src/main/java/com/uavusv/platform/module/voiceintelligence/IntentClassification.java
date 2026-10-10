@@ -25,7 +25,19 @@ record IntentClassification(
     ObjectNode data(String id, String text, String provider, String model, VoiceJson json) {
         ObjectNode node = json.object();
         node.put("status", status).put("requestId", id);
-        if ("DEVICE_COMMAND".equals(action)) {
+        if ("SEQUENCE".equals(action)) {
+            var steps = json.mapper.createArrayNode();
+            steps.addObject().put("index", 0).put("action", "START");
+            steps.addObject()
+                    .put("index", 1)
+                    .put("action", "DEVICE_COMMAND")
+                    .put("targetDeviceCode", targetDeviceCode)
+                    .put("deviceCommandType", deviceCommandType);
+            node.put("intent", "COMMAND_SEQUENCE")
+                    .put("action", action)
+                    .set("steps", steps);
+            node.putNull("confidence");
+        } else if ("DEVICE_COMMAND".equals(action)) {
             node.put("intent", "SINGLE_DEVICE_CONTROL")
                     .put("action", action)
                     .put("targetDeviceCode", targetDeviceCode)

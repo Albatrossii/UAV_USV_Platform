@@ -1,5 +1,6 @@
 package com.uavusv.platform.module.voicecontrol;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.uavusv.platform.module.voiceintelligence.IntentService;
 
@@ -122,7 +123,8 @@ public class VoiceCommandApplicationService {
                         throw VoiceFailure.conflict("CONTEXT_CHANGED");
                     String intent = body.path("intent").asText();
                     boolean targeted = "SINGLE_DEVICE_CONTROL".equals(intent);
-                    String action = targeted ? "DEVICE_COMMAND" : intent.substring(8);
+                    boolean sequence = "COMMAND_SEQUENCE".equals(intent);
+                    String action = targeted ? "DEVICE_COMMAND" : sequence ? "SEQUENCE" : intent.substring(8);
                     IntentService.TargetedCandidate target = null;
                     if (interpretationId != null) {
                         if (intents == null) throw VoiceFailure.conflict("VOICE_INTERPRETATION_INVALID");
@@ -141,10 +143,22 @@ public class VoiceCommandApplicationService {
                             throw VoiceFailure.conflict(e.code);
                         }
                         r.checkDevice(c, target.deviceCode(), target.commandType());
+                    } else if (sequence) {
+                        if (intents == null || interpretationId == null)
+                            throw VoiceFailure.conflict("VOICE_INTERPRETATION_INVALID");
+                        try {
+                            target = intents.requireSequenceCandidate(u, interpretationId, c);
+                        } catch (com.uavusv.platform.module.voiceintelligence.AsrFailure e) {
+                            throw VoiceFailure.conflict(e.code);
+                        }
+                        r.check(c, "START", true);
+                        r.checkSequenceTarget(c, target.deviceCode(), target.commandType());
                     } else {
                         r.check(c, action, true);
                     }
-                    var p = targeted
+                    var p = sequence
+                            ? newSequenceProposal(c, u, target.deviceCode(), target.commandType())
+                            : targeted
                             ? newProposal(c, u, action, target.deviceCode(), target.commandType())
                             : newProposal(c, u, action);
                     if (interpretationId != null) p.put("interpretationId", interpretationId);
@@ -179,6 +193,7 @@ public class VoiceCommandApplicationService {
                         throw VoiceFailure.conflict("GENERATION_MISMATCH");
                     }
                     boolean targeted = "DEVICE_COMMAND".equals(plan.path("action").asText());
+                    boolean sequence = "SEQUENCE".equals(plan.path("action").asText());
                     boolean frozenDevicesValid = targeted
                             ? plan.path("explicitDeviceCodes").size() == 1
                                 && plan.path("explicitDeviceCodes").get(0).asText()
@@ -192,10 +207,19 @@ public class VoiceCommandApplicationService {
                     }
                     if (targeted)
                         r.checkDevice(c, plan.path("targetDeviceCode").asText(), plan.path("deviceCommandType").asText());
+                    else if (sequence) {
+                        JsonNode step = plan.path("steps").path(1);
+                        r.check(c, "START", true);
+                        r.checkSequenceTarget(
+                                c,
+                                step.path("targetDeviceCode").asText(),
+                                step.path("deviceCommandType").asText());
+                    }
                     else r.check(c, plan.path("action").asText(), true);
                     if (s.busy(c.path("_id").asText()))
                         throw VoiceFailure.conflict("EXECUTION_IN_PROGRESS");
-                    enqueue(p, c, false);
+                    if (sequence) enqueueSequence(p, c);
+                    else enqueue(p, c, false);
                     s.remember(u, op, key, hash, id);
                     return new Reply(202, combined(p));
                 });
@@ -251,11 +275,11 @@ public class VoiceCommandApplicationService {
                 });
     }
 
-    private ObjectNode newProposal(ObjectNode c, long u, String action) {
+    ObjectNode newProposal(ObjectNode c, long u, String action) {
         return newProposal(c, u, action, null, null);
     }
 
-    private ObjectNode newProposal(
+    ObjectNode newProposal(
             ObjectNode c, long u, String action, String targetDeviceCode, String deviceCommandType) {
         var plan = j.object();
         plan.put("runtimeRef", c.path("runtimeRef").asText())
@@ -288,7 +312,41 @@ public class VoiceCommandApplicationService {
         return p;
     }
 
-    private void enqueue(ObjectNode p, ObjectNode c, boolean manual) {
+    private ObjectNode newSequenceProposal(
+            ObjectNode c, long u, String targetDeviceCode, String deviceCommandType) {
+        var plan = j.object();
+        plan.put("runtimeRef", c.path("runtimeRef").asText())
+                .put("runtimeGeneration", c.path("runtimeGeneration").asText());
+        plan.set("contextVersion", c.path("contextVersion"));
+        plan.set("stateVersion", c.path("stateVersion"));
+        plan.put("action", "SEQUENCE");
+        plan.set("explicitDeviceCodes", c.path("_members").deepCopy());
+        plan.put("policyVersion", POLICY_VERSION);
+        var steps = j.mapper.createArrayNode();
+        steps.addObject().put("index", 0).put("action", "START");
+        steps.addObject()
+                .put("index", 1)
+                .put("action", "DEVICE_COMMAND")
+                .put("targetDeviceCode", targetDeviceCode)
+                .put("deviceCommandType", deviceCommandType);
+        plan.set("steps", steps);
+        var p = j.object();
+        String id = VoiceJson.uuid();
+        p.put("_id", id)
+                .put("_owner", u)
+                .put("proposalId", id)
+                .put("status", "AWAITING_CONFIRMATION")
+                .put("planVersion", 1)
+                .put("planHash", j.hash(plan));
+        p.set("plan", plan);
+        p.put("requiresConfirmation", true)
+                .put("createdAt", t.stamp())
+                .put("expiresAt", t.now().plusSeconds(30).toString())
+                .putNull("executionId");
+        return p;
+    }
+
+    void enqueue(ObjectNode p, ObjectNode c, boolean manual) {
         String id = VoiceJson.uuid();
         var e = j.object();
         e.put("_id", id)
@@ -316,6 +374,59 @@ public class VoiceCommandApplicationService {
         s.execution(e);
         p.put("status", "CONFIRMED").put("executionId", id);
         s.save("voice_proposal", p);
+    }
+
+    private void enqueueSequence(ObjectNode p, ObjectNode c) {
+        String id = VoiceJson.uuid();
+        var e = j.object();
+        e.put("_id", id)
+                .put("_owner", p.path("_owner").asLong())
+                .put("_manual", false)
+                .put("_sequenceStartedAt", t.stamp());
+        e.set("_plan", p.path("plan").deepCopy());
+        e.put("executionId", id)
+                .put("proposalId", p.path("proposalId").asText())
+                .put("commandId", VoiceJson.uuid())
+                .put("runtimeRef", c.path("runtimeRef").asText())
+                .put("runtimeGeneration", c.path("runtimeGeneration").asText())
+                .put("action", "SEQUENCE")
+                .put("state", "EXECUTING")
+                .put("outcome", "UNKNOWN")
+                .putNull("errorCode")
+                .putNull("timedOutAt")
+                .put("presentationStatus", "NOT_REQUIRED")
+                .put("currentStepIndex", 0)
+                .put("sequenceStatus", "EXECUTING_START")
+                .put("createdAt", t.stamp())
+                .put("updatedAt", t.stamp());
+        var steps = j.mapper.createArrayNode();
+        for (JsonNode frozen : p.path("plan").path("steps")) {
+            var step = frozen.deepCopy();
+            ((ObjectNode) step).put("state", "PENDING").putNull("executionId").putNull("errorCode");
+            steps.add(step);
+        }
+        e.set("steps", steps);
+        s.execution(e, false);
+        p.put("status", "CONFIRMED").put("executionId", id);
+        s.save("voice_proposal", p);
+    }
+
+    String enqueueSequenceChild(ObjectNode parent, ObjectNode c, JsonNode frozenStep) {
+        String action = frozenStep.path("action").asText();
+        ObjectNode child = "DEVICE_COMMAND".equals(action)
+                ? newProposal(
+                        c,
+                        parent.path("_owner").asLong(),
+                        action,
+                        frozenStep.path("targetDeviceCode").asText(),
+                        frozenStep.path("deviceCommandType").asText())
+                : newProposal(c, parent.path("_owner").asLong(), action);
+        child.put("_source", "SEQUENCE_CHILD")
+                .put("_parentExecutionId", parent.path("executionId").asText())
+                .put("status", "CONFIRMED");
+        s.proposal(child);
+        enqueue(child, c, false);
+        return child.path("executionId").asText();
     }
 
     private ObjectNode combined(ObjectNode p) {

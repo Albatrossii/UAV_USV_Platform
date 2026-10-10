@@ -192,6 +192,50 @@ class AsrServiceTests {
     }
 
     @Test
+    void admissionRateLimitCanRetryTheSameRequestAfterCooldownWithoutConsumingQuota() {
+        for (int i = 0; i < 10; i++) call(1, UUID.randomUUID().toString());
+        String waitingId = UUID.randomUUID().toString();
+
+        AsrFailure limited = assertThrows(AsrFailure.class, () -> call(1, waitingId));
+        assertEquals("VOICE_RATE_LIMITED", limited.code);
+        assertEquals(61, limited.retryAfter);
+        assertFalse(limited.uncertain);
+        assertEquals(10, service.size());
+        verify(acceptances, never()).reserve(eq(1L), eq(waitingId), anyString(), any());
+
+        clock.now = clock.now.plusSeconds(limited.retryAfter);
+        AsrResponses.Outcome completed = call(1, waitingId);
+        assertEquals(200, completed.status());
+        assertSame(completed, call(1, waitingId));
+        verify(acceptances, times(1)).reserve(eq(1L), eq(waitingId), anyString(), any());
+        verify(provider, times(11)).transcribe(any(), anyLong());
+    }
+
+    @Test
+    void providerRateLimitReplaysFailureButDoesNotBlockAnExplicitNewRequest() {
+        when(provider.transcribe(any(), anyLong()))
+                .thenThrow(new AsrFailure(429, "VOICE_RATE_LIMITED", 2, false))
+                .thenAnswer(invocation -> {
+                    var request = (SpeechProvider.Audio) invocation.getArgument(0);
+                    return new SpeechProvider.Transcript(request.requestId(), "继续任务", 1000, "r1");
+                });
+        String failedId = UUID.randomUUID().toString();
+
+        AsrResponses.Outcome failed = call(1, failedId);
+        assertEquals(429, failed.status());
+        assertEquals(2, failed.retryAfter());
+        assertSame(failed, call(1, failedId));
+        clock.now = clock.now.plusSeconds(2);
+        assertSame(failed, call(1, failedId));
+        verify(provider, times(1)).transcribe(any(), anyLong());
+        verify(acceptances, times(1)).saveOutcome(
+                eq(1L), eq(failedId), anyString(), same(failed), any());
+
+        assertEquals(200, call(1, UUID.randomUUID().toString()).status());
+        verify(provider, times(2)).transcribe(any(), anyLong());
+    }
+
+    @Test
     void timeoutQuarantinesNewTasksButReplaysOld() {
         when(provider.transcribe(any(), anyLong()))
                 .thenThrow(new AsrFailure(504, "VOICE_TRANSCRIPTION_TIMEOUT", null, true));

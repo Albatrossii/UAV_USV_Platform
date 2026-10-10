@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Unity 设备编号验收</title>
+    <style>
+      html, body, iframe { width: 100%; height: 100%; margin: 0; border: 0; overflow: hidden; background: #06171d; }
+    </style>
+  </head>
+  <body>
+    <iframe
+      id="unity"
+      title="算法仿真 Unity 设备编号验收"
+      src="/unity-virtual-fleet/index.html?embedded=1&amp;build=20261009-device-labels-v1&amp;v=20261009-device-labels-v1&amp;scope=VIRTUAL_FLEET&amp;instanceId=virtual-fleet-unity-verify"
+    ></iframe>
+    <script>
+      const frame = document.querySelector('#unity')
+      const runtimeScope = 'VIRTUAL_FLEET'
+      const runtimeInstanceId = 'virtual-fleet-unity-verify'
+      const runId = 2026100901
+      let initialized = false
+
+      function send(type, payload) {
+        frame.contentWindow.postMessage({
+          source: 'vue-console',
+          runtimeScope,
+          runtimeInstanceId,
+          message: {
+            type,
+            requestId: `label-verification-${type}-${Date.now()}`,
+            timestamp: Date.now(),
+            payload,
+          },
+        }, window.location.origin)
+      }
+
+      window.addEventListener('message', event => {
+        if (event.origin !== window.location.origin || event.source !== frame.contentWindow) return
+        const message = event.data?.message
+        if (!message?.type) return
+        if (message.type === 'platformBridgeReady' && !initialized) {
+          initialized = true
+          send('initializePlatform', {
+            runtimeMode: 'VIRTUAL_SIMULATION',
+            protocolVersion: '2.0',
+            buildId: 'device-label-verification',
+          })
+          send('loadScenario', {
+            runtimeMode: 'VIRTUAL_SIMULATION',
+            algorithmCode: 'INTELLIGENT_PARTICLE_ESCORT',
+            runId,
+            uavCount: 3,
+            usvCount: 3,
+            targetCount: 1,
+            layoutVersion: 'DEVICE_LABEL_VERIFICATION_V1',
+            initialPosesCoordinateFrame: 'GLOBAL_ENU',
+            initialPoses: [],
+            initialSpeedMps: 3,
+          })
+        }
+        if (message.type === 'scenarioReady' || message.type === 'scenarioLoaded') {
+          send('setCameraMode', { mode: 'overview' })
+        }
+      })
+    </script>
+  </body>
+</html>

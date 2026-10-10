@@ -1,0 +1,467 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>方案 C · 对话助手 · 语音控制预览</title>
+  <style>
+    :root { color-scheme:dark; --bg:#071215; --surface:#0d1e23; --raised:#12282e; --line:#243c42; --text:#ebf5f4; --muted:#8fa8ac; --cyan:#73e2cd; --amber:#e9be7b; --danger:#ffaaa2; }
+    * { box-sizing:border-box; }
+    body { margin:0; background:var(--bg); color:var(--text); font:14px/1.5 "Segoe UI","Microsoft YaHei",sans-serif; }
+    button,textarea { font:inherit; }
+    button { cursor:pointer; }
+    button:disabled { cursor:not-allowed; opacity:.45; }
+    button:focus-visible,textarea:focus-visible { outline:2px solid var(--cyan); outline-offset:4px; }
+    button { -webkit-tap-highlight-color:transparent; }
+    [hidden] { display:none!important; }
+    svg.icon { width:20px; height:20px; fill:none; stroke:currentColor; stroke-width:1.6; stroke-linecap:round; stroke-linejoin:round; flex-shrink:0; }
+    .symbols { position:absolute; width:0; height:0; overflow:hidden; }
+    .app { max-width:1800px; min-height:100vh; margin:auto; padding:0 28px 22px; }
+    .app-header { min-height:82px; display:flex; align-items:center; justify-content:space-between; gap:20px; }
+    .brand { display:flex; align-items:center; gap:12px; }
+    .brand-mark { display:grid; place-items:center; width:38px; height:38px; color:var(--cyan); border:1px solid #365451; border-radius:11px; background:#102925; }
+    .brand strong { display:block; font:600 16px/1.3 Bahnschrift,"Segoe UI",sans-serif; letter-spacing:.09em; }
+    .brand small { font-size:11px; color:var(--muted); letter-spacing:.16em; }
+    .header-right { display:flex; align-items:center; gap:24px; }
+    .breadcrumb { color:var(--muted); font-size:12px; }
+    .breadcrumb span { color:#506d74; padding:0 11px; }
+    .breadcrumb b { color:var(--text); font-weight:500; }
+    .preview-tag { color:var(--amber); font-size:11px; padding:5px 10px; border:1px solid #594a34; border-radius:6px; white-space:nowrap; }
+    .workspace { display:grid; grid-template-columns:minmax(0,1fr) 376px; gap:16px; align-items:stretch; min-height:740px; height:calc(100vh - 104px); max-height:1050px; }
+    .scene { display:flex; flex-direction:column; position:relative; min-width:0; overflow:hidden; border:1px solid var(--line); border-radius:16px; background:#0c2027; }
+    .scene-header { position:absolute; z-index:2; left:26px; top:24px; right:26px; display:flex; justify-content:space-between; align-items:start; gap:10px; pointer-events:none; }
+    .eyebrow { margin:0 0 5px; font:11px/1.4 Bahnschrift,"Segoe UI",sans-serif; letter-spacing:.16em; color:var(--cyan); }
+    .scene-header h1 { font-size:22px; font-weight:500; letter-spacing:.04em; margin:0; }
+    .scene-header p { color:var(--muted); margin:7px 0 0; font-size:12px; }
+    .scene-state { display:flex; align-items:center; gap:7px; color:#c7d8d9; font-size:11px; background:#0b1b20da; border:1px solid #2a464b; padding:7px 10px; border-radius:7px; }
+    .dot { display:inline-block; width:6px; height:6px; background:var(--cyan); border-radius:50%; }
+    .scene-canvas { position:relative; min-height:530px; flex:1; isolation:isolate; background:radial-gradient(ellipse at 45% 45%,#1d3d49 0%,#102931 58%,#0b1c23 100%); }
+    .scene-canvas::before { content:""; position:absolute; inset:0; background-image:linear-gradient(#719ea409 1px,transparent 1px),linear-gradient(90deg,#719ea409 1px,transparent 1px); background-size:52px 52px; mask-image:radial-gradient(ellipse,#000 35%,transparent 76%); }
+    .scene-canvas::after { content:""; position:absolute; inset:0; pointer-events:none; box-shadow:inset 0 0 100px #06131955; z-index:-1; }
+    .ocean-lines { position:absolute; width:100%; height:100%; inset:0; opacity:.55; pointer-events:none; }
+    .compass { position:absolute; top:108px; right:30px; color:#729198; text-align:center; font:11px Bahnschrift,sans-serif; }
+    .compass svg { display:block; width:34px; height:44px; margin:5px auto; }
+    .device-marker { --device:#81e1d0; position:absolute; z-index:1; left:var(--x); top:var(--y); width:126px; padding:0; border:0; background:none; color:var(--device); transform:translate(-50%,-50%); text-align:center; }
+    .device-marker.boat { --device:#94bbdf; }
+    .model { position:relative; display:block; width:78px; height:66px; margin:0 auto 4px; filter:drop-shadow(0 10px 7px #020a0d85); transition:transform .25s; }
+    .model svg { width:100%; height:100%; }
+    .device-marker::before { content:""; position:absolute; width:87px; height:39px; border:1px solid transparent; border-radius:50%; left:50%; top:38px; transform:translateX(-50%); transition:.25s; }
+    .device-marker.active::before { border-color:#72e2cd70; background:#73e2cd0a; box-shadow:0 0 30px #73e2cd13; }
+    .device-marker:hover .model { transform:translateY(-3px); }
+    .device-label { display:inline-flex; flex-wrap:wrap; align-items:center; justify-content:center; gap:0 7px; padding:6px 9px; border:1px solid #416269; border-radius:6px; background:#0b1f26e8; box-shadow:0 4px 12px #0002; color:#e1efed; font-size:11px; }
+    .device-label b { font-weight:600; }
+    .device-label small { color:#a0babe; font:10px Bahnschrift,"Segoe UI",sans-serif; }
+    .device-marker.active .device-label { border-color:var(--cyan); background:#163931; }
+    .device-marker.active .device-label b { color:var(--cyan); }
+    .device-label em { display:none; width:100%; margin-top:3px; font-size:10px; color:var(--cyan); font-style:normal; }
+    .device-marker.changed .device-label em { display:block; }
+    .scene-coordinate { position:absolute; left:26px; bottom:22px; display:flex; align-items:center; gap:12px; color:#86a5ad; font:10px Bahnschrift,"Segoe UI",sans-serif; letter-spacing:.05em; }
+    .scale { width:65px; height:6px; border:1px solid #86a5ad; border-top:0; }
+    .scene-caption { position:absolute; right:26px; bottom:20px; color:#86a5ad; font-size:11px; }
+    .fleet-strip { padding:17px 22px 19px; background:#0c1d23; border-top:1px solid #254049; }
+    .fleet-heading { display:flex; align-items:center; justify-content:space-between; margin-bottom:12px; color:#a0b7bc; font-size:11px; }
+    .fleet-heading strong { font-size:12px; color:#dfebea; font-weight:500; }
+    .fleet-chips { display:grid; grid-template-columns:repeat(6,minmax(0,1fr)); gap:7px; }
+    .fleet-chip { display:flex; align-items:center; justify-content:center; gap:7px; padding:9px 5px; color:#a1b9bd; background:#11262d; border:1px solid #293f47; border-radius:7px; font:11px Bahnschrift,"Segoe UI",sans-serif; transition:.15s; }
+    .fleet-chip svg.icon { width:16px; height:16px; }
+    .fleet-chip.active { color:var(--cyan); background:#17372f; border-color:#467669; }
+
+    a { color:inherit; text-decoration:none; }
+    a:focus-visible { outline:2px solid var(--cyan); outline-offset:4px; }
+    .app { max-width:1800px; padding:0 24px 20px; }
+    .app-header { min-height:74px; flex-wrap:wrap; padding:14px 0; }
+    .header-right { gap:12px; }
+    .variant-nav { display:flex; flex-wrap:wrap; align-items:center; gap:4px; padding:4px; border:1px solid #253d43; border-radius:9px; background:#0b1c21; }
+    .variant-nav a { padding:7px 10px; border-radius:5px; color:#91adb1; font-size:12px; }
+    .variant-nav a:hover { color:var(--text); }
+    .variant-nav a[aria-current="page"] { color:var(--cyan); background:#18362f; }
+    .back-link { font-size:12px; color:#a5bcbf; }
+    .workspace { grid-template-columns:minmax(0,1fr) 410px; height:calc(100vh - 94px); min-height:680px; max-height:1040px; }
+    .scene-header h1 { font-weight:500; font-size:23px; }
+    .scene-state { font-size:11px; }
+    .voice-panel { min-width:0; display:flex; flex-direction:column; overflow:hidden; border:1px solid var(--line); border-radius:16px; background:#0c1c21; }
+    .voice-header { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:21px 21px 17px; border-bottom:1px solid var(--line); flex-shrink:0; }
+    .assistant-title { display:flex; gap:10px; align-items:center; }
+    .assistant-avatar { width:34px; height:34px; border-radius:10px; display:grid; place-items:center; color:var(--cyan); background:#19362e; border:1px solid #37564c; flex-shrink:0; }
+    .voice-header h2 { margin:0; font-weight:600; font-size:16px; }
+    .voice-header p { margin:3px 0 0; color:var(--muted); font-size:11px; }
+    .assistant-mode { color:#9fbcb7; font-size:10px; border:1px solid #3b514c; padding:4px 7px; border-radius:5px; white-space:nowrap; }
+    .provider { padding:10px 21px; background:#10242a; color:#9db5b9; font-size:11px; display:flex; align-items:center; justify-content:space-between; gap:5px; border-bottom:1px solid #21383f; flex-shrink:0; }
+    .provider span:first-child { display:flex; gap:6px; align-items:center; }
+    .provider .icon { width:14px; height:14px; color:#b7d4ce; }
+    .provider span:last-child { color:var(--amber); }
+    .conversation { flex:1; min-height:160px; overflow:auto; overscroll-behavior:contain; padding:20px; scroll-behavior:smooth; }
+    .empty-chat { height:100%; min-height:175px; display:flex; flex-direction:column; justify-content:center; align-items:flex-start; padding:8px 7px 18px; }
+    .empty-chat .eyebrow { font-size:10px; letter-spacing:.13em; color:#a7beb9; margin:0 0 12px; }
+    .empty-chat h3 { margin:0; color:#e7f2ef; font-size:24px; line-height:1.5; font-weight:500; }
+    .empty-chat p { margin:12px 0 0; color:#99b3b6; font-size:12px; line-height:1.9; max-width:280px; }
+    .empty-chat .conversation-promise { border-left:2px solid #48796b; padding-left:12px; margin-top:22px; font-size:11px; }
+    .chat-history { display:grid; gap:20px; }
+    .chat-round { min-width:0; }
+    .chat-round + .current-exchange { margin-top:20px; }
+    .current-exchange:not([hidden]) { margin-top:18px; }
+    .message-caption { color:#829fa5; font-size:10px; margin:0 0 6px; }
+    .user-caption { text-align:right; }
+    .user-message { width:fit-content; max-width:92%; margin:0 0 17px auto; padding:11px 14px; color:#d9efe7; font-size:13px; line-height:1.75; background:#1c3c33; border:1px solid #315548; border-radius:12px 12px 3px 12px; white-space:pre-wrap; overflow-wrap:anywhere; }
+    .assistant-caption { display:flex; align-items:center; gap:5px; color:#a5c4bc; }
+    .assistant-caption .icon { width:13px; height:13px; }
+    .assistant-message { padding:14px; border:1px solid #2a444a; background:#10252b; border-radius:3px 12px 12px 12px; }
+    .section-label { display:flex; align-items:center; justify-content:space-between; gap:7px; color:#e4efeb; font-size:12px; margin:0 0 13px; }
+    .section-label small { color:#98b2b6; font-size:10px; }
+    .plan-list { list-style:none; display:grid; gap:13px; padding:0; margin:0; }
+    .plan-list li { display:flex; align-items:center; gap:8px; font-size:12px; }
+    .step-number { width:22px; height:22px; display:grid; place-items:center; flex-shrink:0; border:1px solid #426058; background:#173b31; color:var(--cyan); border-radius:6px; font:11px Bahnschrift,sans-serif; }
+    .step-text { flex:1; min-width:0; overflow-wrap:anywhere; }
+    .step-state { font-size:10px; color:#9cafb2; flex-shrink:0; }
+    .plan-list li.done .step-state { color:var(--cyan); }
+    .plan-list li.executing .step-state { color:var(--amber); }
+    .plan-caption { margin:13px 0 0; padding-top:11px; border-top:1px solid #284047; color:#9bb4b7; font-size:10px; line-height:1.6; }
+    .error { color:var(--danger); font-size:12px; margin:0; line-height:1.8; }
+    .result { display:flex; align-items:flex-start; gap:8px; color:var(--cyan); margin-top:13px; }
+    .result .icon { width:16px; height:16px; flex-shrink:0; margin-top:2px; }
+    .result strong { display:block; font-size:12px; font-weight:500; }
+    .result p { margin:3px 0 0; font-size:10px; color:#9fbbb3; overflow-wrap:anywhere; }
+    .archived-response { color:#9ec3b6; font-size:11px; line-height:1.8; }
+    .archived-response strong { color:#c3e7d8; display:block; font-size:12px; font-weight:500; }
+    .history-note { margin:15px 0 0; font-size:10px; color:#86a4a9; text-align:center; }
+    .composer { padding:15px 18px 13px; border-top:1px solid #284047; background:#0f2329; flex-shrink:0; }
+    .examples { display:flex; flex-wrap:wrap; gap:5px; margin-bottom:12px; }
+    .example { background:#132e33; border:1px solid #304b51; color:#bdd0cd; border-radius:6px; padding:6px 8px; font-size:10px; text-align:left; }
+    .example:hover { color:var(--cyan); border-color:#598778; }
+    .composer-label { display:flex; justify-content:space-between; align-items:center; margin:0 0 8px; font-size:11px; color:#b6cccb; }
+    .composer-label small { color:#8daab0; font-size:10px; }
+    .transcript-box { background:#091a20; border:1px solid #38555c; border-radius:10px; overflow:hidden; }
+    .transcript-box:focus-within { border-color:#77cdbb; }
+    textarea { display:block; width:100%; height:83px; max-height:150px; resize:vertical; padding:12px 13px 5px; border:0; background:transparent; color:#e1f0ec; font-size:13px; line-height:1.7; }
+    textarea::placeholder { color:#819da5; }
+    textarea:focus-visible { outline-offset:-3px; }
+    .text-footer { display:flex; justify-content:space-between; align-items:center; gap:9px; padding:6px 9px 9px; color:#8fa9ae; font-size:10px; }
+    .capture { display:flex; gap:7px; align-items:center; min-width:0; }
+    .record-button { display:flex; align-items:center; justify-content:center; gap:5px; min-height:31px; border:1px solid #48685e; border-radius:6px; padding:5px 8px; background:#18392f; color:var(--cyan); font-size:11px; white-space:nowrap; }
+    .record-button .icon { width:14px; height:14px; }
+    .capture-title { color:#a0bab7; font-size:10px; }
+    .capture-note { color:#849fa6; font-size:10px; margin:7px 0 0; line-height:1.6; }
+    .recording .record-button { background:#a8e8d5; color:#123329; }
+    .recording .capture-title { color:var(--cyan); }
+    .action-row { margin-top:10px; }
+    .primary { display:flex; align-items:center; justify-content:center; gap:8px; width:100%; min-height:40px; border:1px solid var(--cyan); border-radius:7px; color:#12352a; background:var(--cyan); font-size:12px; font-weight:600; }
+    .primary:hover:not(:disabled) { background:#a0eddc; }
+    .primary .icon { width:16px; height:16px; }
+    .safety { text-align:center; font-size:10px; color:#91aaac; margin:8px 0 0; }
+    .voice-footer { background:#0a191e; padding:10px 14px; color:#8da9ad; font-size:10px; text-align:center; border-top:1px solid #233a40; flex-shrink:0; }
+    @media (max-width:1150px) { .app { padding-inline:16px; } .workspace { grid-template-columns:minmax(0,1fr) 380px; gap:12px; } .header-right { gap:10px; } .preview-tag { display:none; } .fleet-chips { grid-template-columns:repeat(3,minmax(0,1fr)); } .scene-header { left:20px; right:20px; } .scene-header h1 { font-size:19px; } .scene-state { font-size:10px; padding:6px; } .scene-caption { display:none; } }
+    @media (max-width:900px) { .app-header { gap:13px; } .header-right { width:100%; justify-content:space-between; flex-wrap:wrap; } .workspace { height:auto; min-height:0; max-height:none; grid-template-columns:1fr; } .voice-panel { order:-1; height:700px; } .conversation { padding:20px; } .empty-chat { min-height:130px; } .empty-chat h3 { font-size:24px; } .scene-canvas { min-height:490px; } .fleet-chips { grid-template-columns:repeat(6,minmax(0,1fr)); } }
+    @media (max-width:500px) { .app { padding:0 10px 14px; } .brand strong { font-size:14px; } .brand small { font-size:9px; } .variant-nav { width:100%; justify-content:space-between; } .variant-nav a { padding:7px 8px; font-size:11px; } .header-right { gap:10px; } .back-link { padding-inline:4px; font-size:11px; } .voice-panel { height:720px; } .voice-header { padding:17px 16px; } .provider { padding:10px 16px; font-size:10px; } .conversation { padding:16px; } .composer { padding:13px; } .capture-title { font-size:10px; } textarea { font-size:16px; height:98px; } .record-button { min-height:37px; } .primary { min-height:44px; } .example { min-height:34px; } .scene-header { left:15px; right:15px; } .scene-header h1 { font-size:17px; } .scene-header p { font-size:10px; } .scene-state { font-size:9px; } .scene-canvas { min-height:455px; } .device-marker { width:100px; } .model { width:59px; height:50px; } .device-label { padding:4px 6px; font-size:10px; gap:0 4px; } .device-label small { font-size:9px; } .fleet-strip { padding:15px; } .fleet-chips { grid-template-columns:repeat(3,minmax(0,1fr)); } .scene-coordinate { left:18px; font-size:9px; } }
+    @media (min-width:901px) and (max-height:850px) {
+      .app-header { min-height:64px; padding-block:8px; }
+      .workspace { height:calc(100dvh - 84px); min-height:0; }
+      .scene-canvas { min-height:0; }
+      .voice-header { padding:12px 17px; }
+      .provider { padding:8px 17px; }
+      .conversation { min-height:0; padding:15px 17px; }
+      .current-exchange:not([hidden]) { margin-top:0; }
+      .user-message { margin-bottom:10px; padding:8px 12px; font-size:12px; line-height:1.6; }
+      .assistant-message { padding:12px; }
+      .plan-caption { margin-top:9px; padding-top:8px; }
+      .empty-chat { min-height:0; padding:4px; }
+      .empty-chat h3 { font-size:21px; }
+      .empty-chat .conversation-promise { margin-top:14px; }
+      .composer { padding:10px 15px; }
+      .examples { margin-bottom:8px; }
+      textarea { height:44px; }
+      .composer .capture-note,.composer .safety { display:none; }
+      .voice-footer { padding:7px 12px; }
+    }
+    @media (prefers-reduced-motion:reduce) { *,*::before,*::after { animation:none!important; transition:none!important; scroll-behavior:auto!important; } }
+  </style>
+</head>
+<body>
+  <svg class="symbols" aria-hidden="true" xmlns="http://www.w3.org/2000/svg">
+    <defs>
+      <symbol id="i-mic" viewBox="0 0 24 24"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10v2a7 7 0 0 0 14 0v-2M12 19v3M8 22h8"/></symbol>
+      <symbol id="i-wave" viewBox="0 0 24 24"><path d="M3 10v4m4-8v12m5-16v20m5-16v12m4-8v4"/></symbol>
+      <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M5 12h14m-6-6 6 6-6 6"/></symbol>
+      <symbol id="i-check" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="m8 12 3 3 5-6"/></symbol>
+      <symbol id="i-cloud" viewBox="0 0 24 24"><path d="M6 18a5 5 0 0 1-1-9 7 7 0 0 1 13-1 5 5 0 0 1 0 10H6Z"/></symbol>
+      <symbol id="i-edit" viewBox="0 0 24 24"><path d="m15 4 5 5M4 20l5-1L20 8a3.5 3.5 0 0 0-5-5L4 14l-1 7Z"/></symbol>
+      <symbol id="i-uav" viewBox="0 0 24 24"><rect x="9" y="9" width="6" height="6" rx="1"/><path d="m9 9-3-3m9 3 3-3M9 15l-3 3m9-3 3 3"/><circle cx="5" cy="5" r="3"/><circle cx="19" cy="5" r="3"/><circle cx="5" cy="19" r="3"/><circle cx="19" cy="19" r="3"/></symbol>
+      <symbol id="i-usv" viewBox="0 0 24 24"><path d="M3 13h18l-3 6H6l-3-6Zm5 0V7h8v6m-4-6V3M3 22l3-1 3 1 3-1 3 1 3-1 3 1"/></symbol>
+      <symbol id="drone-model" viewBox="0 0 100 80"><g transform="translate(50 38) rotate(-20)"><ellipse cx="0" cy="14" rx="30" ry="9" fill="#020c1260"/><path d="M-24-21 24 21M24-21-24 21" stroke="#557b83" stroke-width="6"/><g fill="#142b35" stroke="#8ab4b8" stroke-width="1.4"><ellipse cx="-25" cy="-22" rx="17" ry="8"/><ellipse cx="25" cy="-22" rx="17" ry="8"/><ellipse cx="-25" cy="22" rx="17" ry="8"/><ellipse cx="25" cy="22" rx="17" ry="8"/></g><g fill="#7abbb5"><ellipse cx="-25" cy="-22" rx="12" ry="2"/><ellipse cx="25" cy="-22" rx="12" ry="2"/><ellipse cx="-25" cy="22" rx="12" ry="2"/><ellipse cx="25" cy="22" rx="12" ry="2"/></g><path d="m0-17 11 8v17L0 19-11 8V-9Z" fill="#aec8cb" stroke="#e4f2ee"/><path d="m0-12 6 5v12L0 11-6 5V-7Z" fill="#277e74"/><circle cy="-7" r="2" fill="#a8ffe3"/></g></symbol>
+      <symbol id="boat-model" viewBox="0 0 100 80"><g transform="translate(50 38) rotate(-32)"><path d="M-17-24-15 23 0 36 15 23 17-24Z" fill="#06121b50" transform="translate(0 5)"/><path d="m0-34 17 19-2 38H-15l-2-38Z" fill="#94b4c7" stroke="#d8e6e9" stroke-width="1.4"/><path d="m0-25 10 12-1 29H-9l-1-29Z" fill="#2c5368"/><rect x="-6" y="-9" width="12" height="16" rx="2" fill="#bbcfd8"/><rect x="-4" y="-8" width="8" height="6" rx="1" fill="#193849"/><path d="M0-9v-8" stroke="#d4e8eb" stroke-width="2"/><path d="M-12 30v8m24-8v8" stroke="#c2e7ee" opacity=".25" stroke-width="2"/></g></symbol>
+    </defs>
+  </svg>
+  <main class="app">
+    <header class="app-header">
+      <div class="brand"><span class="brand-mark"><svg class="icon"><use href="#i-uav"/></svg></span><div><strong>UAV · USV</strong><small>海空协同控制平台</small></div></div>
+      <div class="header-right"><nav class="variant-nav" aria-label="设计方案"><a href="voice-control-sidebar-preview.html">A 极简侧栏</a><a href="voice-control-dock-preview.html">B 底部指令栏</a><a href="voice-control-chat-preview.html" aria-current="page">C 对话助手</a></nav><a class="back-link" href="voice-control-design-options.html">全部方案 ↗</a><span class="preview-tag">交互设计预览</span></div>
+    </header>
+    <div class="workspace">
+      <section class="scene" aria-label="无人机与无人艇场景示意">
+        <header class="scene-header"><div><div class="eyebrow">AIR · SEA COLLABORATION</div><h1>海空协同任务</h1><p>3 架无人机 · 3 艘无人艇</p></div><span class="scene-state"><i class="dot"></i><span id="mission-state">任务待开始 · 演示</span></span></header>
+        <div class="scene-canvas" id="scene-canvas">
+          <svg class="ocean-lines" viewBox="0 0 900 700" preserveAspectRatio="none" aria-hidden="true"><g fill="none" stroke="#88bbca" stroke-width="1"><path d="M-80 490C160 160 475 640 1000 210" opacity=".08"/><path d="M-80 505C180 160 485 665 1000 225" opacity=".12"/><path d="M-80 520C180 175 500 685 1000 240" opacity=".09"/><path d="M-70 130C190 300 330 0 850 165S980 345 1030 380" opacity=".1"/><path d="M-70 145C190 315 330 15 850 180S980 360 1030 395" opacity=".06"/></g><path d="M290 180 480 240 650 180M290 180 240 445 445 475 665 410 650 180" fill="none" stroke="#93b6b9" stroke-opacity=".1" stroke-dasharray="4 9"/></svg>
+          <div class="compass" aria-hidden="true">N<svg viewBox="0 0 30 42"><path d="m15 2 9 29-9-6-9 6Z" fill="#85aaa7" opacity=".8"/><path d="M15 2v23l9 6Z" fill="#31505a"/></svg></div>
+          <div id="device-markers"></div>
+          <div class="scene-coordinate"><span class="scale"></span>50 m <span>LOCAL SIMULATION</span></div>
+          <span class="scene-caption">场景示意 · 非 Unity 实时画面</span>
+        </div>
+        <footer class="fleet-strip"><div class="fleet-heading"><strong>设备编号</strong><span>点击设备，查看对应编号</span></div><div class="fleet-chips" id="fleet-chips"></div></footer>
+      </section>
+      <aside class="voice-panel" aria-label="对话式语音控制">
+        <header class="voice-header"><div class="assistant-title"><span class="assistant-avatar"><svg class="icon" aria-hidden="true"><use href="#i-wave"/></svg></span><div><h2>海空控制助手</h2><p>说出目标，核对后执行</p></div></div><span class="assistant-mode">受控双步骤</span></header>
+        <div class="provider"><span><svg class="icon" aria-hidden="true"><use href="#i-cloud"/></svg>阿里云语音识别</span><span>未连接 · 离线演示</span></div>
+        <div class="conversation" id="conversation" role="log" aria-label="指令对话" aria-live="polite" aria-relevant="additions text">
+          <section class="empty-chat" id="empty-chat"><p class="eyebrow">VOICE COMMAND ASSISTANT</p><h3>你的下一步，<br>说出来就好。</h3><p>用一句话开始任务，或控制指定的无人机与无人艇。</p><p class="conversation-promise">先显示设备与动作，确认后再演示执行。<br>还没有发出任何指令。</p></section>
+          <div class="chat-history" id="chat-history"></div>
+          <section class="current-exchange" id="current-exchange" hidden>
+            <p class="message-caption user-caption">你 · 指令文字</p><p class="user-message" id="user-message"></p>
+            <p class="message-caption assistant-caption"><svg class="icon" aria-hidden="true"><use href="#i-wave"/></svg>控制助手</p>
+            <div class="assistant-message">
+              <section class="plan" id="plan" hidden aria-label="待执行指令"><div class="section-label">请核对这条指令<small id="step-count"></small></div><ol class="plan-list" id="plan-list"></ol><p class="plan-caption" id="plan-caption">确认后执行；前一步成功，才继续下一步。</p></section>
+              <p class="error" id="error" role="alert" hidden></p>
+              <div class="result" id="result" role="status" hidden><svg class="icon" aria-hidden="true"><use href="#i-check"/></svg><div><strong id="result-title"></strong><p id="result-detail"></p></div></div>
+            </div>
+          </section>
+          <p class="history-note" id="history-note" hidden>最多保留 4 轮历史记录，当前指令单独展示</p>
+        </div>
+        <section class="composer" aria-label="指令输入区">
+          <div class="examples" aria-label="示例指令"><button type="button" class="example" data-example="开始任务，然后让一号无人机悬停。">开始任务 → 一号机悬停</button><button type="button" class="example" data-example="二号无人艇驻留。">二号艇驻留</button><button type="button" class="example" data-example="一号无人机安全归队。">一号机归队</button></div>
+          <label class="composer-label" for="transcript">语音转文字<small>支持编辑 · Ctrl + Enter 发送</small></label>
+          <div class="transcript-box"><textarea id="transcript" maxlength="120" placeholder="例如：开始任务，然后让一号无人机悬停。" aria-describedby="capture-note"></textarea><div class="text-footer"><div class="capture" id="capture"><button class="record-button" id="record" type="button" aria-label="演示语音输入" aria-pressed="false"><svg class="icon" aria-hidden="true"><use href="#i-mic"/></svg><span>语音演示</span></button><span class="capture-title" id="capture-title">点击说一句</span></div><span id="char-count">0 / 120</span></div></div>
+          <p class="capture-note" id="capture-note">也可以直接输入指令，不采集麦克风。</p>
+          <div class="action-row"><button type="button" class="primary" id="submit" disabled><span id="submit-label">发送并预览指令</span><svg class="icon" aria-hidden="true"><use href="#i-arrow"/></svg></button></div>
+          <p class="safety" id="safety">先核对设备与动作，再确认执行</p>
+        </section>
+        <footer class="voice-footer">仅离线交互演示 · 非真实 Unity · 不控制真实设备</footer>
+      </aside>
+    </div>
+  </main>
+  <script>
+    (() => {
+      'use strict';
+      const byId = id => document.getElementById(id);
+      const devices = [
+        { code:'UAV-001', name:'一号无人机', short:'一号机', type:'uav', x:28, y:32 },
+        { code:'UAV-002', name:'二号无人机', short:'二号机', type:'uav', x:50, y:41 },
+        { code:'UAV-003', name:'三号无人机', short:'三号机', type:'uav', x:73, y:30 },
+        { code:'USV-001', name:'一号无人艇', short:'一号艇', type:'usv', x:23, y:66 },
+        { code:'USV-002', name:'二号无人艇', short:'二号艇', type:'usv', x:48, y:74 },
+        { code:'USV-003', name:'三号无人艇', short:'三号艇', type:'usv', x:74, y:62 }
+      ];
+      let selected = 'UAV-001';
+      let mission = 'READY';
+      let currentPlan = null;
+      let recording = false;
+      let busy = false;
+      let recordTimer;
+      let demoTimer;
+      let completedRound = null;
+      function scrollConversation() {
+        requestAnimationFrame(() => { byId('conversation').scrollTop = byId('conversation').scrollHeight; });
+      }
+      function showUserMessage() {
+        byId('empty-chat').hidden = true;
+        byId('current-exchange').hidden = false;
+        byId('user-message').textContent = input.value.trim();
+        scrollConversation();
+      }
+      function archiveCompletedRound() {
+        if (!completedRound) return;
+        const round = document.createElement('section');
+        round.className = 'chat-round';
+        const caption = document.createElement('p'); caption.className = 'message-caption user-caption'; caption.textContent = '你 · 指令文字';
+        const request = document.createElement('p'); request.className = 'user-message'; request.textContent = completedRound.text;
+        const response = document.createElement('div'); response.className = 'assistant-message archived-response';
+        const status = document.createElement('strong'); status.textContent = '✓ 演示已完成';
+        const detail = document.createElement('span'); detail.textContent = completedRound.result;
+        response.append(status, detail); round.append(caption, request, response);
+        const history = byId('chat-history'); history.append(round);
+        while (history.children.length > 4) history.firstElementChild.remove();
+        byId('history-note').hidden = history.children.length < 4;
+        completedRound = null;
+      }
+      const input = byId('transcript');
+      const submit = byId('submit');
+      const examples = [...document.querySelectorAll('[data-example]')];
+      const labels = { hold:'悬停', stop:'停止', return:'独立返航', rejoin:'安全归队', land:'降落' };
+      const stateLabels = { hold:'悬停中', stop:'已停止', return:'返航中', rejoin:'已归队', land:'已降落' };
+      const exampleText = '开始任务，然后让一号无人机悬停。';
+      function icon(name) { return '<svg class="icon" aria-hidden="true"><use href="#i-' + name + '"/></svg>'; }
+      devices.forEach(device => {
+        const marker = document.createElement('button');
+        marker.type = 'button';
+        marker.className = 'device-marker ' + (device.type === 'usv' ? 'boat' : '');
+        marker.dataset.code = device.code;
+        marker.style.setProperty('--x', device.x + '%');
+        marker.style.setProperty('--y', device.y + '%');
+        marker.setAttribute('aria-label', device.name + ' ' + device.code);
+        marker.innerHTML = '<span class="model"><svg viewBox="0 0 100 80" aria-hidden="true"><use href="#' + (device.type === 'uav' ? 'drone-model' : 'boat-model') + '"/></svg></span><span class="device-label"><b>' + device.short + '</b><small>' + device.code + '</small><em></em></span>';
+        marker.addEventListener('click', () => selectDevice(device.code));
+        byId('device-markers').append(marker);
+        const chip = document.createElement('button');
+        chip.type = 'button'; chip.className = 'fleet-chip'; chip.dataset.code = device.code;
+        chip.innerHTML = icon(device.type) + device.code;
+        chip.setAttribute('aria-label', '查看' + device.name + ' ' + device.code);
+        chip.addEventListener('click', () => selectDevice(device.code));
+        byId('fleet-chips').append(chip);
+      });
+      function selectDevice(code) {
+        selected = code;
+        document.querySelectorAll('[data-code]').forEach(el => {
+          el.classList.toggle('active', el.dataset.code === selected);
+          el.setAttribute('aria-pressed', String(el.dataset.code === selected));
+        });
+      }
+      function showError(message) { showUserMessage(); byId('error').textContent = message; byId('error').hidden = false; scrollConversation(); }
+      function invalidate() {
+        archiveCompletedRound();
+        byId('current-exchange').hidden = true;
+        currentPlan = null;
+        byId('plan').hidden = true; byId('error').hidden = true; byId('result').hidden = true;
+        byId('submit-label').textContent = '发送并预览指令';
+        byId('char-count').textContent = input.value.length + ' / 120';
+        submit.disabled = !input.value.trim() || recording || busy;
+        byId('safety').textContent = '先核对设备与动作，再确认执行';
+      }
+      input.addEventListener('input', invalidate);
+      input.addEventListener('keydown', event => {
+        if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
+          event.preventDefault();
+          if (!submit.disabled) submit.click();
+        }
+      });
+      examples.forEach(button => button.addEventListener('click', () => {
+        if (busy || recording) return;
+        input.value = button.dataset.example; invalidate(); preview();
+      }));
+      function setInputLock(locked) {
+        input.disabled = locked;
+        examples.forEach(button => { button.disabled = locked; });
+      }
+      function finishRecording() {
+        clearTimeout(recordTimer); clearTimeout(demoTimer); recording = false;
+        byId('capture').classList.remove('recording');
+        byId('record').setAttribute('aria-pressed', 'false');
+        byId('record').setAttribute('aria-label', '演示语音输入');
+        byId('capture-title').textContent = '演示文字已就绪';
+        byId('capture-note').textContent = '演示识别文字已填入，可编辑后重新发送。';
+        input.value = exampleText; setInputLock(false); invalidate(); preview();
+      }
+      byId('record').addEventListener('click', () => {
+        if (busy) return;
+        if (recording) { finishRecording(); return; }
+        recording = true; input.value = ''; invalidate(); setInputLock(true);
+        byId('capture').classList.add('recording');
+        byId('record').setAttribute('aria-pressed', 'true');
+        byId('record').setAttribute('aria-label', '结束语音输入演示');
+        byId('capture-title').textContent = '演示识别中…';
+        byId('capture-note').textContent = '未使用麦克风 · 再次点击结束演示';
+        demoTimer = setTimeout(() => { input.value = '开始任务，然后让…'; byId('char-count').textContent = input.value.length + ' / 120'; }, 650);
+        recordTimer = setTimeout(finishRecording, 1600);
+      });
+      // Deliberately small, anchored grammar for this offline UI prototype.
+      // No remote ASR, business API, microphone permission, or device connection.
+      function parseDeviceCommand(text) {
+        const match = text.match(/^(?:请)?(?:让)?(?:(一|二|两|三|1|2|3)号(无人机|无人艇)|((?:UAV|USV)-0{0,2}[123]))(?:进行)?(悬停|驻留|停止|独立返航|返航|安全归队|归队|降落)$/i);
+        if (!match) throw new Error('请明确说出设备编号和动作，例如“一号无人机悬停”。此预览仅支持 1–3 号设备。');
+        const number = { 一:1, 二:2, 两:2, 三:3, 1:1, 2:2, 3:3 }[match[1]];
+        const code = match[3] ? match[3].toUpperCase().replace(/-0{0,2}([123])$/, '-00$1') : (match[2] === '无人机' ? 'UAV' : 'USV') + '-00' + number;
+        const device = devices.find(item => item.code === code);
+        const verb = match[4];
+        if ((verb === '悬停' && device.type !== 'uav') || (verb === '驻留' && device.type !== 'usv')) throw new Error('无人机请使用“悬停”，无人艇请使用“驻留”。');
+        if (verb === '停止' && device.type !== 'usv') throw new Error('无人机请使用“悬停”或“降落”；“停止”适用于无人艇。');
+        if (verb === '降落' && device.type !== 'uav') throw new Error('“降落”仅适用于无人机。');
+        const action = ({ 悬停:'hold', 驻留:'hold', 停止:'stop', 独立返航:'return', 返航:'return', 安全归队:'rejoin', 归队:'rejoin', 降落:'land' })[verb];
+        return { type:'device', device, action, label:code + ' · ' + (action === 'hold' && device.type === 'usv' ? '驻留' : labels[action]) };
+      }
+      function parse(text) {
+        const normalized = text.replace(/[\s，,。！!；;、]/g, '').replace(/^(请)?先/, '');
+        if (!normalized) throw new Error('请先输入指令。');
+        const pieces = normalized.split(/然后|之后|接着|再/);
+        if (pieces.length > 2) throw new Error('当前仅支持受控双步骤，请把指令缩短为“开始任务，然后控制一台设备”。');
+        if (pieces.length === 2) {
+          if (!/^(请)?开始任务$/.test(pieces[0])) throw new Error('双步骤首步须为“开始任务”，第二步控制一台设备。');
+          const deviceStep = parseDeviceCommand(pieces[1]);
+          if (deviceStep.action !== 'hold') throw new Error('当前双步骤仅支持“开始任务 → 单台无人机悬停 / 无人艇驻留”。其他动作请在任务开始后单独下达。');
+          return [{ type:'start', label:'开始任务' }, deviceStep];
+        }
+        if (/^(请)?开始任务$/.test(normalized)) return [{ type:'start', label:'开始任务' }];
+        if (/^(请)?暂停任务$/.test(normalized)) return [{ type:'pause', label:'暂停任务' }];
+        if (/^(请)?继续任务$/.test(normalized)) return [{ type:'resume', label:'继续任务' }];
+        if (/^(请)?停止任务$/.test(normalized)) return [{ type:'stop', label:'停止任务' }];
+        return [parseDeviceCommand(normalized)];
+      }
+      function checkPlan(plan) {
+        if (plan[0].type === 'start' && mission !== 'READY' && mission !== 'STOPPED') throw new Error('演示任务已开始。请直接下达单设备指令，或先说“停止任务”。');
+        if (plan[0].type === 'device' && mission !== 'RUNNING') throw new Error('请先开始任务。可以说“开始任务，然后让一号无人机悬停”。');
+        if (plan[0].type === 'pause' && mission !== 'RUNNING') throw new Error('只有运行中的任务可以暂停。');
+        if (plan[0].type === 'resume' && mission !== 'PAUSED') throw new Error('只有暂停中的任务可以继续。');
+        if (plan[0].type === 'stop' && !['RUNNING','PAUSED'].includes(mission)) throw new Error('当前没有可停止的演示任务。');
+      }
+      function preview() {
+        showUserMessage();
+        byId('error').hidden = true; byId('result').hidden = true;
+        try {
+          currentPlan = null; byId('plan').hidden = true;
+          const parsed = parse(input.value); checkPlan(parsed); currentPlan = parsed;
+          byId('plan-list').replaceChildren();
+          currentPlan.forEach((step, index) => {
+            const li = document.createElement('li');
+            const number = document.createElement('span'); number.className = 'step-number'; number.textContent = String(index + 1);
+            const text = document.createElement('span'); text.className = 'step-text'; text.textContent = step.label;
+            const state = document.createElement('span'); state.className = 'step-state'; state.textContent = '待确认';
+            li.append(number, text, state); byId('plan-list').append(li);
+          });
+          const target = currentPlan.find(step => step.device);
+          if (target) selectDevice(target.device.code);
+          byId('step-count').textContent = currentPlan.length === 2 ? '受控双步骤' : '单步指令';
+          byId('plan-caption').textContent = currentPlan.length === 2 ? '前一步成功，才继续下一步。' : '请核对设备编号与动作。';
+          byId('plan').hidden = false;
+          byId('submit-label').textContent = '确认执行 · 演示';
+          byId('safety').textContent = '仅更新左侧示意场景，不控制真实设备';
+        } catch (error) { showError(error.message); byId('submit-label').textContent = '重新预览指令'; }
+      }
+      function updateMission(value) {
+        mission = value;
+        byId('mission-state').textContent = ({ READY:'任务待开始', RUNNING:'任务运行中 · 演示', PAUSED:'任务已暂停 · 演示', STOPPED:'任务已停止 · 演示' })[value];
+      }
+      function applyStep(step) {
+        if (step.type === 'start') {
+          document.querySelectorAll('.device-marker').forEach(marker => { marker.classList.remove('changed'); marker.querySelector('em').textContent = ''; });
+          updateMission('RUNNING');
+        } else if (step.type === 'pause') updateMission('PAUSED');
+        else if (step.type === 'resume') updateMission('RUNNING');
+        else if (step.type === 'stop') updateMission('STOPPED');
+        else {
+          const marker = document.querySelector('.device-marker[data-code="' + step.device.code + '"]');
+          marker.classList.add('changed');
+          marker.querySelector('em').textContent = step.action === 'hold' && step.device.type === 'usv' ? '驻留中' : stateLabels[step.action];
+          selectDevice(step.device.code);
+        }
+      }
+      submit.addEventListener('click', async () => {
+        if (busy || recording || !input.value.trim()) return;
+        if (!currentPlan) { preview(); return; }
+        try { checkPlan(currentPlan); } catch (error) { currentPlan = null; showError(error.message); byId('submit-label').textContent = '重新预览指令'; return; }
+        const steps = currentPlan;
+        busy = true; submit.disabled = true; byId('record').disabled = true; setInputLock(true);
+        byId('submit-label').textContent = '正在执行演示…';
+        for (const [index, step] of steps.entries()) {
+          const row = byId('plan-list').children[index]; row.className = 'executing'; row.querySelector('.step-state').textContent = '演示中';
+          await new Promise(resolve => setTimeout(resolve, 650));
+          applyStep(step); row.className = 'done'; row.querySelector('.step-state').textContent = '已完成';
+        }
+        byId('result-title').textContent = '指令演示完成';
+        byId('result-detail').textContent = steps.map(step => step.label).join(' → ');
+        byId('result').hidden = false;
+        completedRound = { text: byId('user-message').textContent, result: steps.map(step => step.label).join(' → ') };
+        scrollConversation();
+        byId('plan-caption').textContent = '演示结果已更新至左侧设备标签。';
+        byId('submit-label').textContent = '已完成，请输入新指令';
+        currentPlan = null; busy = false; byId('record').disabled = false; setInputLock(false);
+      });
+      selectDevice(selected);
+    })();
+  </script>
+</body>
+</html>

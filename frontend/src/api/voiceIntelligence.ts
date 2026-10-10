@@ -100,6 +100,18 @@ function isCandidate(value: unknown): value is VoiceIntentCandidate {
         && (targeted.deviceCommandType.startsWith('UAV_') === String(targeted.targetDeviceCode).toUpperCase().startsWith('UAV'))
         && (targeted.confidence === null || (typeof targeted.confidence === 'number' && targeted.confidence >= 0 && targeted.confidence <= 1))
     })()
+    || commonResult(value) && (() => {
+      const sequence = value as unknown as Record<string, unknown>
+      if (!hasOnlyKeys(sequence, ['status', 'requestId', 'intent', 'action', 'steps', 'normalizedText', 'confidence', 'provider', 'model'])
+        || sequence.status !== 'CANDIDATE' || sequence.intent !== 'COMMAND_SEQUENCE' || sequence.action !== 'SEQUENCE'
+        || sequence.confidence !== null || !Array.isArray(sequence.steps) || sequence.steps.length !== 2) return false
+      const [start, device] = sequence.steps as Array<Record<string, unknown>>
+      return hasOnlyKeys(start!, ['index', 'action']) && start!.index === 0 && start!.action === 'START'
+        && hasOnlyKeys(device!, ['index', 'action', 'targetDeviceCode', 'deviceCommandType'])
+        && device!.index === 1 && device!.action === 'DEVICE_COMMAND'
+        && boundedString(device!.targetDeviceCode, 1, 96)
+        && (device!.deviceCommandType === 'UAV_HOVER' || device!.deviceCommandType === 'USV_HOLD')
+    })()
 }
 
 function isNotReady(value: unknown): value is VoiceIntentNotReady {

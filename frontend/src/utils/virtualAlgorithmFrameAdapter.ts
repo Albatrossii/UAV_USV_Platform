@@ -3,6 +3,7 @@ import type {
   AlgorithmRuntimeFrame,
   AlgorithmTargetFrame,
 } from '../types/mission'
+import { readReturnInfrastructure, toGlobalReturnInfrastructure, type ReturnInfrastructure } from './virtualReturnInfrastructure'
 
 export const VIRTUAL_SIMULATION_RUNTIME_MODE = 'VIRTUAL_SIMULATION' as const
 export const UAV_MAX_SPEED_MPS = 15
@@ -41,6 +42,7 @@ export interface VirtualPoseBatchPayload {
   sampleTime: number
   vehicles: VirtualPoseInput[]
   targets: VirtualPoseInput[]
+  returnInfrastructure?: ReturnInfrastructure
 }
 
 export interface VirtualPoseState {
@@ -259,6 +261,9 @@ export function adaptVirtualAlgorithmFrame(
   )
 
   for (const pose of [...vehicles, ...targets]) rememberPose(nextState, pose, frame.timestamp)
+  const infrastructure = frame.metrics?.returnInfrastructure
+  const returnInfrastructure = infrastructure == null ? undefined
+    : toGlobalReturnInfrastructure(readReturnInfrastructure(infrastructure), options.fleetOrigin)
 
   return {
     payload: {
@@ -269,6 +274,7 @@ export function adaptVirtualAlgorithmFrame(
       sampleTime: frame.timestamp,
       vehicles,
       targets,
+      ...(returnInfrastructure ? { returnInfrastructure } : {}),
     },
     nextState,
     sourceCoordinateFrame: coordinateFrame,

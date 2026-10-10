@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { adaptVirtualAlgorithmFrame } from '../virtualAlgorithmFrameAdapter'
 import type { AlgorithmRuntimeFrame } from '@/types/mission'
+import { buildReturnInfrastructure, toGlobalReturnInfrastructure } from '../virtualReturnInfrastructure'
 const frame = (coordinateFrame: 'FLEET_LOCAL_ENU' | 'GLOBAL_ENU') => ({
   runId: 991001, sequence: 12, timestamp: 1000, coordinateFrame,
   agents: [{ code: 'UAV-001', type: 'UAV', x: 10, y: 20, z: 25, heading: 90, status: 'ACTIVE' },
@@ -24,5 +25,61 @@ describe('original algorithm pose compatibility', () => {
     const result=adaptVirtualAlgorithmFrame(frame('GLOBAL_ENU'),new Map(),{fleetOrigin:{eastM:-360,northM:-285,upM:2}})
     expect(result.payload.vehicles[0]).toMatchObject({eastM:10,northM:20,upM:25,headingDeg:90})
     expect(result.payload.vehicles[1]).toMatchObject({eastM:-2,northM:3,upM:0,headingDeg:180})
+  })
+})
+
+describe('return infrastructure frame compatibility', () => {
+  const origin = { eastM: -360, northM: -285, upM: 11 }
+  const localLayout = () => buildReturnInfrastructure({ uavCount: 3, usvCount: 3, worldHeight: 280 })
+
+  it.each(['FLEET_LOCAL_ENU', 'GLOBAL_ENU'] as const)('converts local metadata using its own frame even when vehicle coordinates use %s', coordinateFrame => {
+    const input = frame(coordinateFrame)
+    const infrastructure = localLayout()
+    input.metrics = { returnInfrastructure: infrastructure }
+    const original = structuredClone(input)
+    const result = adaptVirtualAlgorithmFrame(input, new Map(), { fleetOrigin: origin })
+    expect(result.payload.returnInfrastructure).toEqual(toGlobalReturnInfrastructure(infrastructure, origin))
+    expect(input).toEqual(original)
+    expect(adaptVirtualAlgorithmFrame(input, result.nextState, { fleetOrigin: origin }).payload.returnInfrastructure)
+      .toEqual(result.payload.returnInfrastructure)
+  })
+
+  it.each(['FLEET_LOCAL_ENU', 'GLOBAL_ENU'] as const)('does not double-shift global metadata in a %s frame', coordinateFrame => {
+    const input = frame(coordinateFrame)
+    const global = toGlobalReturnInfrastructure(localLayout(), origin)
+    input.metrics = { returnInfrastructure: global }
+    expect(adaptVirtualAlgorithmFrame(input, new Map(), { fleetOrigin: origin }).payload.returnInfrastructure).toEqual(global)
+  })
+
+  it('accepts a fully global frame and global metadata without a fleet origin', () => {
+    const input = frame('GLOBAL_ENU')
+    const global = toGlobalReturnInfrastructure(localLayout(), origin)
+    input.metrics = { returnInfrastructure: global }
+    expect(adaptVirtualAlgorithmFrame(input).payload.returnInfrastructure).toEqual(global)
+  })
+
+  it('requires an explicit origin for local metadata even when the poses are already global', () => {
+    const input = frame('GLOBAL_ENU')
+    input.metrics = { returnInfrastructure: localLayout() }
+    expect(() => adaptVirtualAlgorithmFrame(input)).toThrow(/origin/i)
+  })
+
+  it.each([undefined, {}, { returnInfrastructure: null }])('leaves legacy frames unchanged when return metadata is absent: %o', metrics => {
+    const input = frame('FLEET_LOCAL_ENU')
+    const expected = adaptVirtualAlgorithmFrame(input, new Map(), { fleetOrigin: origin })
+    if (metrics !== undefined) input.metrics = metrics
+    const adapted = adaptVirtualAlgorithmFrame(input, new Map(), { fleetOrigin: origin })
+    expect(adapted.payload).toEqual(expected.payload)
+    expect(adapted.nextState).toEqual(expected.nextState)
+    expect(adapted.payload).not.toHaveProperty('returnInfrastructure')
+  })
+
+  it('rejects malformed return metadata without mutating the previous pose state', () => {
+    const input = frame('GLOBAL_ENU')
+    input.metrics = { returnInfrastructure: { version: 'bad' } }
+    const previous = new Map([['UAV-001', { eastM: 5, northM: 6, upM: 7, timestamp: 900, headingDeg: 90 }]])
+    const original = new Map(previous)
+    expect(() => adaptVirtualAlgorithmFrame(input, previous)).toThrow()
+    expect(previous).toEqual(original)
   })
 })

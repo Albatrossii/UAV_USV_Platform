@@ -56,9 +56,15 @@ export interface VoiceIntentCandidate {
   status: 'CANDIDATE'
   requestId: string
   intent: VoiceIntent
-  action: VoiceAction | 'DEVICE_COMMAND'
+  action: VoiceAction | 'DEVICE_COMMAND' | 'SEQUENCE'
   targetDeviceCode?: string
   deviceCommandType?: DeviceCommandType
+  steps?: Array<{
+    index: number
+    action: 'START' | 'DEVICE_COMMAND'
+    targetDeviceCode?: string
+    deviceCommandType?: 'UAV_HOVER' | 'USV_HOLD'
+  }>
   normalizedText: string
   confidence: number | null
   provider: string

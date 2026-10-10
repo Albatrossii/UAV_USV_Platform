@@ -127,6 +127,34 @@ describe('voice intelligence backend API adapter', () => {
     }, expect.objectContaining({ timeout: VOICE_PARSE_TIMEOUT_MS }))
   })
 
+  it('accepts a controlled two-step sequence candidate', async () => {
+    mocks.post.mockResolvedValue({ data: { data: {
+      status: 'CANDIDATE', requestId, intent: 'COMMAND_SEQUENCE', action: 'SEQUENCE',
+      steps: [
+        { index: 0, action: 'START' },
+        { index: 1, action: 'DEVICE_COMMAND', targetDeviceCode: 'UAV-001', deviceCommandType: 'UAV_HOVER' },
+      ],
+      normalizedText: '开始任务后一号无人机悬停', confidence: null,
+      provider: 'local-rules', model: 'rules-sequence-v1',
+    } } })
+    const result = await interpretVoiceText({
+      requestId,
+      text: '开始任务后一号无人机悬停',
+      locale: 'zh-CN',
+      allowedActions: ['START'],
+      availableDeviceCodes: ['UAV-001'],
+      runtimeContext: {
+        runtimeRef: '22222222-2222-4222-8222-222222222222',
+        runtimeGeneration: '33333333-3333-4333-8333-333333333333',
+        contextVersion: 4,
+      },
+    })
+    expect(result).toMatchObject({
+      status: 'CANDIDATE', intent: 'COMMAND_SEQUENCE', action: 'SEQUENCE',
+      steps: [{ action: 'START' }, { targetDeviceCode: 'UAV-001', deviceCommandType: 'UAV_HOVER' }],
+    })
+  })
+
   it('does not send a request that was already cancelled', async () => {
     const controller = new AbortController()
     controller.abort()

@@ -16,7 +16,7 @@ const messages: Record<string, string> = {
   VOICE_AUDIO_CONVERTER_UNAVAILABLE: '后端音频转换工具未就绪，请联系管理员配置 FFmpeg 后再录音。',
   VOICE_AUDIO_TOO_LONG: '音频超过 60 秒，请缩短后重试。',
   VOICE_NO_SPEECH: '未识别到语音，请重新录音。',
-  VOICE_RATE_LIMITED: '请求受限，请等待并核对本次请求状态。',
+  VOICE_RATE_LIMITED: '识别请求受限：可能是上一条仍在处理、短时间请求过多或语音服务繁忙。请等待倒计时后重试原请求；不会自动重发。若持续受限，可明确重新发起识别，或检查其他页面及服务配额。',
   VOICE_BUDGET_EXCEEDED: '本阶段调用预算已耗尽，请联系管理员。',
   VOICE_UPLOAD_TIMEOUT: '上传超时，请使用原请求恢复查询。',
   VOICE_TRANSCRIPTION_TIMEOUT: '语音识别超时，请保留请求编号并核对结果。',
@@ -27,14 +27,19 @@ const messages: Record<string, string> = {
 
 export function voiceRecoveryInfo(error: unknown) {
   const code = error && typeof error === 'object' && 'code' in error ? String(error.code) : ''
+  // Local upload/concurrency/rate guards reject before reserving an ID. A 429
+  // alone does not prove that this ID has a cached terminal provider outcome.
+  // Same-ID retry is safe in either case; a new ID requires an explicit action.
+  const rateLimited = error instanceof ApiClientError && error.status === 429 && code === 'VOICE_RATE_LIMITED'
   // Once the backend has replied with one of these provider failures, it has
   // cached that outcome under the request ID. Replaying it cannot run ASR again.
   // A client-side timeout has no backend reply and should keep same-ID recovery.
   const cachedProviderFailure = error instanceof ApiClientError && error.status !== undefined
-    && ['VOICE_RATE_LIMITED', 'VOICE_PROVIDER_UNAVAILABLE', 'VOICE_PROVIDER_INVALID_RESPONSE',
+    && ['VOICE_PROVIDER_UNAVAILABLE', 'VOICE_PROVIDER_INVALID_RESPONSE',
       'VOICE_TRANSCRIPTION_TIMEOUT'].includes(code)
   return {
     code,
+    rateLimited,
     message: cachedProviderFailure
       ? `${messages[code]} 此编号已有失败回执，重复提交只会返回同一结果；请先联系管理员核对。`
       : code === 'VOICE_TRANSCRIPTION_TIMEOUT'
@@ -46,6 +51,6 @@ export function voiceRecoveryInfo(error: unknown) {
       'VOICE_AUDIO_TOO_LARGE', 'VOICE_AUDIO_EMPTY', 'VOICE_AUDIO_FORMAT_UNSUPPORTED',
       'VOICE_AUDIO_CONVERTER_UNAVAILABLE',
       'VOICE_AUDIO_TOO_LONG', 'VOICE_NO_SPEECH', 'VOICE_TEXT_TOO_LONG', 'VOICE_BUDGET_EXCEEDED'].includes(code),
-    retryAfter: error instanceof ApiClientError ? error.retryAfterSeconds ?? (code === 'VOICE_REQUEST_IN_PROGRESS' ? 2 : 0) : 0,
+    retryAfter: error instanceof ApiClientError ? error.retryAfterSeconds ?? (rateLimited || code === 'VOICE_REQUEST_IN_PROGRESS' ? 2 : 0) : 0,
   }
 }

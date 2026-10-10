@@ -137,7 +137,9 @@ export async function createVoiceProposal(payload: VoiceProposalRequest, idempot
     if (payload.expectedContextVersion !== mockContext.contextVersion) {
       throw new ApiClientError('运行上下文已变化，请刷新后重试', 409, 'CONTEXT_CHANGED')
     }
-    const action = payload.intent.replace('MISSION_', '') as VoiceProposal['plan']['action']
+    const action = (payload.intent === 'COMMAND_SEQUENCE'
+      ? 'SEQUENCE'
+      : payload.intent.replace('MISSION_', '')) as VoiceProposal['plan']['action']
     const plan: VoiceProposal['plan'] = {
       runtimeRef: mockContext.runtimeRef,
       runtimeGeneration: mockContext.runtimeGeneration,

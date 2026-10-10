@@ -4,9 +4,10 @@ export type VoiceIntent =
   | 'MISSION_RESUME'
   | 'MISSION_STOP'
   | 'SINGLE_DEVICE_CONTROL'
+  | 'COMMAND_SEQUENCE'
 
 export type VoiceAction = 'START' | 'PAUSE' | 'RESUME' | 'STOP'
-export type VoicePlanAction = VoiceAction | 'DEVICE_COMMAND'
+export type VoicePlanAction = VoiceAction | 'DEVICE_COMMAND' | 'SEQUENCE'
 export type DeviceCommandType = 'UAV_HOVER' | 'UAV_RESUME' | 'UAV_RETURN' | 'UAV_LAND' | 'USV_HOLD' | 'USV_RESUME' | 'USV_RETURN' | 'USV_STOP'
 export type VoiceRuntimeState =
   | 'PREPARED' | 'PREVIEW' | 'RUNNING' | 'PAUSED' | 'STOPPED'
@@ -54,8 +55,24 @@ export interface VoiceFrozenPlan {
   action: VoicePlanAction
   targetDeviceCode?: string
   deviceCommandType?: DeviceCommandType
+  steps?: VoiceSequencePlanStep[]
   explicitDeviceCodes: string[]
   policyVersion: 'voice-p0.v1'
+}
+
+export interface VoiceSequencePlanStep {
+  index: number
+  action: 'START' | 'DEVICE_COMMAND'
+  targetDeviceCode?: string
+  deviceCommandType?: 'UAV_HOVER' | 'USV_HOLD'
+}
+
+export interface VoiceSequenceExecutionStep extends VoiceSequencePlanStep {
+  state: 'PENDING' | VoiceExecutionState
+  executionId: string | null
+  errorCode: string | null
+  startedAt?: string
+  completedAt?: string
 }
 
 export interface VoiceProposal {
@@ -88,6 +105,9 @@ export interface VoiceExecution {
   errorCode: string | null
   timedOutAt: string | null
   presentationStatus: VoicePresentationStatus
+  currentStepIndex?: number
+  sequenceStatus?: 'EXECUTING_START' | 'WAITING_STEP_PRECONDITION' | 'EXECUTING_DEVICE_COMMAND' | 'SUCCEEDED' | 'FAILED'
+  steps?: VoiceSequenceExecutionStep[]
   createdAt: string
   updatedAt: string
 }

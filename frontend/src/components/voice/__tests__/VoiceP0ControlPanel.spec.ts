@@ -72,6 +72,69 @@ function mountPanel(presentationStatus: VoiceExecution['presentationStatus']) {
 }
 
 describe('VoiceP0ControlPanel presentation recovery UI', () => {
+  it('shows the frozen sequence in confirmation and reports each step state', async () => {
+    const wrapper = mountPanel('NOT_REQUIRED')
+    const store = useVoiceControlStore()
+    const sequenceContext = {
+      ...context,
+      state: 'PREPARED' as const,
+      capabilities: [...context.capabilities, 'DEVICE_COMMAND' as const],
+    }
+    store.contexts = [sequenceContext]
+    store.proposal = {
+      proposalId: '99999999-9999-4999-8999-999999999999',
+      interpretationId: '66666666-6666-4666-8666-666666666666',
+      status: 'AWAITING_CONFIRMATION',
+      planVersion: 1,
+      planHash: 'sequence-plan-hash',
+      requiresConfirmation: true,
+      createdAt: '2026-10-09T00:00:00.000Z',
+      expiresAt: new Date(Date.now() + 30_000).toISOString(),
+      executionId: null,
+      plan: {
+        runtimeRef: sequenceContext.runtimeRef,
+        runtimeGeneration: sequenceContext.runtimeGeneration,
+        contextVersion: sequenceContext.contextVersion,
+        stateVersion: sequenceContext.stateVersion,
+        action: 'SEQUENCE',
+        explicitDeviceCodes: ['UAV-001', 'USV-001'],
+        policyVersion: 'voice-p0.v1',
+        steps: [
+          { index: 0, action: 'START' },
+          { index: 1, action: 'DEVICE_COMMAND', targetDeviceCode: 'UAV-001', deviceCommandType: 'UAV_HOVER' },
+        ],
+      },
+    } satisfies VoiceProposal
+    store.execution = null
+    wrapper.vm.$.setupState.dialogOpen = true
+    await nextTick()
+
+    expect(wrapper.text()).toContain('受控双步骤指令')
+    expect(wrapper.text()).toContain('开始任务')
+    expect(wrapper.text()).toContain('UAV-001 · 无人机悬停')
+
+    store.proposal = { ...store.proposal, status: 'CONFIRMED', executionId: '33333333-3333-4333-8333-333333333333' }
+    store.execution = {
+      ...execution('NOT_REQUIRED'),
+      action: 'SEQUENCE',
+      state: 'EXECUTING',
+      outcome: 'UNKNOWN',
+      currentStepIndex: 1,
+      sequenceStatus: 'EXECUTING_DEVICE_COMMAND',
+      steps: [
+        { index: 0, action: 'START', state: 'SUCCEEDED', executionId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', errorCode: null },
+        { index: 1, action: 'DEVICE_COMMAND', targetDeviceCode: 'UAV-001', deviceCommandType: 'UAV_HOVER', state: 'QUEUED', executionId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', errorCode: null },
+      ],
+    }
+    wrapper.vm.$.setupState.dialogOpen = false
+    await nextTick()
+
+    expect(wrapper.text()).toContain('算法执行中')
+    expect(wrapper.text()).toContain('算法执行成功')
+    expect(wrapper.text()).toContain('等待调度')
+    wrapper.unmount()
+  })
+
   it('shows the confirmed manual device receipt instead of stale automatic voice status', async () => {
     const wrapper = mountPanel('NOT_REQUIRED')
     const store = useVoiceControlStore()
@@ -272,6 +335,66 @@ describe('VoiceP0ControlPanel presentation recovery UI', () => {
     await wrapper.vm.$.setupState.requestPresentationProbe()
     expect(store.requestPresentationChallenge).toHaveBeenNthCalledWith(2, 'FRAME_APPLIED', store.execution!.executionId)
     wrapper.unmount()
+  })
+
+  it.each([
+    ['PAUSE', 'NOT_REQUIRED', 'PAUSED'],
+    ['START', 'REPORTED_APPLIED', 'RUNNING'],
+    ['RESUME', 'REPORTED_APPLIED', 'RUNNING'],
+  ] as const)('keeps refreshing scene readiness after successful %s instead of entering stale recovery', async (action, status, state) => {
+    const wrapper = mountPanel(status)
+    const store = useVoiceControlStore()
+    try {
+      store.contexts = [{ ...context, state }]
+      store.execution = { ...execution(status), action }
+      const bindingId = '77777777-7777-4777-8777-777777777777'
+      store.takePresentationBinding = vi.fn().mockImplementation(async () => {
+        store.presentationBinding = { bindingId, runtimeGeneration: context.runtimeGeneration }
+      })
+      const clearRecovery = vi.spyOn(store, 'clearStalePresentationRecovery')
+      let sequence = 0
+      store.requestPresentationChallenge = vi.fn().mockImplementation(async () => {
+        const challenge = {
+          bindingId, runtimeGeneration: context.runtimeGeneration,
+          kind: 'SCENE_READY' as const, executionId: null,
+          requestId: crypto.randomUUID(), sequence: ++sequence,
+          expiresAt: new Date(Date.now() + 5000).toISOString(),
+        }
+        store.presentationChallenge = challenge
+        return challenge
+      })
+      store.submitPresentationReport = vi.fn().mockImplementation(async () => {
+        store.presentationChallenge = null
+        store.contexts = [{ ...store.context!, sceneReady: true }]
+        return true
+      })
+      await wrapper.setProps({ unitySession: { connected: true, unityInstanceId: 'unity-test', sceneRevision: 1 } })
+      await nextTick()
+      await wrapper.vm.handleUnityPresentationMessage({ type: 'PRESENTATION_READY', payload: {
+        protocolVersion: 'unity.presentation.v1', runtimeRef: context.runtimeRef,
+        runtimeGeneration: context.runtimeGeneration, bindingId,
+        unityInstanceId: 'unity-test', sceneRevision: 1, scenarioReady: true,
+      } })
+      // Keep checking past both the backend's 10-second scene TTL and the
+      // three-attempt stale-recovery limit. Each valid report renews readiness.
+      for (let round = 0; round < 5; round++) {
+        await vi.advanceTimersByTimeAsync(round === 0 ? 1000 : 3000)
+        expect(store.requestPresentationChallenge).toHaveBeenCalledTimes(round + 1)
+        expect(store.requestPresentationChallenge).toHaveBeenLastCalledWith('SCENE_READY', null)
+        const challenge = store.presentationChallenge!
+        await wrapper.vm.handleUnityPresentationMessage({ type: 'PRESENTATION_REPORT', payload: {
+          protocolVersion: 'unity.presentation.v1', runtimeRef: context.runtimeRef,
+          unityInstanceId: 'unity-test', sceneRevision: 1,
+          ...challenge, frameSequence: context.latestFrameSequence, applied: true,
+        } })
+      }
+      expect(store.submitPresentationReport).toHaveBeenCalledTimes(5)
+      expect(clearRecovery).not.toHaveBeenCalled()
+      expect(store.execution!.action).toBe(action)
+      expect(store.execution!.state).toBe('SUCCEEDED')
+    } finally {
+      wrapper.unmount()
+    }
   })
 
   it('retains one resync click until the Unity handshake becomes ready', async () => {

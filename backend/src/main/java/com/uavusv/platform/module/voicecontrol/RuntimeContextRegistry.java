@@ -183,13 +183,23 @@ public class RuntimeContextRegistry {
     }
 
     public void checkDevice(ObjectNode c, String targetCode, String commandType) {
+        checkDeviceTarget(c, targetCode, commandType, true);
+    }
+
+    /** Validate a frozen sequence target before START without requiring RUNNING yet. */
+    public void checkSequenceTarget(ObjectNode c, String targetCode, String commandType) {
+        checkDeviceTarget(c, targetCode, commandType, false);
+    }
+
+    private void checkDeviceTarget(
+            ObjectNode c, String targetCode, String commandType, boolean requireRunning) {
         access.require(c.path("_owner").asLong(), true);
         if (!PROTOCOL.equals(c.path("protocolVersion").asText()))
             throw new VoiceFailure(422, "PROTOCOL_UNSUPPORTED");
         if (!Set.of("ESCORT_GUARD", "GB_SFLA_CS", "ESCORT_GUARD_SINGLE_DEVICE", "GB_SFLA_CS_SINGLE_DEVICE")
                 .contains(c.path("_algorithmCode").asText()))
             throw new VoiceFailure(422, "UNSUPPORTED_TARGETING");
-        if (!"RUNNING".equals(c.path("state").asText()))
+        if (requireRunning && !"RUNNING".equals(c.path("state").asText()))
             throw VoiceFailure.conflict("INVALID_STATE");
         boolean capable = false;
         for (var n : c.path("capabilities")) capable |= "DEVICE_COMMAND".equals(n.asText());

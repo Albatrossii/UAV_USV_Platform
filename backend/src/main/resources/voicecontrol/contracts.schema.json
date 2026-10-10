@@ -28,7 +28,8 @@
             "MISSION_PAUSE",
             "MISSION_RESUME",
             "MISSION_STOP",
-            "SINGLE_DEVICE_CONTROL"
+            "SINGLE_DEVICE_CONTROL",
+            "COMMAND_SEQUENCE"
           ]
         }
       },
@@ -59,6 +60,39 @@
     "CancelRequest": {
       "$ref": "#/definitions/ConfirmRequest"
     },
+    "SequenceStepPlan": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "index": { "type": "integer", "minimum": 0, "maximum": 3 },
+        "action": { "type": "string", "enum": ["START", "DEVICE_COMMAND"] },
+        "targetDeviceCode": { "type": "string", "minLength": 1, "maxLength": 96, "pattern": "^[A-Za-z0-9_.:-]+$" },
+        "deviceCommandType": { "type": "string", "enum": ["UAV_HOVER", "USV_HOLD"] }
+      },
+      "required": ["index", "action"],
+      "allOf": [
+        {
+          "if": { "properties": { "action": { "const": "DEVICE_COMMAND" } } },
+          "then": { "required": ["targetDeviceCode", "deviceCommandType"] }
+        }
+      ]
+    },
+    "SequenceStepExecution": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "index": { "type": "integer", "minimum": 0, "maximum": 3 },
+        "action": { "type": "string", "enum": ["START", "DEVICE_COMMAND"] },
+        "targetDeviceCode": { "type": "string", "minLength": 1, "maxLength": 96, "pattern": "^[A-Za-z0-9_.:-]+$" },
+        "deviceCommandType": { "type": "string", "enum": ["UAV_HOVER", "USV_HOLD"] },
+        "state": { "type": "string", "enum": ["PENDING", "QUEUED", "DISPATCHED", "ACCEPTED", "EXECUTING", "SUCCEEDED", "REJECTED", "FAILED", "INVALIDATED", "TIMED_OUT"] },
+        "executionId": { "anyOf": [{ "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" }, { "type": "null" }] },
+        "errorCode": { "anyOf": [{ "type": "string", "pattern": "^[A-Z][A-Z0-9_]{0,63}$" }, { "type": "null" }] },
+        "startedAt": { "type": "string", "format": "date-time" },
+        "completedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["index", "action", "state", "executionId", "errorCode"]
+    },
     "Plan": {
       "type": "object",
       "additionalProperties": false,
@@ -88,7 +122,8 @@
             "PAUSE",
             "RESUME",
             "STOP",
-            "DEVICE_COMMAND"
+            "DEVICE_COMMAND",
+            "SEQUENCE"
           ]
         },
         "targetDeviceCode": {
@@ -115,6 +150,12 @@
         },
         "policyVersion": {
           "const": "voice-p0.v1"
+        },
+        "steps": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/SequenceStepPlan" },
+          "minItems": 2,
+          "maxItems": 2
         }
       },
       "required": [
@@ -133,6 +174,10 @@
             "required": ["targetDeviceCode", "deviceCommandType"],
             "properties": { "explicitDeviceCodes": { "minItems": 1, "maxItems": 1 } }
           }
+        },
+        {
+          "if": { "properties": { "action": { "const": "SEQUENCE" } } },
+          "then": { "required": ["steps"] }
         }
       ]
     },
@@ -369,7 +414,8 @@
             "PAUSE",
             "RESUME",
             "STOP",
-            "DEVICE_COMMAND"
+            "DEVICE_COMMAND",
+            "SEQUENCE"
           ]
         },
         "state": {
@@ -436,6 +482,17 @@
           "type": "string",
           "format": "date-time",
           "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]{1,6})?Z$"
+        },
+        "currentStepIndex": { "type": "integer", "minimum": 0, "maximum": 3 },
+        "sequenceStatus": {
+          "type": "string",
+          "enum": ["EXECUTING_START", "WAITING_STEP_PRECONDITION", "EXECUTING_DEVICE_COMMAND", "SUCCEEDED", "FAILED"]
+        },
+        "steps": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/SequenceStepExecution" },
+          "minItems": 2,
+          "maxItems": 2
         }
       },
       "required": [
@@ -621,6 +678,10 @@
               }
             }
           }
+        },
+        {
+          "if": { "properties": { "action": { "const": "SEQUENCE" } } },
+          "then": { "required": ["currentStepIndex", "sequenceStatus", "steps"] }
         }
       ]
     },

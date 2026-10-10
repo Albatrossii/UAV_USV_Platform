@@ -93,6 +93,7 @@ public class VoiceDispatcher {
                                             "SELECT data_json FROM voice_execution WHERE state IN"
                                                 + " ('QUEUED','DISPATCHED','ACCEPTED','EXECUTING','TIMED_OUT')"));
             for (var e : all) {
+                if ("SEQUENCE".equals(e.path("action").asText())) continue;
                 String ref = e.path("runtimeRef").asText();
                 var ch = r.channel(ref);
                 if (ch == null) continue;

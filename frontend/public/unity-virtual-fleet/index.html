@@ -334,6 +334,7 @@
         return {
           runtimeMode: String(source.runtimeMode || 'VIRTUAL_SIMULATION'),
           coordinateFrame: String(source.coordinateFrame || 'GLOBAL_ENU'),
+          returnInfrastructure: source.returnInfrastructure || null,
           runId: finiteNumber(source.runId || runId, 0),
           sequence: finiteNumber(source.sequence, 0),
           sampleTime: finiteNumber(
@@ -453,6 +454,7 @@
               : [],
             sceneName: String(payload.sceneName || ''),
             coordinateSystem: String(payload.coordinateSystem || 'ROS_ENU'),
+            returnInfrastructure: payload.returnInfrastructure || null,
           });
         }
         if (type === 'regeneratescenario') {
@@ -470,6 +472,7 @@
             initialSpeedMps: finiteNumber(payload.initialSpeedMps, 0),
             initialHeadingDeg: finiteNumber(payload.initialHeadingDeg, 0),
             seed: finiteNumber(payload.seed, 0),
+            returnInfrastructure: payload.returnInfrastructure || null,
           });
         }
         if (type === 'poseframe' || type === 'applyposebatch') {

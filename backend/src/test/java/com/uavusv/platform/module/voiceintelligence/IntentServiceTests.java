@@ -140,6 +140,144 @@ class IntentServiceTests {
     }
 
     @Test
+    void commonAsrDeviceNounErrorsAreNormalizedWithoutWeakeningSafetyChecks() {
+        ObjectNode runtime = runtime("DEVICE_COMMAND");
+        runtime.put("_algorithmCode", "GB_SFLA_CS_SINGLE_DEVICE");
+        runtime.putArray("_members").add("UAV-001").add("USV-001");
+        when(runtimes.require(REF, 7)).thenReturn(runtime);
+
+        for (Map.Entry<String, String> sample : Map.ofEntries(
+                Map.entry("让一号艇无人驻留。", "USV_HOLD"),
+                Map.entry("让一号无人庭归队", "USV_RESUME"),
+                Map.entry("让一号无人停返航", "USV_RETURN"),
+                Map.entry("让一号机无人悬停", "UAV_HOVER"),
+                Map.entry("让一号无人鸡归队", "UAV_RESUME")).entrySet()) {
+            String id = java.util.UUID.randomUUID().toString();
+            ObjectNode data = (ObjectNode) service.interpret(
+                    7, id, request(id, sample.getKey(), hint())).body().get("data");
+            assertEquals("CANDIDATE", data.path("status").asText(), sample.getKey());
+            assertEquals("SINGLE_DEVICE_CONTROL", data.path("intent").asText(), sample.getKey());
+            assertEquals(sample.getValue(), data.path("deviceCommandType").asText(), sample.getKey());
+            assertTrue(data.path("normalizedText").asText().contains(
+                    sample.getValue().startsWith("UAV") ? "无人机" : "无人艇"));
+        }
+
+        String negatedId = java.util.UUID.randomUUID().toString();
+        ObjectNode negated = (ObjectNode) service.interpret(
+                7, negatedId, request(negatedId, "不要让一号艇无人驻留", hint())).body().get("data");
+        assertEquals("NOT_ACTIONABLE", negated.path("status").asText());
+
+        String ambiguousId = java.util.UUID.randomUUID().toString();
+        ObjectNode ambiguous = (ObjectNode) service.interpret(
+                7, ambiguousId, request(ambiguousId, "让一号艇无人驻留返航", hint())).body().get("data");
+        assertEquals("NEEDS_CLARIFICATION", ambiguous.path("status").asText());
+        assertEquals("AMBIGUOUS_ACTION", ambiguous.path("reason").asText());
+    }
+
+    @Test
+    void controlledSequenceAlsoNormalizesCommonAsrDeviceNounErrors() {
+        ObjectNode runtime = runtime("START");
+        ((com.fasterxml.jackson.databind.node.ArrayNode) runtime.path("capabilities"))
+                .add("DEVICE_COMMAND");
+        runtime.put("_algorithmCode", "GB_SFLA_CS_SINGLE_DEVICE");
+        runtime.putArray("_members").add("USV-001");
+        when(runtimes.require(REF, 7)).thenReturn(runtime);
+        for (String text : java.util.List.of(
+                "开始任务，然后让一号艇无人驻留。", "开始任务让1号无人停驻留",
+                "开始任务，一号无人艇驻留", "开始任务一号无人艇驻留")) {
+            String id = java.util.UUID.randomUUID().toString();
+            ObjectNode data = (ObjectNode) service.interpret(
+                    7, id, request(id, text, hint())).body().get("data");
+            assertEquals("CANDIDATE", data.path("status").asText(), text);
+            assertEquals("COMMAND_SEQUENCE", data.path("intent").asText(), text);
+            assertEquals("START", data.path("steps").path(0).path("action").asText(), text);
+            assertEquals("USV-001", data.path("steps").path(1).path("targetDeviceCode").asText(), text);
+            assertEquals("USV_HOLD", data.path("steps").path(1).path("deviceCommandType").asText(), text);
+            assertTrue(data.path("normalizedText").asText().contains("无人艇"));
+        }
+    }
+
+    @Test
+    void controlledTwoStepSequenceProducesFrozenCandidate() {
+        ObjectNode runtime = runtime("START");
+        ((com.fasterxml.jackson.databind.node.ArrayNode) runtime.path("capabilities"))
+                .add("DEVICE_COMMAND");
+        runtime.put("_algorithmCode", "ESCORT_GUARD_SINGLE_DEVICE");
+        runtime.putArray("_members").add("UAV-001").add("USV-001");
+        when(runtimes.require(REF, 7)).thenReturn(runtime);
+
+        for (String text : java.util.List.of(
+                "开始任务后一号无人机悬停",
+                "先开始任务再让第一架无人机悬停",
+                "开始任务，然后UAV001悬停")) {
+            String id = java.util.UUID.randomUUID().toString();
+            ObjectNode data = (ObjectNode) service.interpret(7, id, request(id, text, hint()))
+                    .body().get("data");
+            assertEquals("CANDIDATE", data.path("status").asText());
+            assertEquals("COMMAND_SEQUENCE", data.path("intent").asText());
+            assertEquals("SEQUENCE", data.path("action").asText());
+            assertEquals("rules-sequence-v1", data.path("model").asText());
+            assertEquals("START", data.path("steps").path(0).path("action").asText());
+            assertEquals("UAV-001", data.path("steps").path(1).path("targetDeviceCode").asText());
+            assertEquals("UAV_HOVER", data.path("steps").path(1).path("deviceCommandType").asText());
+            assertDoesNotThrow(() -> service.requireCandidate(7, id, "SEQUENCE", runtime));
+            assertEquals(
+                    new IntentService.TargetedCandidate("UAV-001", "UAV_HOVER"),
+                    service.requireSequenceCandidate(7, id, runtime));
+        }
+    }
+
+    @Test
+    void controlledSequenceRejectsUnsafeOrUnapprovedCombinations() {
+        ObjectNode runtime = runtime("START");
+        ((com.fasterxml.jackson.databind.node.ArrayNode) runtime.path("capabilities"))
+                .add("DEVICE_COMMAND");
+        runtime.put("_algorithmCode", "ESCORT_GUARD_SINGLE_DEVICE");
+        runtime.putArray("_members").add("UAV-001").add("USV-001");
+        when(runtimes.require(REF, 7)).thenReturn(runtime);
+
+        String negatedId = java.util.UUID.randomUUID().toString();
+        ObjectNode negated = (ObjectNode) service.interpret(
+                7, negatedId, request(negatedId, "不要开始任务然后一号无人机悬停", hint()))
+                .body().get("data");
+        assertEquals("NOT_ACTIONABLE", negated.path("status").asText());
+
+        String returnId = java.util.UUID.randomUUID().toString();
+        ObjectNode returned = (ObjectNode) service.interpret(
+                7, returnId, request(returnId, "开始任务后一号无人机返航", hint()))
+                .body().get("data");
+        assertEquals("UNSUPPORTED", returned.path("status").asText());
+        assertEquals("UNSUPPORTED_CAPABILITY", returned.path("reason").asText());
+
+        String ambiguousId = java.util.UUID.randomUUID().toString();
+        ObjectNode ambiguous = (ObjectNode) service.interpret(
+                7,
+                ambiguousId,
+                request(ambiguousId, "开始任务后一号和二号无人机悬停", hint()))
+                .body().get("data");
+        assertEquals("NEEDS_CLARIFICATION", ambiguous.path("status").asText());
+    }
+
+    @Test
+    void compoundCommandsNeverSilentlyDropAnUnsupportedTaskOrThirdStep() {
+        ObjectNode runtime = runtime("START");
+        ((com.fasterxml.jackson.databind.node.ArrayNode) runtime.path("capabilities")).add("DEVICE_COMMAND");
+        runtime.put("_algorithmCode", "GB_SFLA_CS_SINGLE_DEVICE");
+        runtime.putArray("_members").add("UAV-001").add("USV-001");
+        when(runtimes.require(REF, 7)).thenReturn(runtime);
+        for (String text : java.util.List.of(
+                "暂停任务让一号无人艇驻留", "一号无人艇驻留然后开始任务",
+                "开始任务让一号无人艇驻留然后停止任务", "开始任务让一号无人艇驻留再驻留",
+                "开始任务让一号无人艇驻留然后拍照")) {
+            String id = java.util.UUID.randomUUID().toString();
+            ObjectNode data = (ObjectNode) service.interpret(
+                    7, id, request(id, text, hint())).body().get("data");
+            assertEquals("NEEDS_CLARIFICATION", data.path("status").asText(), text);
+            assertEquals("AMBIGUOUS_ACTION", data.path("reason").asText(), text);
+        }
+    }
+
+    @Test
     void idempotentReplayAndConflict() {
         var first = service.interpret(7, ID, request("暂停任务", null));
         var replay = service.interpret(7, ID, request("暂停任务", null));

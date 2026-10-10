@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, reactive, ref, watch } from 'vue'
+import { computed, onActivated, onBeforeUnmount, onDeactivated, reactive, ref, watch } from 'vue'
 import {
   ChevronLeft,
   ChevronRight,
@@ -29,8 +29,6 @@ import {
   fetchAlgorithmRunStatus,
   prepareAlgorithmRun,
 } from '@/api/algorithm'
-import { type VehicleCommandType } from '@/api/runtimeControl'
-import { issueSingleDeviceCommand } from '@/services/singleDeviceControl'
 import { useAuthStore } from '@/stores/auth'
 import { useVoiceControlStore } from '@/stores/voiceControl'
 import type { AlgorithmRuntimeFrame } from '@/types/mission'
@@ -45,6 +43,8 @@ import {
   type GridScenarioPose,
 } from '@/utils/virtualFleetGridLayout'
 import { deriveAdaptiveScenarioPlan } from '@/utils/adaptiveScenarioPlan'
+import { createSingleDeviceCameraDirector } from '@/utils/singleDeviceCameraDirector'
+import { buildReturnInfrastructure, toGlobalReturnInfrastructure } from '@/utils/virtualReturnInfrastructure'
 
 type UnityMessage = {
   type: string
@@ -65,64 +65,7 @@ type ScenarioInitialPose = {
   valid?: boolean
 }
 
-type CaptureGroupMetric = {
-  threatCode?: string
-  state?: string
-  stage?: number
-  memberCount?: number
-  uavCount?: number
-  usvCount?: number
-  arrivalRatio?: number
-  maxAngularGapDeg?: number
-  holdFrames?: number
-  holdRequiredFrames?: number
-  missionStage?: string
-  pursuitDistanceM?: number
-  requiredPursuitDistanceM?: number
-  captureBlocker?: string
-  postGlobalContainmentReady?: boolean
-  postGlobalMaxGapDeg?: number
-  postGlobalMaxAllowedGapDeg?: number
-  globalAvoidanceCount?: number
-  ringMemberCount?: number
-  arrivedMemberCount?: number
-  requiredMemberCount?: number
-  detachedParticipantCodes?: string[]
-  intent?: string
-  intentConfidence?: number
-  speedMps?: number
-  targetSpeedMps?: number
-  maximumSpeedMps?: number
-  targetHeadingDeg?: number
-  targetTravelDistanceM?: number
-  targetSpeedReason?: string
-  slowdownReason?: string
-  gapCenterDeg?: number
-  nearestInterceptorCode?: string
-  nearestInterceptorDistanceM?: number
-  assignmentStrategy?: string
-  assignmentRevision?: number
-  reassignmentCount?: number
-  recentReassignments?: Array<{
-    deviceCode?: string
-    previousTarget?: string
-    targetCode?: string
-    reason?: string
-    interceptEtaSec?: number
-  }>
-  triggerReason?: string
-}
-
-type InspectorTab = 'status' | 'voice' | 'protocol' | 'logs'
-
 type TacticalEvent = SimulationTacticalNotice
-
-type ControlledDeviceSummary = {
-  code: string
-  authority: string
-  motionState: string
-  label: string
-}
 
 type VirtualFleetRecoverySnapshot = {
   version: 1
@@ -158,6 +101,15 @@ function loadRuntimeRecovery(): VirtualFleetRecoverySnapshot | null {
     const raw = sessionStorage.getItem(runtimeRecoveryKey)
     if (!raw) return null
     const snapshot = JSON.parse(raw) as VirtualFleetRecoverySnapshot
+    // The retired synthetic port is not rendered anymore. Replaying its poses
+    // would leave parked vehicles floating over empty water. Do not translate
+    // an old running/final frame into a different physical scene or auto-start it.
+    const returnLayouts = [
+      snapshot.savedScenario?.returnInfrastructure,
+      snapshot.latestPoseBatch?.returnInfrastructure,
+      snapshot.currentAlgorithmFrame?.metrics?.returnInfrastructure,
+    ]
+    if (returnLayouts.some(layout => (layout as { version?: string } | null)?.version === 'fixed-shore-v1')) return null
     const active = ['RUNNING', 'PAUSED', 'COMPLETING', 'COMPLETED', 'STOPPED', 'FAILED', 'CANCELLED'].includes(snapshot.state?.mission)
     const fresh = Date.now() - Date.parse(snapshot.savedAt) < 12 * 60 * 60 * 1000
     return snapshot.version === 1
@@ -186,21 +138,20 @@ let restoredCamera = { mode: 'overview', deviceCode: '' }
 const unityReady = ref(false)
 const selectedDevice = ref(restoredRuntime?.selectedDevice ?? '')
 const cameraMode = ref(restoredRuntime?.cameraMode ?? 'overview')
+const cameraViewActive = ref(true)
+const commandFocusActive = ref(false)
+const automaticCameraRequests = new Set<string>()
 const scenarioReadyRunId = ref<number | null>(null)
 const scenarioLoading = ref(false)
 const algorithmPrepared = ref(restoredRuntime !== null)
 const algorithmPrepareError = ref('')
 const algorithmPreparing = ref(false)
 const missionActionMessage = ref('')
-const singleDeviceCommandPending = ref(false)
-const singleDeviceCommandMessage = ref('')
 const webglExpanded = ref(false)
 const leftPanelCollapsed = ref(false)
 const rightPanelCollapsed = ref(false)
 const panelTransitioning = ref(false)
-const inspectorTab = ref<InspectorTab>('voice')
 const logEntries = ref<string[]>([])
-const lastUnityMessage = ref<UnityMessage | null>(null)
 const voiceControlPanel = ref<InstanceType<typeof VoiceP0ControlPanel> | null>(null)
 const voiceControlStore = useVoiceControlStore()
 const presentationUnityInstanceId = ref(crypto.randomUUID().toLowerCase())
@@ -215,6 +166,10 @@ const sceneLocked = computed(() => (
   || state.mission === 'PAUSED'
 ))
 const scenarioPlan = computed(() => deriveAdaptiveScenarioPlan(state.uavCount, state.usvCount))
+const returnInfrastructure = computed(() => buildReturnInfrastructure({
+  uavCount: state.uavCount, usvCount: state.usvCount, worldHeight: scenarioPlan.value.worldHeight,
+  fleetOrigin: fleetOriginEnu,
+}))
 const isCaptureAlgorithm = computed(() => state.algorithm.startsWith('GB_SFLA_CS'))
 const isEscortAlgorithm = computed(() => state.algorithm.startsWith('ESCORT_GUARD'))
 const isSingleDeviceAlgorithm = computed(() => isCaptureAlgorithm.value || isEscortAlgorithm.value)
@@ -222,12 +177,6 @@ const isSingleDeviceAlgorithm = computed(() => isCaptureAlgorithm.value || isEsc
 const algorithmSelection = computed({
   get: () => state.algorithm.replace(/_SINGLE_DEVICE$/, ''),
   set: (value: string) => { state.algorithm = value },
-})
-const singleDeviceDisabledReason = computed(() => {
-  if (state.mission === 'PAUSED') return '任务已暂停，请先继续任务'
-  if (state.mission !== 'RUNNING') return '请先开始任务，再下发单设备命令'
-  if (!selectedControlAgent.value) return '请先选择一台 UAV 或 USV'
-  return ''
 })
 const configuredTargetCount = computed(() => (
   isCaptureAlgorithm.value
@@ -237,12 +186,32 @@ const configuredTargetCount = computed(() => (
 const stageCompositionLabel = computed(() => isCaptureAlgorithm.value
   ? `${state.uavCount} UAV · ${state.usvCount} USV · ${scenarioPlan.value.threatCount} 敌船`
   : `${state.uavCount} UAV · ${state.usvCount} USV · ${scenarioPlan.value.protectedCount} 护航目标 · ${scenarioPlan.value.threatCount} 敌船`)
-const missionPhase = computed(() => String(
+const algorithmMissionPhase = computed(() => String(
   currentAlgorithmFrame.value?.metrics?.missionStage
   || currentAlgorithmFrame.value?.phase
   || (state.mission === 'RUNNING' ? 'TRANSIT' : 'READY'),
-))
+).toUpperCase())
 const missionMetrics = computed(() => currentAlgorithmFrame.value?.metrics ?? {})
+// A child algorithm can finish while the single-device wrapper still waits
+// for an operator decision, a return, or the final presentation receipt. Only
+// the committed runtime terminal state completes all three display elements.
+const missionCompletionCommitted = computed(() => state.mission === 'COMPLETED')
+const missionCompletionPending = computed(() => (
+  !missionCompletionCommitted.value && algorithmMissionPhase.value === 'COMPLETED'
+))
+const missionPhase = computed(() => missionCompletionCommitted.value
+  ? 'COMPLETED'
+  : missionCompletionPending.value ? 'STABLE_CONTAINMENT' : algorithmMissionPhase.value)
+const missionCompletionPendingReason = computed(() => {
+  if (!missionCompletionPending.value) return ''
+  const reasons: Record<string, string> = {
+    OPERATOR_OVERRIDE: '等待人工处理',
+    WAITING_FOR_RETURN: '等待返航',
+    INSUFFICIENT_ACTIVE_FORCE: '等待编组恢复',
+  }
+  return reasons[String(missionMetrics.value.completionBlocker ?? '')]
+    ?? (state.mission === 'COMPLETING' ? '等待画面同步' : isCaptureAlgorithm.value ? '等待闭环确认' : '等待收尾确认')
+})
 const stageSubjectThreatCode = computed(() => String(
   missionMetrics.value.stageSubjectThreatCode ?? '',
 ))
@@ -254,7 +223,8 @@ const missionStageLabels: Record<string, string> = {
   SAFE_GATE_TRANSIT: '通过安全门', COMPLETED: '完成',
 }
 const missionPhaseLabel = computed(() => {
-  const label = missionStageLabels[missionPhase.value.toUpperCase()] ?? missionPhase.value
+  const label = missionStageLabels[missionPhase.value] ?? missionPhase.value
+  if (missionCompletionPendingReason.value) return `${label} · ${missionCompletionPendingReason.value}`
   return stageSubjectThreatCode.value && missionPhase.value !== 'COMPLETED'
     ? `${label} · ${stageSubjectThreatCode.value}`
     : label
@@ -264,58 +234,21 @@ const displayMissionProgress = computed(() => {
   const raw = Math.max(0, Math.min(1, Number(
     missionMetrics.value.missionProgress ?? missionMetrics.value.progress ?? 0,
   )))
-  const completed = state.mission === 'COMPLETED'
   // The terminal state is committed only after Unity acknowledges the final
   // pose frame. Treat it as authoritative: the preceding metrics frame can
   // legitimately still contain the non-terminal 0.99 sentinel.
-  return completed ? 100 : Math.round(Math.min(raw, 0.99) * 100)
+  return missionCompletionCommitted.value ? 100 : Math.round(Math.min(raw, 0.99) * 100)
 })
-const escortProgress = computed(() => Math.round(Number(missionMetrics.value.escortProgress ?? 0) * 100))
-const captureProgress = computed(() => Math.round(Number(missionMetrics.value.captureProgress ?? 0) * 100))
 const postMissionFormationReadyCount = computed(() => Number(
   missionMetrics.value.postMissionFormationReadyCount ?? 0,
 ))
 const postMissionFormationRequiredCount = computed(() => Number(
   missionMetrics.value.postMissionFormationRequiredCount ?? 0,
 ))
-const postMissionFormationProgress = computed(() => Math.round(Number(
-  missionMetrics.value.postMissionFormationProgress ?? 0,
-) * 100))
-const postMissionStableFrames = computed(() => Number(
-  missionMetrics.value.convoySupportStableFrames ?? 0,
-))
-const postMissionRequiredStableFrames = computed(() => Number(
-  missionMetrics.value.convoySupportRequiredStableFrames ?? 12,
-))
-const closeGuardCount = computed(() => Number(missionMetrics.value.closeGuardCount ?? 0))
-const captureAssignedCount = computed(() => Number(missionMetrics.value.captureAssignedCount ?? 0))
-const mobileSupportCount = computed(() => Number(missionMetrics.value.mobileSupportCount ?? 0))
-const terminalBlockerLabel = computed(() => {
-  const blocker = String(missionMetrics.value.terminalBlocker ?? '')
-  if (!blocker || blocker === 'NONE' || blocker === 'MISSION_IN_PROGRESS') return ''
-  if (blocker === 'THREATS_UNRESOLVED') return '仍有敌船未完成围捕'
-  if (blocker === 'STABLE_CONTAINMENT_CONFIRMING') return '稳定闭环正在确认'
-  if (blocker === 'SAFE_GATE_TRANSIT') return '护航目标正在通过安全门'
-  if (blocker === 'PROTECTED_TARGET_NOT_SAFE') return '护航目标尚未通过安全门'
-  if (blocker === 'CONTAINMENT_RECONFIGURING') return '围捕闭环正在重新稳定'
-  if (blocker === 'POST_MISSION_STABILIZING') return '归队编组正在稳定确认'
-  if (blocker.startsWith('POST_MISSION_FORMATION:')) {
-    return `${blocker.slice(blocker.indexOf(':') + 1)} 尚未到达终态槽位`
-  }
-  if (blocker === 'POST_MISSION_FORMATION') return '归队编组尚未到位'
-  return blocker
-})
 const missionElapsedMs = ref(restoredRuntime?.missionElapsedMs ?? 0)
 const missionClockNow = ref(Date.now())
 const missionClockStartedAt = ref<number | null>(null)
 let missionClockTimer: number | null = null
-const missionElapsedSeconds = computed(() => Math.max(0, Math.floor(
-  (missionElapsedMs.value + (
-    missionClockStartedAt.value === null
-      ? 0
-      : missionClockNow.value - missionClockStartedAt.value
-  )) / 1000,
-)))
 function formatElapsedSeconds(totalSeconds: number) {
   const total = Math.max(0, Math.floor(totalSeconds))
   const hours = Math.floor(total / 3600)
@@ -325,66 +258,11 @@ function formatElapsedSeconds(totalSeconds: number) {
     ? `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`
     : `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`
 }
-const missionElapsedLabel = computed(() => formatElapsedSeconds(missionElapsedSeconds.value))
 const simulationElapsedSeconds = computed(() => Number(
   missionMetrics.value.simulationElapsedSeconds
   ?? Math.max(0, state.sequence - 1) * 0.1,
 ))
 const simulationElapsedLabel = computed(() => formatElapsedSeconds(simulationElapsedSeconds.value))
-const captureGroups = computed(() => Array.isArray(missionMetrics.value.captureGroups)
-  ? missionMetrics.value.captureGroups as CaptureGroupMetric[]
-  : [])
-const intentLabels: Record<string, string> = {
-  UNCLASSIFIED: '意图研判', ATTACK_INTENT: '攻击意图', ESCAPE_INTENT: '逃逸意图',
-  ATTACKING: '逼近攻击', FLANKING: '侧翼试探', FLANKING_BREAKTHROUGH: '侧翼突破',
-  ESCAPING: '持续逃逸', BREAKOUT: '寻找缺口', EVADING_GUARD: '规避拦截',
-  CLEARING_CONVOY: '脱离护航队', CLEARING_CONTAINMENT_SPACE: '腾挪闭环空间',
-  CONTAINED: '受控减速', CAPTURED: '已被控制',
-  COAST_AVOID: '规避岸线', ESCAPE: '持续逃逸', CRUISE: '巡航观察',
-}
-const speedReasonLabels: Record<string, string> = {
-  ESCAPE_CRUISE: '保持逃逸巡航', GAP_BREAKOUT: '缺口突破加速',
-  COAST_AVOID: '岸线规避转向', EXECUTED_CONTAINMENT_DECEL: '实际闭环后受控减速',
-  CONTAINMENT_PRESSURE: '围捕压力下减速', CONTAINMENT_DECEL: '稳定闭环后减速',
-  ESCAPE_CORRIDOR_BLOCKED: '逃逸通道受阻 · 减速转向',
-  NONE: '自主航行',
-}
-const assignmentReasonLabels: Record<string, string> = {
-  PREDICTED_ETA_GAIN: '预测截击时间更短', STALLED_RELIEF: '原成员停滞，启用机动替补',
-  PREDICTED_INTERCEPT_GAIN: '预测截击收益更高', STALLED_OVERRIDE: '原成员停滞，启用机动替补',
-  TARGET_URGENCY: '目标威胁升级', GAP_ALIGNMENT: '更适合封堵当前缺口',
-}
-function normalizeHeading(value: unknown) {
-  const heading = Number(value ?? 0)
-  return ((heading % 360) + 360) % 360
-}
-function compassDirection(value: unknown) {
-  const directions = ['北', '东北', '东', '东南', '南', '西南', '西', '西北']
-  return directions[Math.round(normalizeHeading(value) / 45) % directions.length]
-}
-function intentLabel(value: unknown) {
-  const key = String(value ?? '').toUpperCase()
-  return intentLabels[key] ?? (key || '态势评估中')
-}
-function speedReasonLabel(group: CaptureGroupMetric) {
-  const key = String(group.targetSpeedReason ?? group.slowdownReason ?? '').toUpperCase()
-  return speedReasonLabels[key] ?? (key || '自主航行')
-}
-function groupSpeed(group: CaptureGroupMetric) {
-  return Number(group.targetSpeedMps ?? group.speedMps ?? 0)
-}
-function latestReassignment(group: CaptureGroupMetric) {
-  const changes = group.recentReassignments
-  return changes?.length ? changes[changes.length - 1] : null
-}
-function reassignmentLabel(group: CaptureGroupMetric) {
-  const change = latestReassignment(group)
-  if (!change) return ''
-  const reason = assignmentReasonLabels[String(change.reason ?? '').toUpperCase()]
-    ?? change.reason
-    ?? '动态重分配'
-  return `${change.deviceCode ?? '设备'}：${change.previousTarget ?? '待命'} → ${change.targetCode ?? group.threatCode}（${reason}）`
-}
 const pendingTerminalSequence = ref<number | null>(null)
 const pendingTerminalStatus = ref<string | null>(null)
 
@@ -411,64 +289,6 @@ function handleWorkbenchTransitionCancel(event: TransitionEvent) {
   panelTransitioning.value = false
   unityPanel.value?.endViewportTransition()
 }
-const displayCaptureStage = (stage: unknown) => {
-  const value = Number(stage ?? 0)
-  if (isCaptureAlgorithm.value) {
-    // The capture adapter already exposes its user-facing stages as 1/2/3.
-    return Math.min(3, Math.max(1, value || 1))
-  }
-  // Escort capture groups retain the legacy internal 0/1/2 convention.
-  return Math.min(3, Math.max(1, value + 1))
-}
-const roleSummary = computed(() => {
-  const roles = missionMetrics.value.roles
-  if (!roles || typeof roles !== 'object') return ''
-  return Object.entries(roles as Record<string, unknown>)
-    .map(([role, count]) => `${role} ${Number(count)}`)
-    .join(' · ')
-})
-const visibleTargets = computed(() => (
-  currentAlgorithmFrame.value?.targets.filter(target => target.visible !== false) ?? []
-))
-const selectedFrameItem = computed(() => {
-  if (!selectedDevice.value || !currentAlgorithmFrame.value) return null
-  return currentAlgorithmFrame.value.agents.find(item => item.code === selectedDevice.value)
-    ?? currentAlgorithmFrame.value.targets.find(item => item.code === selectedDevice.value)
-    ?? null
-})
-const controllableAgents = computed(() => currentAlgorithmFrame.value?.agents ?? [])
-const selectedControlAgent = computed(() => (
-  controllableAgents.value.find(item => item.code === selectedDevice.value) ?? null
-))
-const selectedControlState = computed(() => {
-  if (!selectedDevice.value) return null
-  const states = missionMetrics.value.deviceControlStates
-  if (!states || typeof states !== 'object') return null
-  return (states as Record<string, { controlAuthority?: string; motionState?: string }>)[selectedDevice.value] ?? null
-})
-const controlledDeviceStateLabels: Record<string, string> = {
-  HOLDING: '悬停 / 驻留',
-  STOPPED: '已停止',
-  RETURNING: '返航中',
-  RETURNED: '已返航',
-  HOLDING_AT_HOME: '已返航',
-  REJOINING: '安全归队中',
-}
-const controlledDevices = computed<ControlledDeviceSummary[]>(() => {
-  const states = missionMetrics.value.deviceControlStates
-  if (!states || typeof states !== 'object') return []
-  return Object.entries(states as Record<string, { controlAuthority?: string; motionState?: string }>)
-    .map(([code, value]) => {
-      const motionState = String(value?.motionState ?? 'OPERATOR').toUpperCase()
-      return {
-        code,
-        authority: String(value?.controlAuthority ?? 'OPERATOR').toUpperCase(),
-        motionState,
-        label: controlledDeviceStateLabels[motionState] ?? motionState,
-      }
-    })
-    .sort((left, right) => left.code.localeCompare(right.code))
-})
 const singleDeviceRuntimeNotice = computed(() => {
   if (!isSingleDeviceAlgorithm.value) return ''
   const blocker = String(missionMetrics.value.completionBlocker ?? '')
@@ -498,21 +318,9 @@ const phaseSteps = computed(() => isEscortAlgorithm.value
   ? ['编队护航', '意图识别', '分向守卫', '协同拦截', '追逃压制', '动态围捕', '稳定闭环', '完成']
   : ['目标逃逸', '协同追击', '截击部署', '动态围捕', '稳定闭环', '完成'])
 const activePhaseIndex = computed(() => {
-  const phase = missionPhase.value.toUpperCase()
-  if (state.mission === 'COMPLETED') return phaseSteps.value.length - 1
-  if (phase === 'COMPLETED') {
-    if (!isCaptureAlgorithm.value) return phaseSteps.value.length - 1
-    const rawProgress = Number(missionMetrics.value.missionProgress ?? missionMetrics.value.progress ?? 0)
-    const capturedTargets = Number(missionMetrics.value.capturedTargetCount ?? 0)
-    // Defensive consistency gate: a stale aggregate stage must never light
-    // the terminal step while progress or any executed global ring is open.
-    if (rawProgress >= 1 && capturedTargets >= scenarioPlan.value.threatCount) {
-      return phaseSteps.value.length - 1
-    }
-    return phaseSteps.value.length - 2
-  }
+  const phase = missionPhase.value
+  if (missionCompletionCommitted.value) return phaseSteps.value.length - 1
   if (isEscortAlgorithm.value) {
-    if (phase === 'COMPLETED') return 7
     if (phase === 'SAFE_GATE_TRANSIT' || phase === 'STABLE_CONTAINMENT') return 6
     if (phase === 'GAP_REPAIR' || phase === 'ENCIRCLEMENT') return 5
     if (phase === 'PURSUIT' || phase === 'ESCAPE') return 4
@@ -525,14 +333,6 @@ const activePhaseIndex = computed(() => {
   }
   return ({ ESCAPE: 0, PURSUIT: 1, INTERCEPT: 2, ENCIRCLEMENT: 3, GAP_REPAIR: 3, STABLE_CONTAINMENT: 4, COMPLETED: 5 } as Record<string, number>)[phase] ?? 0
 })
-const protocolSnapshot = computed(() => JSON.stringify(
-  lastUnityMessage.value ?? {
-    type: 'waitingForUnity',
-    payload: { ready: unityReady.value, runId: state.runId },
-  },
-  null,
-  2,
-))
 let previousAlgorithmPoses: VirtualPoseStateMap = new Map()
 let algorithmPollTimer: number | null = null
 let algorithmPollInFlight = false
@@ -611,7 +411,8 @@ function persistRuntimeRecovery() {
     plannedScenarioPoses: plannedScenarioPoses.value,
     currentAlgorithmFrame: currentAlgorithmFrame.value,
     selectedDevice: selectedDevice.value,
-    cameraMode: cameraMode.value,
+    // A brief command close-up is presentation only, not a sticky follow preference.
+    cameraMode: commandFocusActive.value ? 'overview' : cameraMode.value,
     missionElapsedMs: missionElapsedMs.value + (missionClockStartedAt.value === null
       ? 0
       : Date.now() - missionClockStartedAt.value),
@@ -641,7 +442,10 @@ const voiceRuntimeHint = computed<VoiceMockRuntimeHint>(() => {
     COMPLETED: 'COMPLETED',
     FAILED: 'FAILED',
   }
+  // Match the backend's frame.agents membership: scene targets remain visible
+  // in Unity but must not enter the frozen fleet used by voice commands.
   const deviceCodes = plannedScenarioPoses.value
+    .filter(pose => pose.deviceType === 'UAV' || pose.deviceType === 'USV')
     .map(pose => pose.deviceCode)
     .filter((code): code is string => Boolean(code))
   return {
@@ -723,7 +527,11 @@ function send(type: string, payload: Record<string, unknown> = {}) {
   if (type === 'loadScenario') {
     presentationSceneRevision.value += 1
     savedScenario = JSON.parse(JSON.stringify(payload))
-    latestPoseBatch = null
+    // Recreating only the renderer must not erase its final authoritative
+    // positions. In particular, a completed run no longer polls new frames.
+    if (!recoveringScene.value || Number(latestPoseBatch?.runId) !== Number(payload.runId)) {
+      latestPoseBatch = null
+    }
   }
   if (type === 'applyPoseBatch') {
     latestPoseBatch = JSON.parse(JSON.stringify(payload))
@@ -762,6 +570,8 @@ function finalizeTerminalMission(status: string, sequence: number) {
 }
 
 function onUnityLoading() {
+  if (commandFocusActive.value) cameraMode.value = 'overview'
+  commandCameraDirector.cancel()
   unityReady.value = false
   presentationUnityInstanceId.value = crypto.randomUUID().toLowerCase()
   presentationSceneRevision.value = 0
@@ -798,7 +608,7 @@ function finishSceneRecovery() {
   send('setCameraMode', restoredCamera)
   missionActionMessage.value = ''
   unityPanel.value?.syncViewport()
-  algorithmPrepared.value = true
+  algorithmPrepared.value = !isTerminalMissionState(state.mission)
   if (state.mission === 'RUNNING' || state.mission === 'COMPLETING') {
     startMissionClock(true)
     startAlgorithmPolling()
@@ -818,6 +628,25 @@ function restoreLatestPose() {
   }
 }
 
+function isTerminalMissionState(mission: string) {
+  return ['COMPLETED', 'FAILED', 'CANCELLED', 'STOPPED'].includes(mission)
+}
+
+function restoreAuthoritativeTerminalSnapshot() {
+  const frame = currentAlgorithmFrame.value
+  if (!isTerminalMissionState(state.mission)
+    || Number(savedScenario?.runId) !== state.runId
+    || frame?.runId !== state.runId || frame.sequence <= 0
+    || frame.terminalStatus !== state.mission) return false
+  // A finished process may disappear from the backend while its final frame
+  // remains valid. Restore only that exact run's authoritative final picture;
+  // this does not make the expired runtime controllable or prepared again.
+  latestPoseBatch = { ...adaptVirtualAlgorithmFrame(frame, new Map(), { fleetOrigin: fleetOriginEnu }).payload }
+  algorithmPrepared.value = false
+  addLog(`终态只读画面恢复：${state.mission} runId=${state.runId} sequence=${frame.sequence}`)
+  return true
+}
+
 async function onUnityReady() {
   unityReady.value = true
   addLog('platformBridgeReady: Unity WebGL 已连接')
@@ -829,16 +658,20 @@ async function onUnityReady() {
   if (recoveringScene.value && savedScenario) {
     try {
       const runtime = await fetchAlgorithmRunStatus(state.runId)
-      const runtimeState = runtime.state.toUpperCase()
+      let runtimeState = runtime.state.toUpperCase()
       if (runtimeState === 'LOST') {
         // A standalone run can be replaced by another tab or a newly generated
         // scenario while this tab still has a recovery snapshot. Keeping that
         // snapshot leaves voice commands correctly parsed but permanently
         // blocked against the dead runtime. Discard it and build a fresh preview.
-        algorithmPrepared.value = false
-        addLog(`原算法运行已失效（LOST），清理恢复记录并重新生成仿真预览 runId=${state.runId}`)
-        await resetMission()
-        return
+        if (restoreAuthoritativeTerminalSnapshot()) {
+          runtimeState = state.mission
+        } else {
+          algorithmPrepared.value = false
+          addLog(`原算法运行已失效（LOST），清理恢复记录并重新生成仿真预览 runId=${state.runId}`)
+          await resetMission()
+          return
+        }
       }
       // PREVIEW is a valid prepared algorithm runtime. The scene can be
       // restored while still in preview; the user can start it afterward.
@@ -848,19 +681,31 @@ async function onUnityReady() {
         return
       }
       state.mission = runtimeState
-      algorithmPrepared.value = true
+      algorithmPrepared.value = !isTerminalMissionState(runtimeState)
+      if (!latestPoseBatch || Number(latestPoseBatch.runId) !== state.runId) {
+        latestPoseBatch = null
+        const frame = currentAlgorithmFrame.value
+        if (frame?.runId === state.runId && frame.sequence > 0) {
+          // Also recover snapshots written by older clients that discarded
+          // the pose batch while retaining the same run's algorithm frame.
+          latestPoseBatch = { ...adaptVirtualAlgorithmFrame(frame, new Map(), { fleetOrigin: fleetOriginEnu }).payload }
+        }
+      }
       addLog(`algorithm runtime recovered: ${runtimeState} runId=${state.runId}`)
     } catch (error) {
       if (error instanceof ApiClientError && error.status === 404) {
         // An expired server runtime cannot be recovered by reloading WebGL.
         // Recreate the preview only; starting a mission remains an explicit action.
-        algorithmPrepared.value = false
-        addLog('原算法运行已不存在，清理恢复记录并重新生成仿真预览')
-        await resetMission()
+        if (!restoreAuthoritativeTerminalSnapshot()) {
+          algorithmPrepared.value = false
+          addLog('原算法运行已不存在，清理恢复记录并重新生成仿真预览')
+          await resetMission()
+          return
+        }
+      } else {
+        failSceneRecovery(`无法核对原算法运行：${error instanceof Error ? error.message : String(error)}`)
         return
       }
-      failSceneRecovery(`无法核对原算法运行：${error instanceof Error ? error.message : String(error)}`)
-      return
     }
     clearTimeout(recoveryTimer)
     recoveryTimer = window.setTimeout(() => failSceneRecovery('场景或设备位置未确认，不能将连接在线视为恢复成功。请重试。'), 45000)
@@ -892,7 +737,6 @@ function onUnityError(message: string) {
 }
 
 function onUnityMessage(message: UnityMessage) {
-  lastUnityMessage.value = message
   if (message.type.startsWith('PRESENTATION_')) {
     void voiceControlPanel.value?.handleUnityPresentationMessage(message)
   }
@@ -1034,12 +878,15 @@ function onUnityMessage(message: UnityMessage) {
     )
   }
   if (message.type === 'cameraChanged') {
-    if (recoveringScene.value) return
+    if (recoveringScene.value || message.payload?.success === false) return
     const mode = String(message.payload?.mode ?? '').trim().toLowerCase()
     const deviceCode = String(message.payload?.deviceCode ?? '').trim()
+    // User camera controls take precedence over the pending automatic return.
+    if (commandFocusActive.value && !automaticCameraRequests.has(message.requestId ?? '')) {
+      commandCameraDirector.cancel()
+    }
     if (mode) cameraMode.value = mode
-    if (mode === 'overview') selectedDevice.value = ''
-    else if (deviceCode) selectedDevice.value = deviceCode
+    if (deviceCode) selectedDevice.value = deviceCode
     addLog(`cameraChanged: ${deviceCode || '-'} / ${mode || '-'}`)
   }
 }
@@ -1054,6 +901,7 @@ function validateFleetCount(value: number) {
 
 async function generateScenario() {
   if (sceneLocked.value || scenarioLoading.value) return
+  commandCameraDirector.cancel()
   state.uavSpeed = validateSpeed(state.uavSpeed, 15)
   state.usvSpeed = validateSpeed(state.usvSpeed, 4)
   state.uavCount = validateFleetCount(state.uavCount)
@@ -1146,6 +994,7 @@ async function generateScenario() {
     layoutVersion: isEscortAlgorithm.value ? 'ADAPTIVE_MULTI_TARGET_V2' : 'ADAPTIVE_MULTI_CAPTURE_V2',
     initialPosesCoordinateFrame: 'GLOBAL_ENU',
     initialPoses: plannedScenarioPoses.value,
+    returnInfrastructure: toGlobalReturnInfrastructure(returnInfrastructure.value, fleetOriginEnu),
     initialSpeedMps: isCaptureAlgorithm.value ? state.uavSpeed : state.usvSpeed,
   })
 }
@@ -1172,6 +1021,7 @@ function buildAlgorithmPrepareConfig(initialPoses: ScenarioInitialPose[]) {
     previewEnabled: isCaptureAlgorithm.value,
     threatMinDistanceM: isCaptureAlgorithm.value ? 90 : 170,
     standaloneVirtualSimulation: true,
+    returnInfrastructure: returnInfrastructure.value,
   }
 }
 
@@ -1337,6 +1187,7 @@ async function stopMission() {
 }
 
 async function resetMission() {
+  commandCameraDirector.cancel()
   clearTimeout(recoveryTimer)
   clearTacticalNotices()
   savedScenario = null
@@ -1504,101 +1355,66 @@ function stopAlgorithmPolling() {
   }
 }
 
-function setOverviewCamera() {
+function sendAutomaticCamera(type: 'selectDevice' | 'setCameraMode', payload: Record<string, unknown>) {
+  const requestId = send(type, payload)
+  if (requestId) {
+    automaticCameraRequests.add(requestId)
+    if (automaticCameraRequests.size > 64) {
+      automaticCameraRequests.delete(automaticCameraRequests.values().next().value!)
+    }
+  }
+}
+
+function showOverviewCamera() {
   cameraMode.value = 'overview'
-  selectedDevice.value = ''
-  send('setCameraMode', { mode: 'overview' })
+  sendAutomaticCamera('setCameraMode', { mode: 'overview' })
+}
+
+const commandCameraDirector = createSingleDeviceCameraDirector({
+  focusDurationMs: 2500,
+  onFocusChange: active => { commandFocusActive.value = active },
+  focus: deviceCode => {
+    selectedDevice.value = deviceCode
+    cameraMode.value = 'device-follow'
+    // The deployed Unity bridge selects AND follows here; SetCameraMode does
+    // not accept a target. Trajectories remain disabled by the Unity build.
+    sendAutomaticCamera('selectDevice', { deviceCode })
+  },
+  overview: showOverviewCamera,
+})
+
+function setOverviewCamera() {
+  commandCameraDirector.cancel()
+  showOverviewCamera()
 }
 
 function followSelectedDevice() {
   if (!selectedDevice.value) return
+  commandCameraDirector.cancel()
   cameraMode.value = 'device-follow'
-  send('setCameraMode', {
-    mode: 'device-follow',
-    deviceCode: selectedDevice.value,
-  })
+  send('selectDevice', { deviceCode: selectedDevice.value })
 }
 
-function selectDeviceForControl(deviceCode: string) {
-  selectedDevice.value = deviceCode
-  if (!deviceCode || !unityReady.value) return
-  send('selectDevice', { deviceCode })
-}
+watch(() => ({
+  execution: voiceControlStore.execution,
+  proposal: voiceControlStore.proposal,
+  context: voiceControlStore.context,
+  algorithmRunId: String(state.runId),
+  deviceCodes: plannedScenarioPoses.value.map(pose => pose.deviceCode),
+  sceneKey: `${presentationUnityInstanceId.value}:${presentationSceneRevision.value}`,
+  ready: cameraViewActive.value && isSingleDeviceAlgorithm.value && unityReady.value
+    && scenarioReadyRunId.value === state.runId && !scenarioLoading.value && !recoveringScene.value,
+}), input => {
+  if (!input.ready && commandFocusActive.value) cameraMode.value = 'overview'
+  commandCameraDirector.observe(input)
+}, { deep: true, immediate: true })
 
-function handleControlDeviceSelection(event: Event) {
-  selectDeviceForControl((event.target as HTMLSelectElement).value)
-}
-
-watch(() => voiceControlStore.proposal?.proposalId, () => {
-  const plan = voiceControlStore.proposal?.plan
-  if (!isSingleDeviceAlgorithm.value || plan?.action !== 'DEVICE_COMMAND'
-    || voiceControlStore.context?.algorithmRunId !== String(state.runId)) return
-  const target = controllableAgents.value.find(agent => agent.code.toUpperCase() === plan.targetDeviceCode?.toUpperCase())
-  if (target) selectDeviceForControl(target.code)
-})
-
-function resolveSingleDeviceCommand(
-  action: 'hold' | 'stop' | 'return' | 'rejoin',
-): VehicleCommandType | null {
-  const agent = selectedControlAgent.value
-  if (!agent) return null
-  if (agent.type === 'UAV') {
-    return ({
-      hold: 'UAV_HOVER',
-      stop: 'UAV_LAND',
-      return: 'UAV_RETURN',
-      rejoin: 'UAV_RESUME',
-    } as const)[action]
-  }
-  return ({
-    hold: 'USV_HOLD',
-    stop: 'USV_STOP',
-    return: 'USV_RETURN',
-    rejoin: 'USV_RESUME',
-  } as const)[action]
-}
-
-async function submitSingleDeviceCommand(action: 'hold' | 'stop' | 'return' | 'rejoin') {
-  if (!isSingleDeviceAlgorithm.value || singleDeviceCommandPending.value) return
-  if (singleDeviceDisabledReason.value) {
-    singleDeviceCommandMessage.value = singleDeviceDisabledReason.value
-    return
-  }
-  const commandType = resolveSingleDeviceCommand(action)
-  if (!commandType || !selectedDevice.value) {
-    singleDeviceCommandMessage.value = '请先选择一台 UAV 或 USV。'
-    return
-  }
-  singleDeviceCommandPending.value = true
-  singleDeviceCommandMessage.value = ''
-  try {
-    const result = await issueSingleDeviceCommand({
-      commandType,
-      deviceCode: selectedDevice.value,
-      runId: state.runId,
-      runtimeScope: 'MISSION_CENTER',
-      runtimeInstanceId: `ALGORITHM_RUN:${state.runId}`,
-      detail: 'VirtualFleet 单设备控制',
-    })
-    if (result.status !== 'SUCCEEDED') {
-      throw new Error(result.detail || result.errorCode || `指令状态：${result.status}`)
-    }
-    singleDeviceCommandMessage.value = `${selectedDevice.value}：${commandType} 已由 Python 算法接收。`
-    if (action === 'return') {
-      singleDeviceCommandMessage.value += ' 抵达返航点后将退出任务编组并自动参与最终结算。'
-    }
-    addLog(`singleDeviceCommand: ${selectedDevice.value} ${commandType} ${result.status}`)
-    await pollAlgorithmFrame()
-  } catch (error) {
-    singleDeviceCommandMessage.value = error instanceof Error ? error.message : String(error)
-    addLog(`singleDeviceCommand failed: ${singleDeviceCommandMessage.value}`)
-  } finally {
-    singleDeviceCommandPending.value = false
-  }
-}
-
-watch(isSingleDeviceAlgorithm, (enabled) => {
-  if (!enabled) singleDeviceCommandMessage.value = ''
+onActivated(() => { cameraViewActive.value = true })
+onDeactivated(() => {
+  // Do not leave a temporary close-up active in the cached Unity renderer.
+  if (commandFocusActive.value && unityReady.value) showOverviewCamera()
+  cameraViewActive.value = false
+  commandCameraDirector.cancel()
 })
 
 // Registration lasts as long as the cached business view, not its activation.
@@ -1617,6 +1433,7 @@ watch(
     if (algorithmRunId !== String(state.runId) || stateVersion === lastVoiceVisualStateVersion) return
     lastVoiceVisualStateVersion = stateVersion
     if (runtimeState === 'LOST') {
+      if (restoreAuthoritativeTerminalSnapshot()) return
       if (lostRuntimeResetInFlight) return
       lostRuntimeResetInFlight = true
       algorithmPrepared.value = false
@@ -1659,6 +1476,7 @@ window.addEventListener('pagehide', persistRuntimeRecovery)
 onBeforeUnmount(() => {
   window.removeEventListener('pagehide', persistRuntimeRecovery)
   persistRuntimeRecovery()
+  commandCameraDirector.dispose()
   clearTimeout(recoveryTimer)
   clearTacticalNotices()
   simulationRuntime.events = null
@@ -1751,6 +1569,9 @@ onBeforeUnmount(() => {
                 <small>上限 4 m/s</small>
               </label>
             </div>
+            <p v-if="state.uavCount > 3 || state.usvCount > 3" class="vf-note" role="status">
+              保留原场景设计：固定返航支持 1–3 号无人机与无人艇。其余设备可继续执行其他控制指令。
+            </p>
             <div class="vf-actions">
               <button class="vf-button primary" type="button" :disabled="sceneLocked || !unityReady || scenarioLoading" @click="generateScenario">
                 <RefreshCw :size="15" /> 生成场景
@@ -1817,10 +1638,10 @@ onBeforeUnmount(() => {
               </li>
             </ol>
             <div class="vf-camera-actions">
-              <button type="button" :disabled="!selectedDevice || !unityReady" @click="followSelectedDevice">
+              <button type="button" aria-label="跟随设备" title="手动持续跟随所选设备" :disabled="!selectedDevice || !unityReady" @click="followSelectedDevice">
                 <Eye :size="15" /><span>跟随设备</span>
               </button>
-              <button type="button" :class="{ active: cameraMode === 'overview' }" :disabled="!unityReady" @click="setOverviewCamera">
+              <button type="button" aria-label="全局视角" title="全局观察无人机与无人艇" :class="{ active: cameraMode === 'overview' }" :disabled="!unityReady" @click="setOverviewCamera">
                 <Globe2 :size="15" /><span>全局视角</span>
               </button>
             </div>
@@ -1831,220 +1652,28 @@ onBeforeUnmount(() => {
           <button
             class="vf-drawer-reopen right"
             type="button"
-            title="展开任务检查区"
+            title="展开语音控制"
             :tabindex="rightPanelCollapsed ? 0 : -1"
             @click="setRightPanelCollapsed(false)"
           >
             <ChevronLeft :size="18" />
-            <span>任务态势</span>
+            <span>语音控制</span>
           </button>
-          <section class="vf-panel vf-inspector-panel">
-            <div class="vf-inspector-tabs">
-              <button :class="{ active: inspectorTab === 'voice' }" type="button" @click="inspectorTab = 'voice'">语音控制</button>
-              <button :class="{ active: inspectorTab === 'status' }" type="button" @click="inspectorTab = 'status'">任务态势</button>
-              <button :class="{ active: inspectorTab === 'protocol' }" type="button" @click="inspectorTab = 'protocol'">协议状态</button>
-              <button :class="{ active: inspectorTab === 'logs' }" type="button" @click="inspectorTab = 'logs'">运行日志</button>
-              <button class="collapse" type="button" title="收起检查区" @click="setRightPanelCollapsed(true)"><ChevronRight :size="17" /></button>
-            </div>
-
-            <div v-if="inspectorTab === 'status'" class="vf-inspector-content">
-              <article class="vf-status-card">
-                <span>任务状态</span>
-                <strong :class="state.mission.toLowerCase()">{{ state.mission }}</strong>
-                <small>序列 {{ state.sequence }} · 阶段 {{ missionPhaseLabel }}</small>
-              </article>
-
-              <section class="vf-inspector-section">
-                <h4>目标概览 <span>{{ visibleTargets.length }}</span></h4>
-                <div v-if="visibleTargets.length" class="vf-target-list">
-                  <article v-for="target in visibleTargets.slice(0, 6)" :key="target.code">
-                    <div><strong>{{ target.code }}</strong><small>{{ target.type }}</small></div>
-                    <span>{{ target.state === 'CENTER_DEFENSE' ? '居中防御' : target.state === 'COVERED_WITHDRAWAL' ? '掩护撤离中' : target.state || 'VISIBLE' }}</span>
-                  </article>
-                  <p v-if="visibleTargets.length > 6" class="vf-list-overflow">另有 {{ visibleTargets.length - 6 }} 个目标，任务指标仍按全部目标统计</p>
-                </div>
-                <p v-else class="vf-empty">生成场景后显示目标状态</p>
-              </section>
-
-              <section class="vf-inspector-section">
-                <h4>任务指标</h4>
-                <dl class="vf-metric-list">
-                  <div><dt>综合进度</dt><dd>{{ displayMissionProgress }}%</dd></div>
-                  <div><dt>可见目标</dt><dd>{{ visibleTargetCount }}</dd></div>
-                  <template v-if="isCaptureAlgorithm">
-                    <div><dt>行动距离</dt><dd>{{ Number(missionMetrics.targetTravelDistanceM ?? 0).toFixed(0) }} m</dd></div>
-                    <div><dt>闭环置信</dt><dd>{{ Math.round(Number(missionMetrics.containmentConfidence ?? 0) * 100) }}%</dd></div>
-                    <div><dt>敌船速度</dt><dd>{{ Number(missionMetrics.targetSpeedMps ?? 0).toFixed(1) }} m/s</dd></div>
-                    <div><dt>全局避障</dt><dd>{{ Number(missionMetrics.globalAvoidanceCount ?? 0) }}</dd></div>
-                  </template>
-                  <template v-else>
-                    <div><dt>安全通航进度</dt><dd>{{ escortProgress }}%</dd></div>
-                    <div><dt>围捕完成度</dt><dd>{{ captureProgress }}%</dd></div>
-                    <div><dt>已捕获</dt><dd>{{ Number(missionMetrics.capturedThreatCount ?? 0) }}/{{ scenarioPlan.threatCount }}</dd></div>
-                    <div>
-                      <dt>兵力分工</dt>
-                      <dd>近卫 {{ closeGuardCount }} · 围捕 {{ captureAssignedCount }} · 机动支援 {{ mobileSupportCount }}</dd>
-                    </div>
-                    <div v-if="postMissionFormationRequiredCount > 0">
-                      <dt>机动余量归队</dt>
-                      <dd>{{ postMissionFormationReadyCount }}/{{ postMissionFormationRequiredCount }} · {{ postMissionFormationProgress }}%</dd>
-                    </div>
-                    <div v-if="postMissionFormationRequiredCount > 0">
-                      <dt>终态稳定</dt>
-                      <dd>{{ postMissionStableFrames }}/{{ postMissionRequiredStableFrames }}</dd>
-                    </div>
-                    <div v-if="terminalBlockerLabel"><dt>完成阻塞</dt><dd>{{ terminalBlockerLabel }}</dd></div>
-                  </template>
-                  <div><dt>避障修正</dt><dd>{{ Number(missionMetrics.avoidanceCount ?? 0) }}</dd></div>
-                  <div><dt>实际耗时</dt><dd>{{ missionElapsedLabel }}</dd></div>
-                </dl>
-              </section>
-
-              <section v-if="tacticalHistory.length" class="vf-inspector-section">
-                <h4>意图事件链 <span>{{ tacticalHistory.length }}</span></h4>
-                <ol class="vf-tactical-history">
-                  <li v-for="event in tacticalHistory.slice(0, 8)" :key="event.eventId">
-                    <i></i>
-                    <div>
-                      <strong>{{ event.title }}</strong>
-                      <span>{{ event.threatCode ? `${event.threatCode} · ` : '' }}{{ event.message }}</span>
-                    </div>
-                    <b v-if="event.type.endsWith('INTENT_CONFIRMED') && event.confidence">{{ Math.round(event.confidence * 100) }}%</b>
-                  </li>
-                </ol>
-              </section>
-
-              <section v-if="captureGroups.length" class="vf-inspector-section">
-                <h4>
-                  <span>围捕目标</span>
-                  <span>实时闭环 {{ Number(missionMetrics.capturedThreatCount ?? missionMetrics.capturedTargetCount ?? 0) }}/{{ scenarioPlan.threatCount }}</span>
-                </h4>
-                <div class="vf-capture-groups">
-                  <article v-for="group in captureGroups.slice(0, 4)" :key="group.threatCode">
-                    <header class="vf-capture-group-head">
-                      <strong>{{ group.threatCode }}</strong>
-                      <b>{{ intentLabel(group.intent) }} · {{ Math.round(Number(group.intentConfidence ?? 0) * 100) }}%</b>
-                    </header>
-                    <span>阶段 {{ displayCaptureStage(group.stage) }}/3 · 当前编组 {{ group.uavCount }} UAV + {{ group.usvCount }} USV</span>
-                    <dl class="vf-target-intelligence">
-                      <div><dt>航速</dt><dd>{{ groupSpeed(group).toFixed(1) }}<small v-if="group.maximumSpeedMps">/{{ Number(group.maximumSpeedMps).toFixed(1) }}</small> m/s</dd></div>
-                      <div><dt>航向</dt><dd>{{ normalizeHeading(group.targetHeadingDeg).toFixed(0) }}° · {{ compassDirection(group.targetHeadingDeg) }}</dd></div>
-                      <div><dt>已移动</dt><dd>{{ Number(group.targetTravelDistanceM ?? group.pursuitDistanceM ?? 0).toFixed(0) }} m</dd></div>
-                      <div><dt>当前决策</dt><dd>{{ speedReasonLabel(group) }}</dd></div>
-                      <div><dt>逃逸缺口</dt><dd>{{ Number(group.postGlobalMaxGapDeg ?? group.maxAngularGapDeg ?? 360).toFixed(0) }}°<template v-if="group.gapCenterDeg !== undefined"> · 朝 {{ compassDirection(group.gapCenterDeg) }}</template></dd></div>
-                      <div><dt>最近拦截</dt><dd>{{ group.nearestInterceptorCode || '暂无' }}<template v-if="group.nearestInterceptorDistanceM !== undefined"> · {{ Number(group.nearestInterceptorDistanceM).toFixed(0) }} m</template></dd></div>
-                    </dl>
-                    <small v-if="reassignmentLabel(group)" class="vf-decision-event">智能换组：{{ reassignmentLabel(group) }}</small>
-                    <small>
-                      执行槽位到位 {{ Number(group.arrivedMemberCount ?? Math.round(Number(group.arrivalRatio ?? 0) * Number(group.ringMemberCount ?? group.memberCount ?? 0))) }}/{{ Number(group.requiredMemberCount ?? group.ringMemberCount ?? group.memberCount ?? 0) }}
-                      ({{ Math.round(Number(group.arrivalRatio ?? 0) * 100) }}%)
-                      · 规划槽位缺口 {{ Number(group.maxAngularGapDeg ?? 360).toFixed(0) }}°
-                    </small>
-                    <small>稳定闭环 {{ group.holdFrames ?? 0 }}/{{ group.holdRequiredFrames ?? 25 }}</small>
-                    <small v-if="isCaptureAlgorithm">
-                      实际闭环 {{ group.postGlobalContainmentReady ? '是' : '否' }}
-                      · 执行环缺口 {{ Number(group.postGlobalMaxGapDeg ?? 0).toFixed(0) }}°（阈值 ≤ {{ Number(group.postGlobalMaxAllowedGapDeg ?? 0).toFixed(0) }}°）
-                      · 分组避障 {{ Number(group.globalAvoidanceCount ?? 0) }}
-                    </small>
-                    <small v-if="group.detachedParticipantCodes?.length">待到位：{{ group.detachedParticipantCodes.join('、') }}</small>
-                    <small v-if="group.captureBlocker && group.captureBlocker !== 'NONE'">阻塞：{{ group.captureBlocker }}</small>
-                  </article>
-                </div>
-              </section>
-
-              <section class="vf-inspector-section vf-selected-summary">
-                <h4>选中设备</h4>
-                <strong>{{ selectedDevice || '无' }}</strong>
-                <span v-if="selectedFrameItem">{{ selectedFrameItem.type }} · {{ 'role' in selectedFrameItem ? selectedFrameItem.role : selectedFrameItem.state }}</span>
-                <small v-if="roleSummary">角色分工：{{ roleSummary }}</small>
-              </section>
-            </div>
-
-            <div v-else-if="inspectorTab === 'protocol'" class="vf-inspector-content">
-              <article class="vf-protocol-health">
-                <span><i :class="{ online: unityReady }"></i>Unity WebGL</span><strong>{{ unityReady ? 'ONLINE' : 'CONNECTING' }}</strong>
-                <span>协议版本</span><strong>V3</strong>
-                <span>运行模式</span><strong>VIRTUAL_SIMULATION</strong>
-                <span>场景确认</span><strong>{{ scenarioReadyRunId === state.runId ? 'READY' : 'WAITING' }}</strong>
-              </article>
-              <pre>{{ protocolSnapshot }}</pre>
-            </div>
-
-            <div v-else-if="inspectorTab === 'logs'" class="vf-inspector-content vf-runtime-log">
-              <p v-if="!logEntries.length" class="vf-empty">暂无运行日志</p>
-              <ol v-else>
-                <li v-for="entry in logEntries" :key="entry">{{ entry }}</li>
-              </ol>
-            </div>
-
-            <div v-else class="vf-inspector-content vf-merged-controls">
-              <VoiceP0ControlPanel
-                ref="voiceControlPanel"
-                :runtime-hint="voiceRuntimeHint"
-                :unity-session="voiceUnitySession"
-                @presentation-message="sendPresentationMessage"
-              />
-            <section v-if="isSingleDeviceAlgorithm" class="vf-single-device-control" aria-label="单设备控制">
-              <article class="vf-status-card">
-                <span>单设备控制</span>
-                <strong>{{ selectedDevice || '未选择' }}</strong>
-                <small>Python 权威运动 · 其他设备继续执行当前群体算法</small>
-              </article>
-              <section class="vf-inspector-section">
-                <h4>选择设备 <span>{{ controllableAgents.length }} ONLINE</span></h4>
-                <select
-                  :value="selectedDevice"
-                  :disabled="singleDeviceCommandPending || !controllableAgents.length"
-                  @change="handleControlDeviceSelection"
-                >
-                  <option value="">请选择 UAV 或 USV</option>
-                  <option v-for="agent in controllableAgents" :key="agent.code" :value="agent.code">
-                    {{ agent.code }} · {{ agent.type }} · {{ agent.status || 'ACTIVE' }}
-                  </option>
-                </select>
-                <div class="vf-control-authority">
-                  <span>控制权</span>
-                  <strong :class="{ operator: selectedControlState }">
-                    {{ selectedControlState?.controlAuthority || 'ALGORITHM' }}
-                  </strong>
-                  <span>运动状态</span>
-                  <strong>{{ selectedControlState?.motionState || selectedControlAgent?.status || 'ACTIVE' }}</strong>
-                </div>
-                <div class="vf-single-command-grid">
-                  <button class="vf-button capture" type="button" :disabled="!!singleDeviceDisabledReason || singleDeviceCommandPending" :title="singleDeviceDisabledReason" @click="submitSingleDeviceCommand('hold')">悬停 / 驻留</button>
-                  <button class="vf-button danger" type="button" :disabled="!!singleDeviceDisabledReason || singleDeviceCommandPending" :title="singleDeviceDisabledReason" @click="submitSingleDeviceCommand('stop')">单机停止</button>
-                  <button class="vf-button" type="button" :disabled="!!singleDeviceDisabledReason || singleDeviceCommandPending" :title="singleDeviceDisabledReason" @click="submitSingleDeviceCommand('return')">独立返航</button>
-                  <button class="vf-button success" type="button" :disabled="!!singleDeviceDisabledReason || singleDeviceCommandPending" :title="singleDeviceDisabledReason" @click="submitSingleDeviceCommand('rejoin')">安全归队</button>
-                </div>
-                <p v-if="singleDeviceDisabledReason" class="vf-note">{{ singleDeviceDisabledReason }}</p>
-                <div v-if="controlledDevices.length" class="vf-controlled-device-list">
-                  <h5>已接管设备 <span>{{ controlledDevices.length }}</span></h5>
-                  <div class="vf-controlled-device-tags">
-                    <button
-                      v-for="device in controlledDevices"
-                      :key="device.code"
-                      type="button"
-                      :class="[
-                        `state-${device.motionState.toLowerCase().replace(/_/g, '-')}`,
-                        { active: selectedDevice === device.code },
-                      ]"
-                      :title="`点击切换到 ${device.code}`"
-                      @click="selectDeviceForControl(device.code)"
-                    >
-                      <strong>{{ device.code }}</strong>
-                      <span>{{ device.label }}</span>
-                    </button>
-                  </div>
-                </div>
-                <p v-if="singleDeviceCommandMessage" class="vf-action-message">{{ singleDeviceCommandMessage }}</p>
-                <p v-if="singleDeviceRuntimeNotice" class="vf-action-message vf-return-status">{{ singleDeviceRuntimeNotice }}</p>
-              </section>
-              <details class="vf-inspector-section vf-control-rules">
-                <summary>控制规则</summary>
-                <p class="vf-note">被接管设备暂时退出当前任务输出，仍保留在场景和避碰域中。独立返航抵达起始点后会标记为 RETURNED 并退出任务编组；剩余兵力足够时任务继续，兵力不足时进入可恢复的降级状态，不会直接失败。安全归队可把控制权重新交还群体算法。</p>
-              </details>
-            </section>
-            </div>
+          <section class="vf-panel vf-inspector-panel" aria-label="语音控制">
+            <button
+              class="vf-voice-collapse"
+              type="button"
+              title="收起语音控制"
+              aria-label="收起语音控制"
+              @click="setRightPanelCollapsed(true)"
+            ><ChevronRight :size="17" /></button>
+            <VoiceP0ControlPanel
+              ref="voiceControlPanel"
+              :refined="true"
+              :runtime-hint="voiceRuntimeHint"
+              :unity-session="voiceUnitySession"
+              @presentation-message="sendPresentationMessage"
+            />
           </section>
         </aside>
       </div>
@@ -2062,7 +1691,7 @@ onBeforeUnmount(() => {
 .vf-workspace-switch a, .vf-workspace-switch span { min-width: 108px; padding: 8px 16px; color: #789d9b; font-size: 12px; font-weight: 800; text-align: center; text-decoration: none; border-radius: 4px; }
 .vf-workspace-switch .active { color: #effffd; background: rgba(108, 228, 213, .12); box-shadow: inset 0 -2px #6ce4d5; }
 .vf-instance-status { display: flex; justify-self: end; align-items: center; gap: 7px; color: #9fe8df; font-size: 11px; font-weight: 800; }
-.vf-instance-status i, .vf-unity-state i, .vf-live-strip i, .vf-protocol-health i { width: 7px; height: 7px; background: #62e4c9; border-radius: 50%; box-shadow: 0 0 9px rgba(98, 228, 201, .75); }
+.vf-instance-status i, .vf-unity-state i, .vf-live-strip i { width: 7px; height: 7px; background: #62e4c9; border-radius: 50%; box-shadow: 0 0 9px rgba(98, 228, 201, .75); }
 .vf-instance-status.offline { color: #8aa8a5; }
 .vf-instance-status.offline i { background: #718987; box-shadow: none; }
 .vf-workbench { --vf-left-width: clamp(238px, 15vw, 288px); --vf-right-width: clamp(248px, 15.6vw, 300px); --vf-current-left: var(--vf-left-width); --vf-current-right: var(--vf-right-width); display: grid; min-height: 0; overflow: hidden; flex: 1; gap: 12px; grid-template-rows: minmax(0, 1fr); grid-template-columns: var(--vf-current-left) minmax(0, 1fr) var(--vf-current-right); transition: grid-template-columns 240ms cubic-bezier(.22,.8,.3,1); }
@@ -2080,9 +1709,11 @@ onBeforeUnmount(() => {
 .vf-config-panel { padding: 15px; }
 .vf-panel-head, .vf-stage-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .vf-panel-head { margin-bottom: 13px; }
-.vf-panel-head > div { display: flex; align-items: baseline; gap: 9px; }
-.vf-panel-head button, .vf-inspector-tabs .collapse { display: grid; width: 28px; height: 28px; padding: 0; color: #83aaa6; cursor: pointer; place-items: center; background: transparent; border: 1px solid transparent; border-radius: 4px; }
-.vf-panel-head button:hover, .vf-inspector-tabs .collapse:hover { color: #6ce4d5; border-color: rgba(108, 228, 213, .28); }
+.vf-panel-head > div { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 9px; min-width: 0; }
+.vf-panel-head h3, .vf-panel-head span { white-space: nowrap; }
+.vf-panel-head button { flex-shrink: 0; }
+.vf-panel-head button, .vf-voice-collapse { display: grid; width: 28px; height: 28px; padding: 0; color: #83aaa6; cursor: pointer; place-items: center; background: transparent; border: 1px solid transparent; border-radius: 4px; }
+.vf-panel-head button:hover, .vf-voice-collapse:hover { color: #6ce4d5; border-color: rgba(108, 228, 213, .28); }
 .vf-panel-head h3, .vf-stage-head h3 { margin: 0; color: #effffd; font-size: 15px; }
 .vf-panel-head span, .vf-stage-head span { color: #6f9697; font-size: 10px; }
 .vf-drawer-reopen { display: flex; width: 100%; height: 100%; padding: 12px 0; align-items: center; gap: 12px; flex-direction: column; color: #91b8b4; cursor: pointer; background: rgba(8,25,30,.94); border: 1px solid rgba(108,228,213,.18); border-radius: 8px; }
@@ -2123,14 +1754,6 @@ onBeforeUnmount(() => {
 .vf-stage-panel.expanded .vf-unity-stage :deep(.unity-webgl-panel) { height: 100%; }
 .vf-unity-stage { height: 100%; min-height: 0; flex: 1; overflow: hidden; background: #031015; }
 .vf-unity-stage :deep(.unity-webgl-panel) { width: 100%; height: 100%; min-height: 0; }
-.vf-tactical-history { display: grid; margin: 0; padding: 0; gap: 7px; list-style: none; }
-.vf-tactical-history li { display: grid; padding: 7px 0; align-items: start; gap: 7px; border-bottom: 1px solid rgba(108,228,213,.1); grid-template-columns: auto minmax(0,1fr) auto; }
-.vf-tactical-history li:last-child { border-bottom: 0; }
-.vf-tactical-history i { width: 7px; height: 7px; margin-top: 4px; background: #6ce4d5; border-radius: 50%; box-shadow: 0 0 8px rgba(108,228,213,.75); }
-.vf-tactical-history div { display: grid; min-width: 0; gap: 2px; }
-.vf-tactical-history strong { color: #eafffb; font-size: 10px; }
-.vf-tactical-history span { color: #7fa7a5; font-size: 9px; line-height: 1.45; }
-.vf-tactical-history b { color: #ffcf72; font-size: 10px; }
 .vf-live-strip { display: flex; min-height: 34px; padding: 0 13px; align-items: center; flex-wrap: wrap; gap: 8px 18px; color: #7ea7a5; background: #06191f; border-top: 1px solid rgba(108,228,213,.16); border-bottom: 1px solid rgba(108,228,213,.1); font-size: 10px; }
 .vf-live-strip span { display: inline-flex; align-items: center; gap: 5px; }
 .vf-live-strip strong { color: #eafffb; font-size: 11px; }
@@ -2152,74 +1775,10 @@ onBeforeUnmount(() => {
 .vf-phase-stepper li.done span { border-color: #43b8aa; }
 .vf-phase-stepper li.active { color: #ffcf72; }
 .vf-phase-stepper li.active span { color: #061113; background: #ffcf72; border-color: #ffcf72; }
-.vf-inspector-panel { padding: 0; }
-.vf-inspector-tabs { position: sticky; top: 0; z-index: 2; display: flex; min-height: 46px; padding: 0 8px; align-items: stretch; background: #07191e; border-bottom: 1px solid rgba(108,228,213,.16); }
-.vf-inspector-tabs > button:not(.collapse) { position: relative; padding: 0 8px; color: #789c99; cursor: pointer; background: transparent; border: 0; font-size: 11px; font-weight: 800; }
-.vf-inspector-tabs > button.active { color: #effffd; }
-.vf-inspector-tabs > button.active::after { position: absolute; right: 8px; bottom: 0; left: 8px; height: 2px; content: ''; background: #6ce4d5; }
-.vf-inspector-tabs .collapse { margin: auto 0 auto auto; }
-.vf-inspector-content { display: grid; gap: 0; }
-.vf-status-card, .vf-inspector-section { padding: 15px; border-bottom: 1px solid rgba(108,228,213,.12); }
-.vf-status-card { display: grid; gap: 6px; }
-.vf-status-card > span { color: #86aaa7; font-size: 10px; }
-.vf-status-card > strong { color: #ffcf72; font-size: 20px; }
-.vf-status-card > strong.completed { color: #66e4ad; }
-.vf-status-card > strong.failed, .vf-status-card > strong.timeout { color: #ff8179; }
-.vf-status-card small { color: #6f9693; font-size: 10px; }
-.vf-inspector-section h4 { display: flex; margin: 0 0 10px; align-items: center; justify-content: space-between; color: #eafffb; font-size: 12px; }
-.vf-inspector-section h4 span { color: #6ce4d5; font-size: 10px; }
-.vf-target-list, .vf-capture-groups { display: grid; gap: 7px; }
-.vf-target-list article, .vf-capture-groups article { display: flex; padding: 9px; align-items: center; justify-content: space-between; gap: 8px; background: rgba(3,16,20,.58); border: 1px solid rgba(108,228,213,.12); border-radius: 4px; }
-.vf-target-list article div, .vf-capture-groups article { display: grid; }
-.vf-target-list strong, .vf-capture-groups strong { color: #ffcf72; font-size: 10px; }
-.vf-target-list small, .vf-capture-groups span, .vf-capture-groups small { color: #789c99; font-size: 9px; }
-.vf-target-list article > span { color: #dff8f4; font-size: 9px; }
-.vf-capture-group-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-.vf-capture-group-head b { color: #6ce4d5; font-size: 9px; font-weight: 800; }
-.vf-target-intelligence { display: grid; margin: 2px 0 1px; gap: 4px 8px; grid-template-columns: repeat(2, minmax(0, 1fr)); }
-.vf-target-intelligence div { display: grid; min-width: 0; padding: 4px 5px; gap: 2px; background: rgba(21, 67, 70, .18); border-radius: 3px; }
-.vf-target-intelligence dt { color: #648b88; font-size: 8px; }
-.vf-target-intelligence dd { min-width: 0; margin: 0; overflow: hidden; color: #d8f5f1; font-size: 9px; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
-.vf-target-intelligence dd small { color: #9fc0bd; }
-.vf-capture-groups .vf-decision-event { padding: 5px 6px; color: #b8f4e9; background: rgba(63, 190, 169, .1); border-left: 2px solid #55d9c7; }
-.vf-list-overflow { margin: 1px 0 0; color: #6f9693; font-size: 9px; line-height: 1.45; }
-.vf-metric-list { display: grid; margin: 0; gap: 0; }
-.vf-metric-list div { display: flex; padding: 7px 0; align-items: center; justify-content: space-between; border-bottom: 1px solid rgba(108,228,213,.07); }
-.vf-metric-list dt { color: #789c99; font-size: 10px; }
-.vf-metric-list dd { margin: 0; color: #eafffb; font-size: 11px; font-weight: 800; }
-.vf-selected-summary { display: grid; gap: 5px; }
-.vf-selected-summary h4 { margin-bottom: 4px; }
-.vf-selected-summary > strong { color: #ffcf72; font-size: 12px; }
-.vf-selected-summary > span, .vf-selected-summary > small { overflow: hidden; color: #789c99; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
-.vf-empty { margin: 0; color: #668885; font-size: 10px; }
-.vf-protocol-health { display: grid; padding: 15px; align-items: center; gap: 9px 8px; color: #789c99; grid-template-columns: 1fr auto; font-size: 10px; border-bottom: 1px solid rgba(108,228,213,.12); }
-.vf-protocol-health span { display: flex; align-items: center; gap: 6px; }
-.vf-protocol-health strong { color: #dff8f4; font-size: 9px; }
-.vf-protocol-health i { background: #718987; box-shadow: none; }
-.vf-protocol-health i.online { background: #62e4c9; box-shadow: 0 0 9px rgba(98,228,201,.75); }
-.vf-inspector-content pre { max-height: 470px; overflow: auto; margin: 12px; padding: 10px; color: #bde8e0; background: #061116; border: 1px solid #203c43; border-radius: 4px; font: 9px/1.55 Consolas, monospace; white-space: pre-wrap; word-break: break-word; }
-.vf-runtime-log { padding: 12px; }
-.vf-runtime-log ol { display: grid; max-height: 650px; overflow: auto; margin: 0; padding: 0; gap: 5px; list-style: none; }
-.vf-runtime-log li { padding: 7px 8px; color: #86aaa7; background: rgba(3,16,20,.55); border-left: 2px solid rgba(108,228,213,.25); font: 9px/1.45 Consolas, monospace; word-break: break-all; }
-.vf-single-device-control select { width: 100%; min-height: 36px; padding: 0 9px; color: #eafffb; background: #07171c; border: 1px solid #28515a; border-radius: 4px; }
-.vf-control-authority { display: grid; margin-top: 10px; padding: 9px; align-items: center; gap: 7px 10px; color: #789c99; background: rgba(3,16,20,.58); border: 1px solid rgba(108,228,213,.12); border-radius: 4px; grid-template-columns: 1fr auto; font-size: 10px; }
-.vf-control-authority strong { color: #dff8f4; font-size: 9px; }
-.vf-control-authority strong.operator { color: #ffcf72; }
-.vf-single-command-grid { display: grid; margin-top: 10px; gap: 7px; grid-template-columns: repeat(2, minmax(0, 1fr)); }
-.vf-single-command-grid .vf-button { width: 100%; }
-.vf-controlled-device-list { margin-top: 12px; }
-.vf-controlled-device-list h5 { display: flex; margin: 0 0 7px; align-items: center; justify-content: space-between; color: #8eb7b3; font-size: 10px; font-weight: 500; }
-.vf-controlled-device-list h5 span { min-width: 20px; padding: 2px 6px; color: #06161a; background: #6ce4d5; border-radius: 10px; text-align: center; font: 700 9px/1.4 Consolas, monospace; }
-.vf-controlled-device-tags { display: flex; flex-wrap: wrap; gap: 6px; }
-.vf-controlled-device-tags button { display: inline-flex; min-height: 29px; padding: 5px 7px; align-items: center; gap: 6px; color: #bdd8d5; background: rgba(7, 28, 33, .82); border: 1px solid #28515a; border-radius: 4px; cursor: pointer; }
-.vf-controlled-device-tags button:hover, .vf-controlled-device-tags button.active { border-color: #6ce4d5; box-shadow: 0 0 0 1px rgba(108, 228, 213, .12) inset; }
-.vf-controlled-device-tags strong { color: #eefcf9; font: 700 9px/1.2 Consolas, monospace; }
-.vf-controlled-device-tags span { padding: 2px 5px; color: #ffcf72; background: rgba(255, 196, 92, .1); border-radius: 8px; font-size: 9px; }
-.vf-controlled-device-tags .state-returned span { color: #63e5ad; background: rgba(99, 229, 173, .1); }
-.vf-controlled-device-tags .state-stopped span { color: #ff8178; background: rgba(255, 96, 87, .1); }
-.vf-controlled-device-tags .state-rejoining span { color: #6ce4d5; background: rgba(108, 228, 213, .1); }
+.vf-inspector-panel { padding: 0; border-radius: 16px; border-color: #243c42; background: #0d1e23; scrollbar-width: thin; scrollbar-color: #365451 transparent; }
+.vf-voice-collapse { position: absolute; top: 18px; right: 12px; z-index: 3; }
+.vf-voice-collapse:focus-visible { outline: 2px solid #73e2cd; outline-offset: 3px; }
 .vf-live-strip .vf-return-notice { color: #ffcf72; }
-.vf-return-status { padding: 8px; background: rgba(255, 196, 92, .07); border-left: 2px solid #ffcf72; }
 @media (max-width: 1500px) {
   .vf-workbench { --vf-left-width: 220px; --vf-right-width: 232px; gap: 9px; }
   .vf-workbench.left-collapsed { --vf-current-left: 42px; }
@@ -2288,9 +1847,6 @@ onBeforeUnmount(() => {
   .vf-unity-stage, .vf-unity-stage :deep(.unity-webgl-panel) { min-height: 0; }
   .vf-live-strip { min-height: 29px; }
   .vf-command-bar { min-height: 86px; padding-top: 5px; padding-bottom: 5px; }
-  .vf-status-card, .vf-inspector-section { padding: 11px; }
-  .vf-target-list article, .vf-capture-groups article { padding: 6px; }
-  .vf-metric-list div { padding: 5px 0; }
 }
 @media (min-width: 2200px) {
   .vf-workbench { --vf-left-width: 310px; --vf-right-width: 320px; gap: 16px; }
@@ -2300,7 +1856,7 @@ onBeforeUnmount(() => {
   .vf-command-bar { min-height: 72px; padding-right: 16px; padding-left: 16px; }
   .vf-camera-actions button { min-height: 36px; padding: 0 12px; font-size: 11px; }
 }
-@container workspace (max-width: 1050px) {
+@container workspace (max-width: 1099px) {
   .virtual-fleet-page { height: auto; min-height: calc(100dvh - 40px); overflow: visible; }
   .vf-app-header { grid-template-columns: minmax(0, 1fr) auto; gap: 8px; padding-block: 10px; }
   .vf-workspace-switch { display: flex; }
@@ -2309,7 +1865,7 @@ onBeforeUnmount(() => {
     overflow: visible; grid-template-columns: var(--vf-current-left) minmax(0, 1fr); grid-template-rows: auto;
   }
   .vf-inspector-drawer { grid-column: 1 / -1; min-height: 0; }
-  .vf-inspector-panel { position: relative; height: auto; max-height: 420px; }
+  .vf-inspector-panel { position: relative; height: auto; max-height: none; }
   .vf-inspector-drawer.collapsed .vf-inspector-panel { position: absolute; }
   .vf-inspector-drawer.collapsed .vf-drawer-reopen { position: relative; height: 42px; }
   .vf-unity-stage, .vf-unity-stage :deep(.unity-webgl-panel) { min-height: 340px; }
@@ -2332,12 +1888,12 @@ onBeforeUnmount(() => {
   .vf-phase-stepper li { flex-shrink: 0; min-width: 76px; }
   .vf-stage-head { flex-wrap: wrap; gap: 8px; }
 }
-/* Dense simulation workspace: one scrolling inspector for voice and device control. */
+/* Keep scene tools compact while giving the voice workflow its own readable space. */
 .virtual-fleet-page { gap: 7px; }
 .vf-app-header { min-height: 46px; padding: 0 12px; }
 .vf-app-title strong { font-size: 16px; }
 .vf-workspace-switch a, .vf-workspace-switch span { padding: 6px 12px; font-size: 11px; }
-.vf-workbench { --vf-left-width: clamp(190px, 14vw, 240px); --vf-right-width: clamp(310px, 23vw, 350px); gap: 7px; }
+.vf-workbench { --vf-left-width: clamp(190px, 14vw, 240px); --vf-right-width: clamp(350px, 26vw, 390px); gap: 12px; }
 .vf-config-panel { padding: 10px; }
 .vf-panel-head { margin-bottom: 8px; }
 .vf-panel-head h3, .vf-stage-head h3 { font-size: 13px; }
@@ -2348,43 +1904,15 @@ onBeforeUnmount(() => {
 .vf-stage-head { padding: 8px 10px; }
 .vf-live-strip { min-height: 28px; }
 .vf-command-bar { min-height: 68px; padding: 6px 9px; gap: 5px 9px; }
-.vf-inspector-tabs { min-height: 36px; padding: 0 5px; }
-.vf-inspector-tabs > button:not(.collapse) { flex: 1; padding: 0 4px; font-size: 10px; white-space: nowrap; }
-.vf-merged-controls { min-width: 0; padding: 8px; gap: 8px; }
-.vf-single-device-control { min-width: 0; border: 1px solid #28515a; border-radius: 5px; }
-.vf-single-device-control .vf-status-card, .vf-single-device-control .vf-inspector-section { padding: 8px; }
-.vf-single-device-control .vf-status-card { gap: 3px; }
-.vf-single-device-control .vf-status-card > strong { font-size: 16px; }
-.vf-single-device-control .vf-status-card small { font-size: 9px; }
-.vf-single-device-control h4 { margin-bottom: 6px; font-size: 11px; }
-.vf-single-device-control select { min-height: 29px; font-size: 10px; }
-.vf-control-authority { margin-top: 6px; padding: 6px; gap: 4px 8px; }
-.vf-single-command-grid { margin-top: 6px; gap: 5px; }
-.vf-single-command-grid .vf-button { min-height: 28px; padding: 5px 7px; font-size: 10px; }
-.vf-controlled-device-list { margin-top: 7px; }
-.vf-single-device-control .vf-inspector-section:last-child { border-bottom: 0; }
-.vf-merged-controls :deep(.voice-p0) { min-height: 0; padding: 0; gap: 6px; background: none; font-size: 10px; }
-.vf-merged-controls :deep(.voice-head .voice-icon) { width: 24px; height: 24px; }
-.vf-merged-controls :deep(.voice-head strong) { font-size: 12px; }
-.vf-merged-controls :deep(.runtime-card) { padding: 7px; gap: 6px; }
-.vf-merged-controls :deep(.scope-note) { font-size: 9px; line-height: 1.4; }
-.vf-merged-controls :deep(.intelligence-input) { padding: 7px; gap: 5px; }
-.vf-merged-controls :deep(.intelligence-input textarea) { min-height: 44px; height: 44px; padding: 6px; font-family: inherit; font-size: 10px; line-height: 1.4; }
-.vf-merged-controls :deep(.audio-file-test) { margin-top: 0; padding: 5px 6px; }
-.vf-merged-controls :deep(.action-grid) { gap: 5px; }
-.vf-merged-controls :deep(.action-grid button) { min-height: 44px; padding: 6px; gap: 3px; min-width: 0; }
-.vf-merged-controls :deep(.action-grid button strong) { font-size: 11px; }
-.vf-merged-controls :deep(.voice-p0 footer) { flex-wrap: wrap; gap: 4px 8px; }
-.vf-control-rules summary { cursor: pointer; color: #8fb4b2; font-size: 10px; }
 .vf-panel select, .vf-panel input { box-sizing: border-box; width: 100%; min-width: 0; }
 .vf-two-col { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-@container workspace (min-width: 800px) {
+@container workspace (min-width: 1100px) {
   .virtual-fleet-page { height: calc(100dvh - 40px); min-height: 0; overflow: hidden; }
   .vf-app-header { grid-template-columns: minmax(0, 1fr) auto; padding-block: 4px; gap: 4px; }
   .vf-instance-status { grid-column: auto; justify-self: end; }
   .vf-workspace-switch { display: none; }
   .vf-workbench, .vf-workbench.left-collapsed, .vf-workbench.right-collapsed, .vf-workbench.left-collapsed.right-collapsed {
-    --vf-left-width: clamp(160px, 14vw, 240px); --vf-right-width: clamp(290px, 23vw, 350px);
+    --vf-left-width: clamp(160px, 14vw, 240px); --vf-right-width: clamp(350px, 26vw, 390px);
     overflow: hidden; grid-template-columns: var(--vf-current-left) minmax(0, 1fr) var(--vf-current-right); grid-template-rows: minmax(0, 1fr);
   }
   .vf-inspector-drawer { grid-column: auto; min-height: 0; }
