@@ -6,9 +6,10 @@ import VirtualFleetConfigView from '@/views/VirtualFleetConfigView.vue'
 import { simulationRuntime } from '@/composables/simulationRuntime'
 import { useAuthStore } from '@/stores/auth'
 import { useVoiceControlStore } from '@/stores/voiceControl'
-import { controlAlgorithmRun, fetchAlgorithmRunStatus, prepareAlgorithmRun } from '@/api/algorithm'
+import { controlAlgorithmRun, fetchAlgorithmFrames, fetchAlgorithmRunStatus, prepareAlgorithmRun } from '@/api/algorithm'
 import { buildReturnInfrastructure, toGlobalReturnInfrastructure, type ReturnInfrastructure } from '@/utils/virtualReturnInfrastructure'
 import { deriveAdaptiveScenarioPlan } from '@/utils/adaptiveScenarioPlan'
+import { buildVirtualFleetGridLayout } from '@/utils/virtualFleetGridLayout'
 import { adaptVirtualAlgorithmFrame } from '@/utils/virtualAlgorithmFrameAdapter'
 import type { AlgorithmRuntimeFrame } from '@/types/mission'
 import { ApiClientError } from '@/api/http'
@@ -113,6 +114,7 @@ describe('VirtualFleetConfigView return infrastructure payloads', () => {
     vi.setSystemTime(new Date('2026-10-09T09:00:00.000Z'))
     vi.clearAllMocks()
     vi.mocked(fetchAlgorithmRunStatus).mockResolvedValue({ state: 'STOPPED', sequence: 0 } as Awaited<ReturnType<typeof fetchAlgorithmRunStatus>>)
+    vi.mocked(fetchAlgorithmFrames).mockResolvedValue([])
     sessionStorage.clear()
     setActivePinia(createPinia())
     useAuthStore().user = { username: 'admin', role: 'ADMIN' }
@@ -128,7 +130,7 @@ describe('VirtualFleetConfigView return infrastructure payloads', () => {
     vi.useRealTimers()
   })
 
-  it.each([[1, 1], [3, 3], [9, 17]])('shares one %i UAV / %i USV layout between local prepare and global Unity scene', async (uavCount, usvCount) => {
+  it.each([[1, 1], [2, 3], [3, 3]])('shares one %i UAV / %i USV layout between local prepare and global Unity scene', async (uavCount, usvCount) => {
     const { setup, postToUnity } = await createView()
     Object.assign(setup.state, { algorithm: 'GB_SFLA_CS', uavCount, usvCount })
     await setup.generateScenario()
@@ -140,8 +142,26 @@ describe('VirtualFleetConfigView return infrastructure payloads', () => {
     const expectedGlobal = toGlobalReturnInfrastructure(expectedLocal, { eastM: -360, northM: -285, upM: 0 })
     expect(scene).toMatchObject({
       initialPosesCoordinateFrame: 'GLOBAL_ENU', uavCount, usvCount,
-      returnInfrastructure: expectedGlobal,
+      targetShoreDistanceRatio: 2 / 3,
+      returnInfrastructure: expectedGlobal, startFromShore: true, initialSpeedMps: 0,
     })
+    const initialPoses = scene!.initialPoses as Array<Record<string, unknown>>
+    const originalTarget = buildVirtualFleetGridLayout({
+      uavCount, usvCount, fleetOrigin: { eastM: -360, northM: -285, upM: 0 },
+      uavSpeedMps: 5, usvSpeedMps: 3, captureMode: true, scenarioId: setup.state.runId,
+    }).find(pose => pose.deviceType === 'TARGET')!
+    const berths = expectedGlobal.slots.filter(slot => slot.kind === 'BERTH')
+    const anchorEast = berths.reduce((sum, slot) => sum + slot.eastM, 0) / berths.length
+    const anchorNorth = berths.reduce((sum, slot) => sum + slot.northM, 0) / berths.length
+    const shiftedTarget = initialPoses.find(pose => pose.deviceType === 'TARGET')!
+    expect(shiftedTarget.eastM).toBeCloseTo(anchorEast + (originalTarget.eastM - anchorEast) * 2 / 3, 8)
+    expect(shiftedTarget.northM).toBeCloseTo(anchorNorth + (originalTarget.northM - anchorNorth) * 2 / 3, 8)
+    for (const slot of expectedGlobal.slots) {
+      expect(initialPoses.find(pose => pose.deviceCode === slot.deviceCode)).toMatchObject({
+        eastM: slot.eastM, northM: slot.northM, upM: slot.upM,
+        headingDeg: slot.headingDeg, state: 'PARKED', speedMps: 0,
+      })
+    }
     expect(await setup.prepareExternalAlgorithm(true)).toBe(true)
     expect(prepareAlgorithmRun).toHaveBeenCalledOnce()
     const [preparedRunId, algorithm, config] = vi.mocked(prepareAlgorithmRun).mock.calls[0]!
@@ -149,6 +169,8 @@ describe('VirtualFleetConfigView return infrastructure payloads', () => {
     expect(algorithm).toBe('GB_SFLA_CS')
     expect(config).toMatchObject({
       coordinateFrame: 'FLEET_LOCAL_ENU',
+      startFromShore: true,
+      targetShoreDistanceRatio: 2 / 3,
       fleetOrigin: { eastM: -360, northM: -285, upM: 0 },
       returnInfrastructure: expectedLocal,
     })
@@ -156,9 +178,97 @@ describe('VirtualFleetConfigView return infrastructure payloads', () => {
     expect((config!.returnInfrastructure as ReturnInfrastructure).coordinateFrame).toBe('FLEET_LOCAL_ENU')
   })
 
+  it.each([[4, 3], [3, 4], [9, 17]])('rejects %i UAV / %i USV before replacing the current scene when original anchors are insufficient', async (uavCount, usvCount) => {
+    const { wrapper, setup, postToUnity } = await createView()
+    const previousRunId = setup.state.runId
+    Object.assign(setup.state, { algorithm: 'GB_SFLA_CS', uavCount, usvCount })
+    await setup.generateScenario()
+    await flushPromises()
+    expect(setup.state.runId).toBe(previousRunId)
+    expect(postToUnity).not.toHaveBeenCalled()
+    expect(prepareAlgorithmRun).not.toHaveBeenCalled()
+    expect(wrapper.text()).toContain('原场景提供 3 个停机坪和 3 个岸边泊位')
+  })
+
+  it('prepares shore departure before loading the authoritative escort frame without scaling its targets twice', async () => {
+    const { setup, postToUnity } = await createView()
+    const local = buildReturnInfrastructure({ uavCount: 3, usvCount: 3, worldHeight: 280 })
+    vi.mocked(fetchAlgorithmFrames).mockImplementation(async runId => [{
+      runId, sequence: 1, timestamp: Date.now(), coordinateFrame: 'FLEET_LOCAL_ENU',
+      algorithmCode: 'ESCORT_GUARD', phase: 'PARKED', terminalStatus: null,
+      agents: local.slots.map(slot => ({
+        code: slot.deviceCode, type: slot.kind === 'HELIPAD' ? 'UAV' : 'USV',
+        x: slot.eastM, y: slot.northM, z: slot.upM, heading: slot.headingDeg,
+        status: 'PARKED', role: 'PARKED',
+      })),
+      targets: [
+        { code: 'PROTECTED-001', type: 'PROTECTED', x: 0, y: 0, z: 0, heading: 90, visible: true },
+        { code: 'THREAT-001', type: 'THREAT', x: 100, y: 50, z: 0, heading: 90, visible: true },
+      ],
+      metrics: { deploymentState: 'PARKED', missionStage: 'GUARDING', returnInfrastructure: local },
+      route: [], obstacles: [],
+    }] as AlgorithmRuntimeFrame[])
+    await setup.generateScenario()
+    expect(prepareAlgorithmRun).toHaveBeenCalledExactlyOnceWith(setup.state.runId, 'ESCORT_GUARD', expect.objectContaining({
+      startFromShore: true, targetShoreDistanceRatio: 2 / 3, returnInfrastructure: local, initialPoses: [],
+    }))
+    const scene = postToUnity.mock.calls.find(([type]) => type === 'loadScenario')![1]
+    const poses = scene.initialPoses as Array<Record<string, unknown>>
+    for (const slot of toGlobalReturnInfrastructure(local, { eastM: -360, northM: -285, upM: 0 }).slots) {
+      expect(poses.find(pose => pose.deviceCode === slot.deviceCode)).toMatchObject({
+        eastM: slot.eastM, northM: slot.northM, upM: slot.upM, state: 'PARKED', speedMps: 0,
+      })
+    }
+    expect(poses.find(pose => pose.deviceCode === 'PROTECTED-001')).toMatchObject({ eastM: -360, northM: -285 })
+    expect(poses.find(pose => pose.deviceCode === 'THREAT-001')).toMatchObject({ eastM: -260, northM: -235 })
+    expect(controlAlgorithmRun).not.toHaveBeenCalled()
+  })
+
+  it('keeps physical parking anchors when Unity acknowledges rendered UAV pivot height and model-facing yaw', async () => {
+    const { setup, postToUnity } = await createView()
+    setup.state.algorithm = 'GB_SFLA_CS'
+    await setup.generateScenario()
+    const scene = postToUnity.mock.calls.find(([type]) => type === 'loadScenario')![1]
+    const poses = scene.initialPoses as Array<Record<string, unknown>>
+    const reported = poses.map(pose => pose.deviceType === 'UAV'
+      ? { ...pose, eastM: Number(pose.eastM) + .001, upM: Number(pose.upM) + 2.5, headingDeg: Number(pose.headingDeg) - 90 }
+      : { ...pose })
+    simulationRuntime.events!.message({ type: 'scenarioReady', payload: {
+      success: true, runId: setup.state.runId, initialPoses: reported,
+    } })
+    await flushPromises()
+    expect(setup.scenarioReadyRunId).toBe(setup.state.runId)
+    expect(prepareAlgorithmRun).toHaveBeenCalledOnce()
+    expect(vi.mocked(prepareAlgorithmRun).mock.calls[0]![2]).toMatchObject({
+      initialPoses: expect.arrayContaining(poses.filter(pose => pose.deviceType === 'UAV' || pose.deviceType === 'USV')),
+    })
+  })
+
+  it.each(['moved', 'safety-hold', 'missing', 'invalid'])('blocks shore departure if Unity reports an unsafe %s parking acknowledgement', async fault => {
+    const { wrapper, setup, postToUnity } = await createView()
+    setup.state.algorithm = 'GB_SFLA_CS'
+    await setup.generateScenario()
+    const scene = postToUnity.mock.calls.find(([type]) => type === 'loadScenario')![1]
+    const reported = (scene.initialPoses as Array<Record<string, unknown>>).map(pose => ({ ...pose }))
+    const first = reported.find(pose => pose.deviceCode === 'UAV-001')!
+    if (fault === 'moved') first.eastM = Number(first.eastM) + 2
+    if (fault === 'safety-hold') first.state = 'SAFETY_HOLD'
+    if (fault === 'missing') reported.splice(reported.indexOf(first), 1)
+    if (fault === 'invalid') first.valid = false
+    simulationRuntime.events!.message({ type: 'scenarioReady', payload: {
+      success: true, runId: setup.state.runId, initialPoses: reported,
+    } })
+    await flushPromises()
+    expect(setup.scenarioReadyRunId).toBeNull()
+    expect(setup.scenarioLoading).toBe(false)
+    expect(prepareAlgorithmRun).not.toHaveBeenCalled()
+    expect(controlAlgorithmRun).not.toHaveBeenCalled()
+    expect(wrapper.text()).toContain('UAV-001 的岸边待命位置未通过场景校验')
+  })
+
   it('preserves the exact generated infrastructure in savedScenario and reload recovery', async () => {
     const first = await createView()
-    Object.assign(first.setup.state, { algorithm: 'GB_SFLA_CS', uavCount: 9, usvCount: 17 })
+    Object.assign(first.setup.state, { algorithm: 'GB_SFLA_CS', uavCount: 3, usvCount: 3 })
     await first.setup.generateScenario()
     const scene = first.postToUnity.mock.calls.find(([type]) => type === 'loadScenario')![1]
     const original = structuredClone(scene.returnInfrastructure)

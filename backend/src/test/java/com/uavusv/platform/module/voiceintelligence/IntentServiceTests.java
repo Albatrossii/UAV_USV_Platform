@@ -71,6 +71,85 @@ class IntentServiceTests {
     }
 
     @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {
+            "一号无人机暂不返航", "一号无人机不返航", "一号无人机不降落",
+            "一号无人机没有返航", "一号无人机尚未降落", "别让一号无人机返航",
+            "一号无人机无需返航", "一号无人机无须降落", "禁止一号无人机返航",
+            "取消一号无人机降落", "一号无人机勿返航", "一号无人机莫降落",
+            "暂缓一号无人机返航", "一号无人机不要返回", "一号无人艇不用停船",
+            "未开始任务", "没启动任务", "不执行任务", "不暂停任务", "不继续任务",
+            "不恢复任务", "不停止任务", "不终止任务", "不结束任务",
+            "一号无人机不悬停", "一号无人艇不驻留", "一号无人艇不待命",
+            "一号无人艇不保持", "一号无人艇不归队",
+            "开始任务，然后一号无人机暂不返航", "一号无人机悬停，然后不降落",
+            "一号无人机暂 不 返航"
+    })
+    void negatedActionsNeverAuthorizeTargetedOrSequenceCandidates(String text) {
+        ObjectNode runtime = runtime("START");
+        ((com.fasterxml.jackson.databind.node.ArrayNode) runtime.path("capabilities"))
+                .add("PAUSE").add("RESUME").add("STOP").add("DEVICE_COMMAND");
+        runtime.put("_algorithmCode", "GB_SFLA_CS");
+        runtime.putArray("_members").add("UAV-001").add("USV-001");
+        when(runtimes.require(REF, 7)).thenReturn(runtime);
+
+        var data = (ObjectNode) service.interpret(7, ID, request(text, hint())).body().get("data");
+
+        assertEquals("NOT_ACTIONABLE", data.path("status").asText());
+        assertEquals("NEGATED_ACTION", data.path("reason").asText());
+        assertEquals("VOICE_INTERPRETATION_INVALID", assertThrows(AsrFailure.class,
+                () -> service.requireTargetedCandidate(7, ID, runtime)).code);
+        assertEquals("VOICE_INTERPRETATION_INVALID", assertThrows(AsrFailure.class,
+                () -> service.requireSequenceCandidate(7, ID, runtime)).code);
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.CsvSource({
+            "一号无人鸡暂不返航,一号无人机暂不返航",
+            "一号机无人不降落,一号无人机不降落",
+            "一号无人庭无须返航,一号无人艇无须返航",
+            "取消一号艇无人驻留,取消一号无人艇驻留",
+            "开始任务然后一号无人停不归队,开始任务然后一号无人艇不归队"
+    })
+    void asrNounNormalizationPreservesNegatedActions(String text, String normalized) {
+        negatedActionsNeverAuthorizeTargetedOrSequenceCandidates(text);
+        var data = (ObjectNode) service.interpret(7, ID, request(text, hint())).body().get("data");
+        assertEquals(normalized, data.path("normalizedText").asText());
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {
+            "一号无人机暂不返航", "一号无人机不降落", "一号无人鸡不返航", "开始任务然后一号无人机不返航"
+    })
+    void localModelConfigurationStillRejectsNegatedActionsWithoutCallingTheModel(String text) {
+        settings.setIntentProvider("local-llm");
+        LocalLlmIntentProvider model = mock(LocalLlmIntentProvider.class);
+        service = new IntentService(access, settings, runtimes, json, model, clock);
+
+        negatedActionsNeverAuthorizeTargetedOrSequenceCandidates(text);
+        var data = (ObjectNode) service.interpret(7, ID, request(text, hint())).body().get("data");
+
+        assertEquals("local-rules", data.path("provider").asText());
+        verifyNoInteractions(model);
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {
+            "请让一号无人机返航", "一号无人机请返航", "一号无人机马上返航", "请让一号无人机马上返航"
+    })
+    void affirmativeReturnCommandsStillAuthorizeTargetedCandidates(String text) {
+        ObjectNode runtime = runtime("DEVICE_COMMAND");
+        runtime.put("_algorithmCode", "GB_SFLA_CS");
+        runtime.putArray("_members").add("UAV-001");
+        when(runtimes.require(REF, 7)).thenReturn(runtime);
+
+        var data = (ObjectNode) service.interpret(7, ID, request(text, hint())).body().get("data");
+
+        assertEquals("CANDIDATE", data.path("status").asText());
+        assertEquals(new IntentService.TargetedCandidate("UAV-001", "UAV_RETURN"),
+                service.requireTargetedCandidate(7, ID, runtime));
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
     @org.junit.jupiter.params.provider.ValueSource(strings = {"ESCORT_GUARD", "GB_SFLA_CS", "ESCORT_GUARD_SINGLE_DEVICE", "GB_SFLA_CS_SINGLE_DEVICE"})
     void singleDeviceCandidateIsBoundToTheLiveSingleDeviceRun(String algorithm) {
         ObjectNode runtime = runtime("DEVICE_COMMAND");

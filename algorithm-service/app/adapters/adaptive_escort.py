@@ -10,6 +10,7 @@ from typing import Dict, Sequence
 
 from app.adapters.base import AlgorithmAdapter
 from app.adapters.escort_defense import DEPARTURE_DISTANCE, EscortDefenseCoordinator, inner_slots
+from app.adapters.shore_target_layout import read_shore_target_layout
 from app.capture import (
     FormationSlot,
     RingMember,
@@ -219,6 +220,11 @@ class AdaptiveEscortAdapter(AlgorithmAdapter):
         )
         self.safety = SceneSafetyFilter({"bounds": list(self.safe_bounds), "obstacles": []})
         self.protected = self._create_protected()
+        # Generate the original encounter first, then move both target classes
+        # together exactly once. Generating threats around an already shifted
+        # convoy would change their radius a second time near the water bounds.
+        self.threats = self._create_threats()
+        self._place_targets_nearer_shore()
         protected_center_x = sum(item.x for item in self.protected) / len(self.protected)
         protected_center_y = sum(item.y for item in self.protected) / len(self.protected)
         self._protected_formation_offsets = {
@@ -230,7 +236,6 @@ class AdaptiveEscortAdapter(AlgorithmAdapter):
             for item in self.protected
         }
         self.protected_start_x = {item.code: item.x for item in self.protected}
-        self.threats = self._create_threats()
         self.vehicles = self._create_vehicles()
         initial_guards = sorted(
             (item for item in self.vehicles if item.role == "CLOSE_GUARD"),
@@ -241,6 +246,9 @@ class AdaptiveEscortAdapter(AlgorithmAdapter):
         )
         self._convoy_guard_slot_by_code = {
             item.code: position for position, item in enumerate(initial_guards)
+        }
+        self._initial_convoy_guard_codes = {
+            item.code for item in initial_guards
         }
         self._separate_initial_response_craft()
         self.previous = {item.code: (item.x, item.y, item.z) for item in self.vehicles}
@@ -314,6 +322,27 @@ class AdaptiveEscortAdapter(AlgorithmAdapter):
         self._tactical_events: list[dict[str, object]] = []
         self.defense = EscortDefenseCoordinator(self)
 
+    def _place_targets_nearer_shore(self) -> None:
+        layout = read_shore_target_layout(self.config)
+        if layout is None or layout.ratio == 1.0:
+            return
+        candidates = [
+            (item, kind, layout.position(item.x, item.y))
+            for items, kind in ((self.protected, "ESCORT_TARGET"), (self.threats, "THREAT_TARGET"))
+            for item in items
+        ]
+        for item, kind, (x, y) in candidates:
+            safe = self.safety.constrain((x, y, 0.0), (x, y, 0.0), kind, (), 0.0)
+            if not (math.isclose(x, safe.x, abs_tol=1e-7) and math.isclose(y, safe.y, abs_tol=1e-7)):
+                raise ValueError(f"targetShoreDistanceRatio places {item.code} outside navigable water")
+        for index, (item, kind, point) in enumerate(candidates):
+            for other, other_kind, other_point in candidates[index + 1:]:
+                required = max(TARGET_SEPARATION_M, self.safety.required_separation(kind, other_kind))
+                if math.dist(point, other_point) < required:
+                    raise ValueError(f"targetShoreDistanceRatio leaves insufficient target separation: {item.code}/{other.code}")
+        for item, _, (x, y) in candidates:
+            item.x, item.y = x, y
+
     def _create_protected(self) -> list[_Protected]:
         usable_width = self.safe_bounds[1] - self.safe_bounds[0]
         # Leave room behind and around the convoy for the complete initial
@@ -381,6 +410,7 @@ class AdaptiveEscortAdapter(AlgorithmAdapter):
         for kind, count in (("UAV", self.plan.uav_count), ("USV", self.plan.usv_count)):
             guard_total = self._guard_count(count)
             for index in range(count):
+                code = f"{kind}-{index + 1:03d}"
                 protected_index = index % self.plan.protected_count
                 target = self.protected[protected_index]
                 is_guard = index < guard_total
@@ -397,7 +427,7 @@ class AdaptiveEscortAdapter(AlgorithmAdapter):
                     radius = 30.0 + (index % 3) * 5.0
                 x, y = self._project_to_safe_water(target.x + math.cos(angle) * radius, target.y + math.sin(angle) * radius)
                 result.append(_Vehicle(
-                    f"{kind}-{index + 1:03d}", kind, x, y,
+                    code, kind, x, y,
                     25.0 + (index % 4) * 2.5 if kind == "UAV" else 0.0,
                     role, group, protected_index,
                 ))
@@ -666,7 +696,16 @@ class AdaptiveEscortAdapter(AlgorithmAdapter):
         base_radius = 32.0 if kind == "USV" else 46.0
         ring_spacing = 18.0 if kind == "USV" else 16.0
         radius = base_radius + ring * ring_spacing
-        phase = (math.pi / max(1, slots_on_ring)) if kind == "UAV" else 0.0
+        # Interleave UAV and USV bearings around the protected hull.  With the
+        # default 3 + 3 fleet each kind has two formation guards: the old
+        # cardinal phases put both UAVs on the flanks while the USVs alone
+        # occupied the route axis.  Mirrored half-slot phases give both domains
+        # a forward and a rear guard without changing radii or safety spacing.
+        phase = (
+            (1.0 if kind == "UAV" else -1.0) * math.pi / 4.0
+            if slots_on_ring == 2
+            else (math.pi / slots_on_ring if kind == "UAV" else 0.0)
+        )
         if ring % 2:
             phase += math.pi / max(1, slots_on_ring)
         angle = phase + 2.0 * math.pi * slot / slots_on_ring
@@ -1984,20 +2023,10 @@ class AdaptiveEscortAdapter(AlgorithmAdapter):
             threat for threat in self.threats
             if threat.forced and threat.state not in {"CAPTURED", "SECURED", "ESCAPED"}
         ]
-        # In the minimum 3+3 configuration there is no meaningful reserve:
-        # a visually closed mixed ring needs every available UAV and USV.
-        # Keep the convoy formation intact during guarding/intent detection,
-        # then commit all six craft only when pursuit really starts.
-        if (
-            self.plan.uav_count <= 3
-            and self.plan.usv_count <= 3
-            and len(active_forced) == 1
-        ):
-            for item in self.vehicles:
-                if item.role == "CLOSE_GUARD":
-                    item.role = "FORMATION_GUARD"
-                    item.group_id = f"ESCORT-{item.kind}"
-            self._convoy_guard_slot_by_code.clear()
+        # Keep the original mixed close-guard pair beside the protected ship.
+        # The minimum 3+3 fleet still provides a structurally complete 2 UAV +
+        # 2 USV containment team, so stripping the last guards during pursuit
+        # only makes an escort mission look and behave like pure capture.
         self._rebalance_capture_groups(active_forced)
 
     def _start_parallel_response(self) -> None:
@@ -3161,24 +3190,24 @@ class AdaptiveEscortAdapter(AlgorithmAdapter):
             target.x, target.y = nx, ny
 
     def _release_surplus_containment(self) -> None:
-        """Keep completed teams intact so a captured target cannot regain a gap.
+        """Keep a 2+2 containment ring and recall surplus craft as escorts.
 
-        The previous implementation reduced a finished group to 2 UAV + 2 USV
-        and later pulled other craft back during final consolidation. That
-        release/rejoin cycle was the main source of visually broken rings.
-        Response reserve is now decided before assignment, not by dismantling
-        an already valid containment team.
+        A minimum 3+3 mission previously committed every platform to the
+        captured hostile and finished with no visible guard beside the
+        protected ship.  Four mixed members are sufficient to preserve the
+        stable containment contract; the remaining UAV and USV are therefore
+        released only after every incident is resolved and become the final
+        convoy-support pair.
         """
-        return
-        # Legacy release code remains below temporarily for history and will be
-        # removed after the compatibility matrix has passed.
-        # Surplus is released only while another incident still needs a
-        # response team. Once every threat is resolved, all available craft
-        # are deliberately consolidated into the visible final rings instead
-        # of ending the mission as a few tiny polygons plus unrelated dots.
-        if self.threats and all(
-            item.state in {"CAPTURED", "SECURED", "ESCAPED"}
-            for item in self.threats
+        if (
+            self.plan.uav_count > 3
+            or self.plan.usv_count > 3
+            or len(self.threats) != 1
+            or not self.threats
+            or not all(
+                item.state in {"CAPTURED", "SECURED", "ESCAPED"}
+                for item in self.threats
+            )
         ):
             return
         for completed_index, completed in enumerate(self.threats):
@@ -3193,7 +3222,19 @@ class AdaptiveEscortAdapter(AlgorithmAdapter):
                     ),
                     key=lambda item: int(item.code.rsplit("-", 1)[-1]),
                 )
-                for released in completed_members[2:]:
+                # Preserve two members of each domain in the hostile ring.
+                # Prefer recalling the craft that originally guarded the
+                # convoy so the final picture also remains semantically
+                # stable across repeated runs.
+                release_count = max(0, len(completed_members) - 2)
+                candidates = sorted(
+                    completed_members,
+                    key=lambda item: (
+                        item.code not in self._initial_convoy_guard_codes,
+                        int(item.code.rsplit("-", 1)[-1]),
+                    ),
+                )[:release_count]
+                for released in candidates:
                     released.assigned_threat = None
                     released.role = "RETURNING"
                     released.group_id = f"RECON-{released.protected_index + 1:03d}"
@@ -4919,6 +4960,7 @@ class AdaptiveEscortAdapter(AlgorithmAdapter):
             self.min_shore_distance = min(self.min_shore_distance, x - self.safe_bounds[0], self.safe_bounds[1] - x, y - self.safe_bounds[2], self.safe_bounds[3] - y)
         resolved = all(item.state in {"CAPTURED", "SECURED", "ESCAPED"} for item in self.threats)
         if resolved:
+            self._release_surplus_containment()
             self._redeploy_surplus_to_convoy()
         arrived = all(self._protected_reached_safe_gate(item) for item in self.protected)
         if resolved:

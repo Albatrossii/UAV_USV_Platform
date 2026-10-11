@@ -7,7 +7,11 @@ import VoiceP0ControlPanel from '@/components/voice/VoiceP0ControlPanel.vue'
 import VoiceIntelligenceInput from '@/components/voice/VoiceIntelligenceInput.vue'
 import { useAuthStore } from '@/stores/auth'
 import { useVoiceControlStore } from '@/stores/voiceControl'
+import { appendExperimentEvent } from '@/services/experimentArchive'
 import type { VoiceExecution, VoiceIntent, VoicePresentationChallenge, VoiceProposal, VoiceRuntimeContext } from '@/types/voiceControl'
+import type { AlgorithmRuntimeFrame } from '@/types/mission'
+
+vi.mock('@/services/experimentArchive', () => ({ appendExperimentEvent: vi.fn() }))
 
 const interpretationId = '66666666-6666-4666-8666-666666666666'
 const replacementInterpretationId = '77777777-7777-4777-8777-777777777777'
@@ -79,7 +83,7 @@ function receipt(state: VoiceExecution['state'] = 'SUCCEEDED', presentationStatu
   }
 }
 
-function createPanel() {
+function createPanel(registered = true, unityConnected = false) {
   const store = useVoiceControlStore()
   const context = runtime()
   store.contexts = [context]
@@ -106,13 +110,13 @@ function createPanel() {
     props: {
       refined: true,
       runtimeHint: {
-        algorithmRunId: context.algorithmRunId,
+        algorithmRunId: registered ? context.algorithmRunId : '',
         state: context.state,
         sceneReady: true,
         deviceCodes: ['UAV-001', 'USV-001'],
         latestFrameSequence: context.latestFrameSequence,
       },
-      unitySession: { connected: false, unityInstanceId: 'unity-test', sceneRevision: 1 },
+      unitySession: { connected: unityConnected, unityInstanceId: 'unity-test', sceneRevision: 1 },
     },
   })
   return { wrapper, store, input: wrapper.getComponent(VoiceIntelligenceInput) }
@@ -216,6 +220,55 @@ async function pendingPresentationProbe() {
 }
 
 describe('VoiceP0ControlPanel refined controls', () => {
+  it('establishes the Unity presentation binding when mounted into an already ready scene', async () => {
+    vi.stubEnv('VITE_VOICE_UNITY_PRESENTATION_V1', 'true')
+    const result = createPanel(true, true)
+    mounted.push(result)
+    await flushPromises()
+    expect(result.store.takePresentationBinding).toHaveBeenCalledOnce()
+  })
+
+  it('does not recover or poll before a runtime is registered, then connects once', async () => {
+    const result = createPanel(false)
+    mounted.push(result)
+    const { wrapper, store } = result
+    store.selectedRuntimeRef = ''
+    await flushPromises()
+    expect(wrapper.text()).toContain('后端准备成功后将自动连接语音控制')
+    expect(wrapper.findAll('button').some(button => button.text() === '重新连接')).toBe(false)
+    expect(store.selectAlgorithmRun).toHaveBeenCalledOnce()
+    expect(store.recover).not.toHaveBeenCalled()
+    store.errorCode = 'RUNTIME_CONTEXT_NOT_FOUND'
+    store.error = '未找到算法运行 7001 对应的控制上下文。'
+    await nextTick()
+    expect(wrapper.text()).not.toContain('未找到算法运行')
+    store.errorCode = 'LOCAL_RECOVERY_UNAVAILABLE'
+    store.error = '恢复记录不可用，请核对原请求'
+    await nextTick()
+    expect(wrapper.text()).toContain('恢复记录不可用，请核对原请求')
+    await vi.advanceTimersByTimeAsync(6000)
+    document.dispatchEvent(new Event('visibilitychange'))
+    expect(store.refreshContexts).not.toHaveBeenCalled()
+    expect(store.poll).not.toHaveBeenCalled()
+    await wrapper.setProps({ runtimeHint: { ...wrapper.props('runtimeHint'), algorithmRunId: runtime().algorithmRunId } })
+    await flushPromises()
+    expect(store.selectAlgorithmRun).toHaveBeenCalledTimes(2)
+    expect(store.recover).toHaveBeenCalledOnce()
+    expect(store.confirm).not.toHaveBeenCalled()
+  })
+
+  it('does not start recovery after unmounting during a context lookup', async () => {
+    const { wrapper, store } = await panel()
+    let finish!: () => void
+    vi.mocked(store.selectAlgorithmRun).mockImplementationOnce(() => new Promise<boolean>(resolve => { finish = () => resolve(true) }))
+    vi.mocked(store.recover).mockClear()
+    await wrapper.setProps({ runtimeHint: { ...wrapper.props('runtimeHint'), algorithmRunId: 'next-run' } })
+    wrapper.unmount()
+    finish()
+    await flushPromises()
+    expect(store.recover).not.toHaveBeenCalled()
+  })
+
   beforeEach(() => {
     vi.useFakeTimers()
     vi.setSystemTime(new Date('2026-10-09T09:00:00.000Z'))
@@ -231,6 +284,122 @@ describe('VoiceP0ControlPanel refined controls', () => {
     for (const item of mounted.splice(0)) item.wrapper.unmount()
     vi.useRealTimers()
     vi.unstubAllEnvs()
+  })
+
+  it('keeps voice execution and feedback without archiving interpretations or receipts', async () => {
+    vi.mocked(appendExperimentEvent).mockClear()
+    const { wrapper, store, input } = await panel()
+    input.vm.$emit('interpretation', {
+      text: '一号无人机悬停', origin: 'speech', result: { requestId: interpretationId },
+    })
+    await voice(input)
+    expect(store.propose).toHaveBeenCalledExactlyOnceWith('SINGLE_DEVICE_CONTROL', interpretationId)
+    expect(store.confirm).toHaveBeenCalledOnce()
+    expect(store.execution?.state).toBe('SUCCEEDED')
+    expect(wrapper.get('.refined-result').text()).toContain('算法执行成功')
+    expect(appendExperimentEvent).not.toHaveBeenCalled()
+  })
+
+  it('disables view clearing until execution and recovery have settled, and explains that clearing is not cancellation', async () => {
+    localStorage.clear()
+    const { wrapper, store } = await panel()
+    await wrapper.setProps({ refined: false })
+    store.execution = receipt('TIMED_OUT')
+    await nextTick()
+    const clearButton = () => wrapper.findAll('button').find(button => button.text() === '清除已结束回执')!
+    expect(clearButton().attributes('disabled')).toBeDefined()
+    expect(wrapper.text()).toContain('指令执行或展示结果仍待核对')
+    store.execution = receipt()
+    await nextTick()
+    expect(clearButton().attributes('disabled')).toBeUndefined()
+    expect(wrapper.text()).toContain('清除视图不等于取消设备动作')
+    store.beginJournal('CONFIRM', '/confirm', { expectedPlanVersion: 1, expectedPlanHash: 'hash' }, 'proposal')
+    await nextTick()
+    expect(clearButton().attributes('disabled')).toBeDefined()
+    expect(wrapper.text()).toContain('存在待核对的控制或展示请求')
+    store.updateJournal({ phase: 'RESOURCE_RECEIVED' })
+    await nextTick()
+    expect(clearButton().attributes('disabled')).toBeUndefined()
+    await clearButton().trigger('click')
+    expect(store.execution).toBeNull()
+    expect(store.loadJournal()?.phase).toBe('RESOURCE_RECEIVED')
+    expect(store.cancel).not.toHaveBeenCalled()
+    localStorage.clear()
+  })
+
+  it.each([true, false])('shows interrupted sequence steps without suggesting they will resume (refined=%s)', async refined => {
+    const { wrapper, store } = await panel()
+    await wrapper.setProps({ refined })
+    store.execution = {
+      ...receipt('TIMED_OUT'), action: 'SEQUENCE', currentStepIndex: 1, sequenceStatus: 'FAILED',
+      steps: [
+        { index: 0, action: 'START', state: 'SUCCEEDED', executionId: 'start', errorCode: null },
+        { index: 1, action: 'DEVICE_COMMAND', targetDeviceCode: 'USV-001', deviceCommandType: 'USV_RETURN', state: 'TIMED_OUT', executionId: 'return', errorCode: 'ACK_TIMEOUT' },
+        { index: 2, action: 'WAIT', waitSeconds: 5, state: 'PENDING', executionId: null, errorCode: null },
+        { index: 3, action: 'PAUSE', state: 'PENDING', executionId: null, errorCode: null },
+      ],
+    }
+    await nextTick()
+    const result = wrapper.get(refined ? '.refined-result' : '.result')
+    expect(result.text()).toContain('USV-001 · 一号无人艇')
+    expect(result.text()).toContain('等待 5 秒')
+    expect(result.text()).toContain('暂停任务')
+    expect(result.text()).toContain('未执行（顺序已中断）')
+    expect(result.text()).not.toContain('等待前一步')
+    expect(result.text()).toContain('请勿重复下发整条指令')
+    expect(store.confirm).not.toHaveBeenCalled()
+    store.contexts[0]!.state = 'COMPLETED'
+    store.execution = { ...store.execution!, state: 'INVALIDATED', errorCode: 'INVALID_STATE' }
+    await nextTick()
+    expect(result.text()).toContain('当前任务已完成')
+    expect(result.text()).toContain('未下发：等待 5 秒；暂停任务')
+    expect(result.text()).toContain('已成功步骤不会自动撤销')
+    expect(store.confirm).not.toHaveBeenCalled()
+  })
+
+  it.each([true, false])('offers explicit storage recovery without clearing records or executing commands (refined=%s)', async refined => {
+    const { wrapper, store } = await panel()
+    await wrapper.setProps({ refined })
+    store.recoveryAvailable = false
+    await nextTick()
+    const recoveryButton = () => wrapper.findAll('button').find(button => button.text() === '检查恢复记录')!
+    expect(recoveryButton()).toBeDefined()
+    store.recoveryPending = true
+    await nextTick()
+    expect(recoveryButton().attributes('disabled')).toBeDefined()
+    store.recoveryPending = false
+    await nextTick()
+    const clear = vi.spyOn(store, 'clearActive')
+    vi.mocked(store.recover).mockClear()
+    await recoveryButton().trigger('click')
+    await flushPromises()
+    expect(store.recover).toHaveBeenCalledOnce()
+    expect(clear).not.toHaveBeenCalled()
+    expect(store.propose).not.toHaveBeenCalled()
+    expect(store.confirm).not.toHaveBeenCalled()
+  })
+
+  it('shows aircraft parking conflicts as unverified until a fresh consistent landing frame arrives', async () => {
+    const { wrapper, store } = await panel()
+    store.proposal = frozenProposal()
+    store.proposal.plan.deviceCommandType = 'UAV_RETURN'
+    store.execution = receipt()
+    await nextTick()
+    const sample = {
+      runId: Number(runtime().algorithmRunId), sequence: 2,
+      agents: [{ code: 'UAV-001', type: 'UAV', status: 'RETURNED' }],
+      metrics: { deviceControlStates: { 'UAV-001': { motionState: 'RETURNED', parkingKind: 'BERTH', returnedAtHome: true } } },
+    } as unknown as AlgorithmRuntimeFrame
+    await wrapper.setProps({ frame: sample })
+    expect(wrapper.get('.refined-result-head').text()).toBe('指令已接受 · 状态待核对')
+    expect(wrapper.get('.device-action-progress').text()).toContain('停靠位置待核对')
+    expect(wrapper.get('.refined-result-head').find('svg').exists()).toBe(false)
+    await wrapper.setProps({ frame: { ...sample, sequence: 3, metrics: {
+      deviceControlStates: { 'UAV-001': { motionState: 'RETURNED', parkingKind: 'HELIPAD', parkingSlot: 'UAV-001', returnedAtHome: true } },
+    } } })
+    expect(wrapper.get('.refined-result-head').text()).toBe('设备动作已完成')
+    expect(wrapper.get('.device-action-progress').text()).toBe('已到停机坪，着陆完成')
+    expect(wrapper.get('.refined-result-head').find('svg').exists()).toBe(true)
   })
 
   it('renders the real refined input without file testing, manual actions, or protocol debugging', async () => {
@@ -253,7 +422,7 @@ describe('VoiceP0ControlPanel refined controls', () => {
     await preview(input)
     expect(store.propose).toHaveBeenCalledExactlyOnceWith('SINGLE_DEVICE_CONTROL', interpretationId)
     expect(store.confirm).not.toHaveBeenCalled()
-    expect(wrapper.get('.refined-plan').text()).toContain('UAV-001 · 无人机悬停')
+    expect(wrapper.get('.refined-plan').text()).toContain('UAV-001 · 一号无人机 · 无人机悬停')
     expect(input.props('proposalReady')).toBe(true)
     expect(wrapper.find('.refined-preview').exists()).toBe(false)
     expect(wrapper.get('.refined-confirm').attributes('disabled')).toBeUndefined()
@@ -286,10 +455,88 @@ describe('VoiceP0ControlPanel refined controls', () => {
     expect(wrapper.text()).toContain('语音自动执行')
   })
 
+  it('separates a previous receipt from a new draft without erasing execution state', async () => {
+    const { wrapper, store, input } = await panel()
+    await voice(input)
+    const previous = store.execution
+    expect(wrapper.text()).toContain('语音指令已自动下发')
+    await input.get('textarea').setValue('这句话不是设备指令')
+    expect(wrapper.text()).not.toContain('语音指令已自动下发')
+    expect(wrapper.get('.previous-execution-label').text()).toContain('非本次识别结果')
+    expect(store.execution).toEqual(previous)
+    expect(store.confirm).toHaveBeenCalledOnce()
+  })
+
+  it('clears previous automatic feedback before a new microphone request fails', async () => {
+    const { wrapper, store, input } = await panel()
+    await voice(input)
+    vi.stubGlobal('MediaRecorder', undefined)
+    try {
+      await input.get('.refined-mic').trigger('click')
+      await flushPromises()
+      expect(wrapper.text()).toContain('当前浏览器不支持录音')
+      expect(wrapper.text()).not.toContain('语音指令已自动下发')
+      expect(wrapper.get('.previous-execution-label').text()).toContain('上一条指令回执')
+      expect(store.confirm).toHaveBeenCalledOnce()
+    } finally { vi.unstubAllGlobals() }
+  })
+
+  it.each(['EXECUTING', 'TIMED_OUT'] as const)('retains %s recovery and dispatch protection when editing', async state => {
+    const { wrapper, store, input } = await panel()
+    store.proposal = { ...frozenProposal(), status: 'CONFIRMED' }
+    store.execution = receipt(state)
+    await flushPromises()
+    await input.get('textarea').setValue('一号无人艇驻留')
+    expect(wrapper.get('.previous-execution-label').text()).toContain('非本次识别结果')
+    expect(input.props('submissionDisabled')).toBe(true)
+    expect(store.execution?.state).toBe(state)
+    await voice(input)
+    expect(store.confirm).not.toHaveBeenCalled()
+  })
+
+  it('does not restore stale automatic success when a confirmation arrives after editing', async () => {
+    const { wrapper, store, input } = await panel()
+    let release!: () => void
+    store.confirm = vi.fn().mockImplementation(async () => {
+      await new Promise<void>(resolve => { release = resolve })
+      store.proposal = { ...store.proposal!, status: 'CONFIRMED' }
+      store.execution = receipt()
+    })
+    await voice(input)
+    expect(store.confirm).toHaveBeenCalledOnce()
+    await input.get('textarea').setValue('不要执行新指令')
+    release()
+    await flushPromises()
+    expect(wrapper.text()).not.toContain('语音指令已自动下发')
+    expect(wrapper.get('.previous-execution-label').text()).toContain('非本次识别结果')
+    expect(store.execution?.state).toBe('SUCCEEDED')
+    expect(store.confirm).toHaveBeenCalledOnce()
+  })
+
+  it('shows a new matching receipt as current after an earlier receipt was marked previous', async () => {
+    const { wrapper, store, input } = await panel()
+    await voice(input)
+    await input.get('textarea').setValue('二号无人艇驻留')
+    expect(wrapper.find('.previous-execution-label').exists()).toBe(true)
+    const nextProposalId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+    store.propose = vi.fn().mockImplementation(async (_intent, id) => {
+      store.proposal = frozenProposal(id, nextProposalId)
+      store.execution = null
+    })
+    store.confirm = vi.fn().mockImplementation(async () => {
+      store.proposal = { ...store.proposal!, status: 'CONFIRMED' }
+      store.execution = { ...receipt(), proposalId: nextProposalId }
+    })
+    await voice(input, 'SINGLE_DEVICE_CONTROL', replacementInterpretationId)
+    expect(wrapper.find('.previous-execution-label').exists()).toBe(false)
+    expect(wrapper.text()).toContain('语音指令已自动下发')
+    expect(store.confirm).toHaveBeenCalledOnce()
+  })
+
   it.each([
     ['UAV-001', 'UAV_RETURN'], ['UAV-001', 'UAV_LAND'],
     ['USV-001', 'USV_RETURN'], ['USV-001', 'USV_STOP'],
-  ] as const)('auto-confirms a validated %s %s command exactly once', async (targetDeviceCode, deviceCommandType) => {
+  ] as const)('automatically executes a validated simulation %s %s command once', async (targetDeviceCode, deviceCommandType) => {
     const { wrapper, store, input } = await panel()
     store.propose = vi.fn().mockImplementation(async (_intent, id) => {
       const frozen = frozenProposal(id)
@@ -301,10 +548,99 @@ describe('VoiceP0ControlPanel refined controls', () => {
     await voice(input)
     expect(store.propose).toHaveBeenCalledExactlyOnceWith('SINGLE_DEVICE_CONTROL', interpretationId)
     expect(store.confirm).toHaveBeenCalledOnce()
+    expect(wrapper.text()).not.toContain('高风险确认')
+    expect(wrapper.text()).not.toContain('高风险整条确认')
     expect(wrapper.find('.refined-confirm').exists()).toBe(false)
     expect(wrapper.get('.refined-result').text()).toContain('算法执行成功')
     await voice(input)
     expect(store.confirm).toHaveBeenCalledOnce()
+  })
+
+  it('automatically executes the complete validated START then return simulation sequence', async () => {
+    const { wrapper, store, input } = await panel()
+    store.contexts = [{ ...store.context!, state: 'PREPARED' }]
+    await wrapper.setProps({ runtimeHint: { ...wrapper.props('runtimeHint'), state: 'PREPARED' } })
+    store.propose = vi.fn().mockImplementation(async () => {
+      const frozen = sequenceProposal('USV-001')
+      frozen.plan.steps![1]!.deviceCommandType = 'USV_RETURN'
+      store.proposal = frozen
+      store.execution = null
+    })
+    store.confirm = vi.fn().mockImplementation(async () => {
+      store.proposal = { ...store.proposal!, status: 'CONFIRMED' }
+      store.execution = { ...receipt(), action: 'SEQUENCE' }
+    })
+    await voice(input, 'COMMAND_SEQUENCE')
+    expect(store.confirm).toHaveBeenCalledOnce()
+    expect(wrapper.find('.refined-confirm').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('高风险')
+    expect(wrapper.text()).toContain('语音指令已自动下发')
+  })
+
+  it('still requires a click for manually previewed return text in the simulation', async () => {
+    const { wrapper, store, input } = await panel()
+    store.propose = vi.fn().mockImplementation(async (_intent, id) => {
+      const frozen = frozenProposal(id)
+      frozen.plan.deviceCommandType = 'UAV_RETURN'
+      store.proposal = frozen
+    })
+    await preview(input)
+    expect(store.confirm).not.toHaveBeenCalled()
+    expect(wrapper.get('.refined-plan').text()).toContain('无人机返航')
+    expect(wrapper.text()).not.toContain('高风险确认')
+    await wrapper.get('.refined-confirm').trigger('click')
+    await flushPromises()
+    expect(store.confirm).toHaveBeenCalledOnce()
+  })
+
+  it.each(['invalid-date', '', '2020-01-01T00:00:00Z'])('fails closed on a manual plan with invalid/expired expiry %s', async expiresAt => {
+    const { wrapper, store, input } = await panel()
+    await preview(input)
+    store.proposal = { ...store.proposal!, expiresAt }
+    await flushPromises()
+    expect(wrapper.find('.refined-confirm').exists()).toBe(false)
+    expect(input.props('reviewStatus')).toContain('有效期无效')
+    await guardedConfirm(wrapper)
+    expect(store.confirm).not.toHaveBeenCalled()
+  })
+
+  it.each(['CANCELLED', 'EXPIRED', 'INVALIDATED'] as const)('explains authoritative %s without leaving a stale confirmation prompt', async status => {
+    const { wrapper, store, input } = await panel()
+    await preview(input)
+    store.proposal = { ...store.proposal!, status }
+    await flushPromises()
+    expect(input.props('reviewStatus')).toBeTruthy()
+    expect(wrapper.find('.refined-confirm').exists()).toBe(false)
+    expect(wrapper.get('.refined-execution-phase').text()).toBe(input.props('reviewStatus'))
+    await input.get('textarea').setValue('二号无人艇驻留')
+    expect(input.props('reviewStatus')).toBe('')
+    expect(store.confirm).not.toHaveBeenCalled()
+  })
+
+  it('does not claim cancellation or expiry is definitive while a write result is unknown', async () => {
+    const { wrapper, store, input } = await panel()
+    await preview(input)
+    store.proposal = { ...store.proposal!, expiresAt: 'invalid-date' }
+    store.responseUnknown = true
+    await flushPromises()
+    expect(input.props('reviewStatus')).toBe('')
+    expect(wrapper.get('.refined-execution-phase').text()).toContain('结果待核对')
+    expect(input.props('submissionDisabled')).toBe(true)
+  })
+
+  it('blocks mismatched UAV actions on a USV even after a manual preview', async () => {
+    const { wrapper, store, input } = await panel()
+    store.propose = vi.fn().mockImplementation(async () => {
+      const frozen = frozenProposal()
+      frozen.plan.targetDeviceCode = 'USV-001'
+      frozen.plan.explicitDeviceCodes = ['USV-001']
+      frozen.plan.deviceCommandType = 'UAV_RETURN'
+      store.proposal = frozen
+    })
+    await preview(input)
+    expect(wrapper.get('.refined-confirm').attributes('disabled')).toBeDefined()
+    await guardedConfirm(wrapper)
+    expect(store.confirm).not.toHaveBeenCalled()
   })
 
   it.each([
@@ -682,9 +1018,11 @@ describe('VoiceP0ControlPanel refined controls', () => {
     expect(store.confirm).not.toHaveBeenCalled()
   })
 
-  it('does not auto-submit for a non-simulation backend', async () => {
+  it.each([
+    ['executionBackend', 'REAL_DEVICE'], ['runtimeScope', 'GATEWAY'], ['runtimeKind', 'GATEWAY'],
+  ])('does not auto-submit when the raw registered %s is %s', async (field, value) => {
     const { store, input } = await panel()
-    store.contexts = [{ ...store.context!, executionBackend: 'REAL_DEVICE' as VoiceRuntimeContext['executionBackend'] }]
+    store.contexts = [{ ...store.context!, [field]: value }]
     await nextTick()
     expect(input.props('autoExecuteSpeech')).toBe(false)
     await voice(input)
@@ -703,12 +1041,113 @@ describe('VoiceP0ControlPanel refined controls', () => {
   })
 
   it('does not automatically submit a device command before the scene is ready', async () => {
-    const { store, input } = await panel()
+    const { wrapper, store, input } = await panel()
     store.contexts = [{ ...store.context!, sceneReady: false }]
+    await wrapper.setProps({ runtimeHint: { ...wrapper.props('runtimeHint'), sceneReady: false } })
     await nextTick()
     await voice(input)
     expect(store.propose).not.toHaveBeenCalled()
     expect(store.confirm).not.toHaveBeenCalled()
+  })
+
+  it('refreshes an expired backend scene proof and continues the same recognised command', async () => {
+    vi.stubEnv('VITE_VOICE_UNITY_PRESENTATION_V1', 'true')
+    const { wrapper, store, input } = await panel()
+    store.contexts = [{ ...store.context!, sceneReady: false }]
+    await wrapper.setProps({ unitySession: { ...wrapper.props('unitySession'), connected: true } })
+    await flushPromises()
+    const setup = wrapper.vm.$.setupState as unknown as { presentationBridgeReady: boolean }
+    setup.presentationBridgeReady = true
+    store.refreshContexts = vi.fn().mockImplementation(async () => {
+      store.contexts = [{ ...store.context!, sceneReady: true }]
+      return true
+    })
+    await voice(input)
+    expect(store.refreshContexts).toHaveBeenCalled()
+    expect(store.propose).toHaveBeenCalledExactlyOnceWith('SINGLE_DEVICE_CONTROL', interpretationId)
+    expect(store.confirm).toHaveBeenCalledOnce()
+    expect(wrapper.text()).not.toContain('仿真场景尚未就绪')
+  })
+
+  it('continues after the scene-ready refresh advances the runtime state version', async () => {
+    vi.stubEnv('VITE_VOICE_UNITY_PRESENTATION_V1', 'true')
+    const { wrapper, store, input } = await panel()
+    store.contexts = [{ ...store.context!, sceneReady: false }]
+    await wrapper.setProps({ unitySession: { ...wrapper.props('unitySession'), connected: true } })
+    await flushPromises()
+    const setup = wrapper.vm.$.setupState as unknown as { presentationBridgeReady: boolean }
+    setup.presentationBridgeReady = true
+    store.refreshContexts = vi.fn().mockImplementation(async () => {
+      store.contexts = [{
+        ...store.context!,
+        sceneReady: true,
+        stateVersion: store.context!.stateVersion + 1,
+      }]
+      return true
+    })
+    await voice(input)
+    expect(store.refreshContexts).toHaveBeenCalled()
+    expect(store.propose).toHaveBeenCalledExactlyOnceWith('SINGLE_DEVICE_CONTROL', interpretationId)
+    expect(store.confirm).toHaveBeenCalledOnce()
+    expect(wrapper.text()).not.toContain('仿真场景尚未就绪')
+  })
+
+  it('re-sends an existing scene challenge that Unity did not report before recognition', async () => {
+    vi.stubEnv('VITE_VOICE_UNITY_PRESENTATION_V1', 'true')
+    const { wrapper, store, input } = await panel()
+    store.contexts = [{ ...store.context!, sceneReady: false }]
+    await wrapper.setProps({ unitySession: { ...wrapper.props('unitySession'), connected: true } })
+    await flushPromises()
+    const bindingId = '88888888-8888-4888-8888-888888888888'
+    store.presentationBinding = { bindingId, runtimeGeneration: store.context!.runtimeGeneration }
+    store.presentationChallenge = {
+      bindingId,
+      runtimeGeneration: store.context!.runtimeGeneration,
+      kind: 'SCENE_READY',
+      executionId: null,
+      requestId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      sequence: 7,
+      expiresAt: new Date(Date.now() + 5000).toISOString(),
+    }
+    const setup = wrapper.vm.$.setupState as unknown as { presentationBridgeReady: boolean }
+    setup.presentationBridgeReady = true
+    store.refreshContexts = vi.fn().mockImplementation(async () => {
+      const probes = wrapper.emitted('presentationMessage') ?? []
+      if (probes.some(event => (event[0] as { type?: string }).type === 'PRESENTATION_PROBE')) {
+        store.contexts = [{ ...store.context!, sceneReady: true }]
+      }
+      return true
+    })
+    await voice(input)
+    expect(wrapper.emitted('presentationMessage')).toContainEqual([
+      expect.objectContaining({
+        type: 'PRESENTATION_PROBE',
+        requestId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+        sequence: 7,
+        kind: 'SCENE_READY',
+      }),
+    ])
+    expect(store.requestPresentationChallenge).not.toHaveBeenCalled()
+    expect(store.confirm).toHaveBeenCalledOnce()
+  })
+
+  it('does not use a local ready hint to bypass an unconfirmed backend scene', async () => {
+    vi.stubEnv('VITE_VOICE_UNITY_PRESENTATION_V1', 'true')
+    const { wrapper, store, input } = await panel()
+    store.contexts = [{ ...store.context!, sceneReady: false }]
+    await wrapper.setProps({ unitySession: { ...wrapper.props('unitySession'), connected: true } })
+    await flushPromises()
+    const setup = wrapper.vm.$.setupState as unknown as { presentationBridgeReady: boolean }
+    setup.presentationBridgeReady = true
+    store.refreshContexts = vi.fn().mockResolvedValue(false)
+    store.requestPresentationChallenge = vi.fn().mockResolvedValue(null)
+    input.vm.$emit('voiceCandidate', 'SINGLE_DEVICE_CONTROL', interpretationId,
+      { startedAt: Date.now() - 1200, asrRequestMs: 900, parseMs: 300 })
+    await vi.advanceTimersByTimeAsync(4100)
+    await flushPromises()
+    expect(store.propose).not.toHaveBeenCalled()
+    expect(store.confirm).not.toHaveBeenCalled()
+    expect(wrapper.text()).toContain('仿真场景尚未就绪')
   })
 
   it('blocks automatic submission when the heartbeat is already stale', async () => {
@@ -866,7 +1305,7 @@ describe('VoiceP0ControlPanel refined controls', () => {
     expect(store.confirm).not.toHaveBeenCalled()
     expect(wrapper.get('.refined-plan').text()).toContain('受控顺序指令')
     expect(wrapper.findAll('.refined-plan li b').map(badge => badge.text())).toEqual(['1', '2'])
-    expect(wrapper.findAll('.refined-plan li > span').map(step => step.text())).toEqual(['开始任务', 'UAV-001 · 无人机悬停'])
+    expect(wrapper.findAll('.refined-plan li > span').map(step => step.text())).toEqual(['开始任务', 'UAV-001 · 一号无人机 · 无人机悬停'])
     expect(wrapper.get('.refined-confirm').attributes('disabled')).toBeUndefined()
     await wrapper.get('.refined-confirm').trigger('click')
     await flushPromises()
@@ -876,7 +1315,7 @@ describe('VoiceP0ControlPanel refined controls', () => {
     expect(progress).toHaveLength(2)
     expect(progress[0]!.text()).toContain('开始任务')
     expect(progress[0]!.text()).toContain('算法执行成功')
-    expect(progress[1]!.text()).toContain('UAV-001 · 无人机悬停')
+    expect(progress[1]!.text()).toContain('UAV-001 · 一号无人机 · 无人机悬停')
     expect(progress[1]!.text()).toContain('等待调度')
   })
 
@@ -991,7 +1430,7 @@ describe('VoiceP0ControlPanel refined controls', () => {
     await wrapper.findAll('button').find(button => button.text() === '核对上次请求')!.trigger('click')
     await flushPromises()
     expect(wrapper.get('.refined-plan').text()).toContain('恢复的待确认指令')
-    expect(wrapper.get('.refined-plan').text()).toContain('UAV-001 · 无人机悬停')
+    expect(wrapper.get('.refined-plan').text()).toContain('UAV-001 · 一号无人机 · 无人机悬停')
     expect(wrapper.get('.refined-confirm').attributes('disabled')).toBeUndefined()
     expect(store.confirm).not.toHaveBeenCalled()
     await wrapper.get('.refined-confirm').trigger('click')

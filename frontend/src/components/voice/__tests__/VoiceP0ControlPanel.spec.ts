@@ -195,6 +195,7 @@ describe('VoiceP0ControlPanel presentation recovery UI', () => {
   })
 
   it('automatically confirms a validated single-device voice command in local simulation', async () => {
+    vi.stubEnv('VITE_VOICE_P1_BACKEND', 'true')
     const wrapper = mountPanel('NOT_REQUIRED')
     const store = useVoiceControlStore()
     const targetedContext = { ...context, capabilities: [...context.capabilities, 'DEVICE_COMMAND'] }

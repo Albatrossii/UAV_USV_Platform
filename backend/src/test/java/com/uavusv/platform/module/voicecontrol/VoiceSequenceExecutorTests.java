@@ -230,6 +230,50 @@ class VoiceSequenceExecutorTests extends VoiceControlTests {
         assertTrue(app.execution(id).path("steps").path(2).path("executionId").isNull());
     }
 
+    @Test
+    void lateSuccessAfterChildTimeoutNeverResumesRemainingSequence() {
+        prepareSequence();
+        String id = execution(confirm(sequenceProposal("UAV-001", "UAV_HOVER")))
+                .path("executionId").asText();
+        sequences.tick();
+        String childId = app.execution(id).path("steps").path(0).path("executionId").asText();
+        s.locked(() -> {
+            ObjectNode child = s.get("voice_execution", childId);
+            child.put("state", "TIMED_OUT").put("outcome", "UNKNOWN")
+                    .put("errorCode", "ACK_TIMEOUT").put("timedOutAt", t.stamp());
+            s.save("voice_execution", child);
+            return null;
+        });
+        sequences.tick();
+        assertEquals("TIMED_OUT", app.execution(id).path("state").asText());
+        markChildSucceeded(childId);
+        heartbeat("RUNNING", 5, 2);
+        sequences = new VoiceSequenceExecutor(s, t, r, app);
+        sequences.tick();
+        sequences.tick();
+        ObjectNode parent = app.execution(id);
+        assertEquals("TIMED_OUT", parent.path("state").asText());
+        assertTrue(parent.path("steps").path(1).path("executionId").isNull());
+        assertEquals(2, count("voice_execution"));
+        assertEquals(2, count("voice_proposal"));
+    }
+
+    @Test
+    void recreatedCoordinatorReusesPersistedChildInsteadOfCreatingAnother() {
+        prepareSequence();
+        String id = execution(confirm(sequenceProposal("UAV-001", "UAV_HOVER")))
+                .path("executionId").asText();
+        sequences.tick();
+        String childId = app.execution(id).path("steps").path(0).path("executionId").asText();
+        sequences = new VoiceSequenceExecutor(s, t, r, app);
+        sequences.tick();
+        sequences.tick();
+        assertEquals(childId, app.execution(id).path("steps").path(0).path("executionId").asText());
+        assertTrue(app.execution(id).path("steps").path(1).path("executionId").isNull());
+        assertEquals(2, count("voice_execution"));
+        assertEquals(2, count("voice_proposal"));
+    }
+
     private void commandResult(
             ObjectNode child, String status, long eventSequence, String state, long stateVersion) {
         ObjectNode result = event("COMMAND_RESULT");

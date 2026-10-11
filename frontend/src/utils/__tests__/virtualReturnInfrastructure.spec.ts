@@ -1,16 +1,78 @@
 import { describe, expect, it } from 'vitest'
 import {
   buildReturnInfrastructure,
+  moveTargetsTowardShore,
+  placeFleetAtShore,
   readReturnInfrastructure,
   toGlobalReturnInfrastructure,
   type ReturnInfrastructure,
 } from '../virtualReturnInfrastructure'
+import { buildVirtualFleetGridLayout } from '../virtualFleetGridLayout'
 
 const origin = { eastM: -360, northM: -285, upM: 7.5 }
 const defaultOrigin = { eastM: -360, northM: -285, upM: 0 }
 const layout = () => buildReturnInfrastructure({ uavCount: 3, usvCount: 3, worldHeight: 280 })
 
+describe('demonstration target shore distance', () => {
+  it.each([true, false])('reduces every target distance to two thirds without changing parked craft (%s)', captureMode => {
+    const poses = placeFleetAtShore(buildVirtualFleetGridLayout({
+      uavCount: 3, usvCount: 3, fleetOrigin: defaultOrigin, uavSpeedMps: 5, usvSpeedMps: 3,
+      captureMode, scenarioId: 7001,
+    }), layout(), defaultOrigin)
+    const saved = structuredClone(poses)
+    const result = moveTargetsTowardShore(poses, layout(), defaultOrigin)
+    const anchor = { eastM: (-92 - 108 - 108) / 3, northM: -160 }
+    for (const [index, pose] of result.entries()) {
+      const original = poses[index]!
+      if (pose.deviceType !== 'TARGET') { expect(pose).toEqual(original); continue }
+      expect(Math.hypot(pose.eastM - anchor.eastM, pose.northM - anchor.northM))
+        .toBeCloseTo(Math.hypot(original.eastM - anchor.eastM, original.northM - anchor.northM) * 2 / 3, 8)
+      expect(pose).toMatchObject({ ...original, eastM: pose.eastM, northM: pose.northM })
+    }
+    expect(poses).toEqual(saved)
+    expect(moveTargetsTowardShore(poses, toGlobalReturnInfrastructure(layout(), defaultOrigin))).toEqual(result)
+    expect(moveTargetsTowardShore(poses, layout(), defaultOrigin, 1)).toEqual(poses)
+  })
+
+  it.each([0, -1, 1.1, NaN, Infinity])('rejects invalid ratio %s', ratio => {
+    expect(() => moveTargetsTowardShore([], layout(), defaultOrigin, ratio)).toThrow('ratio')
+  })
+
+  it('does not silently use helipads as the shore reference', () => {
+    const infrastructure = layout()
+    infrastructure.slots = infrastructure.slots.filter(slot => slot.kind === 'HELIPAD')
+    expect(() => moveTargetsTowardShore([], infrastructure, defaultOrigin)).toThrow('berths')
+  })
+})
+
 describe('original scene return anchors', () => {
+  it.each([true, false])('parks every UAV and USV at the original return anchors without moving capture/escort targets (%s)', captureMode => {
+    const original = buildVirtualFleetGridLayout({
+      uavCount: 3, usvCount: 3, fleetOrigin: defaultOrigin, uavSpeedMps: 5, usvSpeedMps: 3,
+      captureMode, scenarioId: 7001,
+    })
+    const saved = structuredClone(original)
+    const parked = placeFleetAtShore(original, layout(), defaultOrigin)
+    const slots = toGlobalReturnInfrastructure(layout(), defaultOrigin).slots
+    for (const slot of slots) {
+      expect(parked.find(pose => pose.deviceCode === slot.deviceCode)).toMatchObject({
+        eastM: slot.eastM, northM: slot.northM, upM: slot.upM,
+        headingDeg: slot.headingDeg, speedMps: 0, state: 'PARKED', valid: true,
+      })
+    }
+    expect(parked.filter(pose => pose.deviceType === 'TARGET')).toEqual(original.filter(pose => pose.deviceType === 'TARGET'))
+    expect(original).toEqual(saved)
+    expect(placeFleetAtShore(parked, layout(), defaultOrigin)).toEqual(parked)
+  })
+
+  it('rejects a fleet without enough shore anchors instead of falling back to offshore or overlapping parking', () => {
+    const poses = buildVirtualFleetGridLayout({
+      uavCount: 4, usvCount: 3, fleetOrigin: defaultOrigin, uavSpeedMps: 5, usvSpeedMps: 3,
+      captureMode: true, scenarioId: 7001,
+    })
+    expect(() => placeFleetAtShore(poses, layout(), defaultOrigin)).toThrow('UAV-004 没有可用')
+  })
+
   it.each([1, 2, 3, 8, 9, 16, 17, 64, 128])('reuses at most three disjoint original anchors for %i of each device', count => {
     const result = buildReturnInfrastructure({ uavCount: count, usvCount: count, worldHeight: 280 })
     const supported = Math.min(3, count)

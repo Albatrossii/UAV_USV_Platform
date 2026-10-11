@@ -5,6 +5,7 @@ import type { VoiceIntelligenceAdapter } from '@/types/voiceIntelligence'
 
 import VoiceIntelligenceInput from '@/components/voice/VoiceIntelligenceInput.vue'
 import { createMockVoiceIntelligenceAdapter } from '@/services/voiceIntelligence'
+import { SPEECH_RECORDING_MAX_MS } from '@/utils/speechRecordingPolicy'
 
 function mountInput() {
   return mount(VoiceIntelligenceInput, {
@@ -21,6 +22,70 @@ function mountInput() {
 }
 
 describe('VoiceIntelligenceInput', () => {
+  describe.each([false, true])('manual input with speech automation enabled (refined=%s)', refined => {
+    it.each([
+      ['开始任务', 'START', 'MISSION_START'], ['暂停任务', 'PAUSE', 'MISSION_PAUSE'],
+      ['继续任务', 'RESUME', 'MISSION_RESUME'], ['停止任务', 'STOP', 'MISSION_STOP'],
+    ] as const)('keeps %s in the confirmation flow', async (text, action, intent) => {
+      const parse = vi.fn(async input => ({
+        status: 'CANDIDATE' as const, requestId: input.requestId, normalizedText: input.text,
+        action, intent, confidence: 1, provider: 'local-rules', model: 'rules-v1',
+      }))
+      const wrapper = mount(VoiceIntelligenceInput, { props: {
+        adapter: { name: 'platform-backend', mode: 'BACKEND', transcribe: vi.fn(), parse },
+        allowedActions: ['START', 'PAUSE', 'RESUME', 'STOP'], deviceCodes: [], operatorScope: 'admin',
+        autoExecuteSpeech: true, refined,
+      } })
+      try {
+        await wrapper.get('textarea').setValue(text)
+        await wrapper.findAll('button').find(button => button.text() === (refined ? '预览指令' : '解析指令'))!.trigger('click')
+        await flushPromises()
+        expect(wrapper.emitted('voiceCandidate')).toBeUndefined()
+        if (!refined) {
+          expect(wrapper.emitted('candidate')).toBeUndefined()
+          await wrapper.findAll('button').find(button => button.text() === '生成待确认提案')!.trigger('click')
+        }
+        expect(wrapper.emitted('candidate')).toEqual([[intent, parse.mock.calls[0]![0].requestId]])
+        expect(wrapper.emitted('voiceCandidate')).toBeUndefined()
+      } finally { wrapper.unmount() }
+    })
+
+    it('rejects a mismatched interpretation ID before exposing a candidate or recording an interpretation', async () => {
+      const wrapper = mount(VoiceIntelligenceInput, { props: {
+        adapter: { name: 'platform-backend', mode: 'BACKEND', transcribe: vi.fn(), parse: async input => ({
+          status: 'CANDIDATE', requestId: 'another-request', normalizedText: input.text,
+          action: 'START', intent: 'MISSION_START', confidence: 1, provider: 'local-rules', model: 'rules-v1',
+        }) }, allowedActions: ['START'], deviceCodes: [], autoExecuteSpeech: true, refined,
+      } })
+      try {
+        await wrapper.get('textarea').setValue('开始任务')
+        await wrapper.findAll('button').find(button => button.text() === (refined ? '预览指令' : '解析指令'))!.trigger('click')
+        await flushPromises()
+        expect(wrapper.text()).toContain('请求编号不一致')
+        expect(wrapper.emitted('candidate')).toBeUndefined()
+        expect(wrapper.emitted('voiceCandidate')).toBeUndefined()
+        expect(wrapper.emitted('interpretation')).toBeUndefined()
+        expect(wrapper.find('.candidate').exists()).toBe(false)
+        expect((wrapper.get('textarea').element as HTMLTextAreaElement).value).toBe('开始任务')
+      } finally { wrapper.unmount() }
+    })
+  })
+
+  it('replaces an old confirmation prompt with the parent authoritative review outcome', async () => {
+    const wrapper = mountInput()
+    try {
+      await wrapper.setProps({ refined: true })
+      await wrapper.get('textarea').setValue('开始任务')
+      await wrapper.get('.refined-preview').trigger('click')
+      await flushPromises()
+      expect(wrapper.get('.refined-status').text()).toContain('确认后执行')
+      await wrapper.setProps({ reviewStatus: '此指令已取消，未下发。' })
+      expect(wrapper.get('.refined-status').text()).toBe('此指令已取消，未下发。')
+      expect(wrapper.text()).not.toContain('确认后执行')
+      expect(wrapper.emitted('voiceCandidate')).toBeUndefined()
+    } finally { wrapper.unmount() }
+  })
+
   it('unlocks recording and text input after a definitive no-speech result', async () => {
     const parse = vi.fn()
     const wrapper = mount(VoiceIntelligenceInput, { props: {
@@ -38,6 +103,7 @@ describe('VoiceIntelligenceInput', () => {
     expect(wrapper.findAll('button').find(button => button.text() === '开始录音')!.attributes('disabled')).toBeUndefined()
     expect(parse).not.toHaveBeenCalled()
     expect(wrapper.emitted('voiceCandidate')).toBeUndefined()
+    expect(wrapper.emitted('draftChange')).toBeDefined()
     wrapper.unmount()
   })
   function backendInput(parse: VoiceIntelligenceAdapter['parse']) {
@@ -297,8 +363,8 @@ describe('VoiceIntelligenceInput', () => {
 
     expect(parse).toHaveBeenCalledOnce()
     expect(parse.mock.calls[0]![0].text).toBe('停止任务')
-    expect(wrapper.emitted('voiceCandidate')).toEqual([['MISSION_STOP', expect.any(String), expect.any(Object)]])
-    expect(wrapper.emitted('candidate')).toBeUndefined()
+    expect(wrapper.emitted('voiceCandidate')).toBeUndefined()
+    expect(wrapper.emitted('candidate')).toEqual([['MISSION_STOP', expect.any(String)]])
     wrapper.unmount()
   })
 
@@ -356,7 +422,7 @@ describe('VoiceIntelligenceInput', () => {
     wrapper.unmount()
   })
 
-  it('preserves automatic execution for the exact local-rules STOP phrase', async () => {
+  it('requires confirmation even for the exact local-rules STOP phrase', async () => {
     const transcribe = vi.fn(async input => ({
       requestId: input.requestId, text: '停止任务', locale: 'zh-CN', durationMs: 2360,
       provider: 'local-asr', model: 'whisper-small-cpu-int8-r1',
@@ -380,10 +446,9 @@ describe('VoiceIntelligenceInput', () => {
     await input.trigger('change')
     await flushPromises()
 
-    expect(wrapper.emitted('voiceCandidate')).toEqual([['MISSION_STOP', expect.any(String), expect.objectContaining({
-      startedAt: expect.any(Number), asrRequestMs: expect.any(Number), parseMs: expect.any(Number),
-    })]])
-    expect(wrapper.find('.candidate').exists()).toBe(false)
+    expect(wrapper.emitted('voiceCandidate')).toBeUndefined()
+    expect(wrapper.emitted('candidate')).toEqual([['MISSION_STOP', expect.any(String)]])
+    expect(wrapper.text()).toContain('高风险')
     wrapper.unmount()
   })
 
@@ -415,7 +480,7 @@ describe('VoiceIntelligenceInput', () => {
     expect(wrapper.emitted('voiceCandidate')).toEqual([['SINGLE_DEVICE_CONTROL', expect.any(String), expect.objectContaining({
       startedAt: expect.any(Number), asrRequestMs: expect.any(Number), parseMs: expect.any(Number),
     })]])
-    expect(wrapper.text()).toContain('正在校验目标和动作并自动提交至本地仿真')
+    expect(wrapper.text()).toContain('正在校验并提交至 USV-001 · 一号无人艇')
     expect(wrapper.find('.candidate').exists()).toBe(false)
     wrapper.unmount()
   })
@@ -451,7 +516,7 @@ describe('VoiceIntelligenceInput', () => {
     expect(wrapper.emitted('voiceCandidate')).toBeUndefined()
     expect(wrapper.text()).toContain('受控顺序指令')
     expect(wrapper.text()).toContain('开始任务')
-    expect(wrapper.text()).toContain('UAV-001 · 无人机悬停')
+    expect(wrapper.text()).toContain('UAV-001 · 一号无人机 · 无人机悬停')
     expect(wrapper.text()).toContain('任何一步失败都会停止后续步骤')
 
     await wrapper.get('.candidate button').trigger('click')
@@ -459,7 +524,7 @@ describe('VoiceIntelligenceInput', () => {
     wrapper.unmount()
   })
 
-  it('automatically submits a validated single-device text command in local simulation', async () => {
+  it('requires candidate review for a validated single-device text command even with speech automation enabled', async () => {
     const parse = vi.fn(async input => ({
       status: 'CANDIDATE' as const, requestId: input.requestId, action: 'DEVICE_COMMAND' as const,
       intent: 'SINGLE_DEVICE_CONTROL' as const, targetDeviceCode: 'UAV-001', deviceCommandType: 'UAV_HOVER' as const,
@@ -476,11 +541,12 @@ describe('VoiceIntelligenceInput', () => {
     await flushPromises()
 
     expect(parse).toHaveBeenCalledOnce()
-    expect(wrapper.emitted('voiceCandidate')).toEqual([['SINGLE_DEVICE_CONTROL', expect.any(String), expect.objectContaining({
-      asrRequestMs: 0, parseMs: expect.any(Number),
-    })]])
-    expect(wrapper.text()).toContain('正在校验目标和动作并自动提交至本地仿真')
-    expect(wrapper.find('.candidate').exists()).toBe(false)
+    expect(wrapper.emitted('voiceCandidate')).toBeUndefined()
+    expect(wrapper.emitted('candidate')).toBeUndefined()
+    expect(wrapper.find('.candidate').exists()).toBe(true)
+    await wrapper.get('.candidate button').trigger('click')
+    expect(wrapper.emitted('candidate')).toEqual([['SINGLE_DEVICE_CONTROL', parse.mock.calls[0]![0].requestId]])
+    expect(wrapper.emitted('voiceCandidate')).toBeUndefined()
     wrapper.unmount()
   })
 
@@ -561,6 +627,8 @@ describe('VoiceIntelligenceInput refined mode', () => {
       refined: true, adapter, allowedActions: ['START', 'PAUSE', 'RESUME', 'STOP'],
       deviceCodes: ['UAV-001', 'USV-002'], operatorScope: 'admin', autoExecuteSpeech: true,
       runtimeContext: { runtimeRef: 'runtime-1', runtimeGeneration: 'generation-1', contextVersion: 1 },
+      automationRuntime: { runtimeRef: 'runtime-1', runtimeGeneration: 'generation-1', runtimeScope: 'MISSION_CENTER',
+        runtimeKind: 'STANDALONE_ALGORITHM', executionBackend: 'PYTHON_SIMULATION', protocolVersion: 'algorithm.command.v1' },
     }, slots: { default: '<section class="frozen-plan">冻结的指令预览</section>' } })
   }
   function installMicrophone() {
@@ -713,9 +781,10 @@ describe('VoiceIntelligenceInput refined mode', () => {
     expect(wrapper.emitted('voiceCandidate')).toEqual([[intent, parse.mock.calls[0]![0].requestId, expect.any(Object)]])
     expect(wrapper.emitted('candidate')).toBeUndefined()
     expect(wrapper.find('.refined-preview').exists()).toBe(false)
-    expect(wrapper.text()).toContain('语音识别后自动执行，支持 2–4 步顺序指令')
     await flushPromises()
     expect(wrapper.emitted('voiceCandidate')).toHaveLength(1)
+    expect(wrapper.text()).toContain('本地仿真明确语音自动执行')
+    expect(wrapper.text()).not.toContain('返航、降落、停止需确认')
     wrapper.unmount()
   })
 
@@ -735,7 +804,7 @@ describe('VoiceIntelligenceInput refined mode', () => {
   it.each([
     ['一号无人机返航', 'UAV-001', 'UAV_RETURN'], ['一号无人机降落', 'UAV-001', 'UAV_LAND'],
     ['二号无人艇返航', 'USV-002', 'USV_RETURN'], ['二号无人艇停止', 'USV-002', 'USV_STOP'],
-  ] as const)('automatically submits a clearly targeted route-changing voice command %s', async (text, targetDeviceCode, deviceCommandType) => {
+  ] as const)('automatically submits the clearly targeted simulation voice command %s', async (text, targetDeviceCode, deviceCommandType) => {
     installMicrophone()
     const parse = vi.fn<VoiceIntelligenceAdapter['parse']>(async input => ({
       ...await parseCandidate(input), targetDeviceCode, deviceCommandType,
@@ -748,6 +817,157 @@ describe('VoiceIntelligenceInput refined mode', () => {
     expect(wrapper.emitted('candidate')).toBeUndefined()
     await flushPromises()
     expect(wrapper.emitted('voiceCandidate')).toHaveLength(1)
+    wrapper.unmount()
+  })
+
+  it.each([
+    null,
+    { executionBackend: 'REAL_DEVICE' }, { runtimeScope: 'GATEWAY' }, { runtimeKind: 'GATEWAY' },
+    { runtimeRef: 'another-run' }, { runtimeGeneration: 'another-generation' }, { protocolVersion: 'legacy' },
+  ])('retains return confirmation when simulation scope does not match: %j', async changed => {
+    installMicrophone()
+    const wrapper = mountRefined(speechAdapter('一号无人机返航', async input => ({
+      ...await parseCandidate(input), deviceCommandType: 'UAV_RETURN',
+    })))
+    await wrapper.setProps({ automationRuntime: changed ? { ...wrapper.props('automationRuntime')!, ...changed } : null })
+    await recordSpeech(wrapper)
+    expect(wrapper.emitted('voiceCandidate')).toBeUndefined()
+    expect(wrapper.emitted('candidate')).toEqual([['SINGLE_DEVICE_CONTROL', expect.any(String)]])
+    wrapper.unmount()
+  })
+
+  it.each(['不要让一号无人机返航', '一号无人机是否返航', '一号无人机或者二号无人机返航'])(
+    'never automates a negated or ambiguous return: %s', async text => {
+      installMicrophone()
+      const wrapper = mountRefined(speechAdapter(text, async input => ({
+        ...await parseCandidate(input), deviceCommandType: 'UAV_RETURN',
+      })))
+      await recordSpeech(wrapper)
+      expect(wrapper.emitted('voiceCandidate')).toBeUndefined()
+      expect(wrapper.emitted('candidate')).toBeUndefined()
+      wrapper.unmount()
+    },
+  )
+
+  describe.each([false, true])('negation guard against an older permissive backend (refined=%s)', refined => {
+    it.each([
+      ['speech', '一号无人机暂不返航'], ['speech', '一号无人机不返航'], ['speech', '一号无人机不降落'],
+      ['speech', '开始任务，然后一号无人机不返航'], ['speech', '暂不让一号无人鸡返航'],
+      ['manual', '一号无人机暂不返航'], ['manual', '一号无人机不返航'], ['manual', '一号无人机不降落'],
+      ['manual', '开始任务，然后一号无人机不返航'], ['manual', '暂不让一号无人鸡返航'],
+    ])('blocks %s negation before calling the parser: %s', async (origin, text) => {
+      installMicrophone()
+      const parse = vi.fn<VoiceIntelligenceAdapter['parse']>(async input => ({
+        ...await parseCandidate(input), deviceCommandType: 'UAV_RETURN', normalizedText: '一号无人机返航',
+      }))
+      const wrapper = mountRefined(speechAdapter(text!, parse))
+      await wrapper.setProps({ refined })
+      try {
+        if (origin === 'speech') {
+          await wrapper.findAll('button').find(button => button.attributes('aria-label') === '开始录音' || button.text() === '开始录音')!.trigger('click')
+          await flushPromises()
+          await wrapper.findAll('button').find(button => button.attributes('aria-label') === '停止录音' || button.text() === '停止录音')!.trigger('click')
+          await flushPromises()
+        } else {
+          await wrapper.get('textarea').setValue(text!)
+          await wrapper.findAll('button').find(button => button.text() === (refined ? '预览指令' : '解析指令'))!.trigger('click')
+          await flushPromises()
+        }
+        expect(parse).not.toHaveBeenCalled()
+        expect(wrapper.emitted('voiceCandidate')).toBeUndefined()
+        expect(wrapper.emitted('candidate')).toBeUndefined()
+        expect(wrapper.find('.candidate').exists()).toBe(false)
+        expect(wrapper.text()).toContain('检测到否定表达，整条指令未下发')
+        expect((wrapper.get('textarea').element as HTMLTextAreaElement).value).toBe(text)
+      } finally { wrapper.unmount() }
+    })
+  })
+
+  it.each(['一号无人机请返航', '一号无人机马上返航', '请让一号无人机返航'])(
+    'preserves affirmative simulation speech automation: %s', async text => {
+      installMicrophone()
+      const parse = vi.fn<VoiceIntelligenceAdapter['parse']>(async input => ({
+        ...await parseCandidate(input), deviceCommandType: 'UAV_RETURN',
+      }))
+      const wrapper = mountRefined(speechAdapter(text, parse))
+      await recordSpeech(wrapper)
+      expect(parse).toHaveBeenCalledOnce()
+      expect(wrapper.emitted('voiceCandidate')).toEqual([['SINGLE_DEVICE_CONTROL', expect.any(String), expect.any(Object)]])
+      expect(wrapper.emitted('candidate')).toBeUndefined()
+      wrapper.unmount()
+    },
+  )
+
+  it('keeps simulation policy copy consistent when an ended run has no parser context', async () => {
+    const wrapper = mountRefined()
+    await wrapper.setProps({ runtimeContext: null, submissionDisabled: true })
+    expect(wrapper.text()).toContain('本地仿真明确语音自动执行')
+    expect(wrapper.text()).toContain('仿真语音自动执行 · 编辑后需确认')
+    expect(wrapper.text()).not.toContain('高风险')
+    expect(wrapper.text()).not.toContain('返航、降落、停止需确认')
+    wrapper.unmount()
+  })
+
+  it('keeps manually edited return text in the confirmation flow after automatic speech', async () => {
+    installMicrophone()
+    const wrapper = mountRefined(speechAdapter('一号无人机返航', async input => ({
+      ...await parseCandidate(input), deviceCommandType: 'UAV_RETURN',
+    })))
+    await recordSpeech(wrapper)
+    expect(wrapper.emitted('voiceCandidate')).toHaveLength(1)
+    await wrapper.get('textarea').setValue('请让一号无人机返航')
+    await wrapper.get('.refined-preview').trigger('click')
+    await flushPromises()
+    expect(wrapper.emitted('voiceCandidate')).toHaveLength(1)
+    expect(wrapper.emitted('candidate')).toEqual([['SINGLE_DEVICE_CONTROL', expect.any(String)]])
+    expect(wrapper.text()).toContain('确认后执行')
+    wrapper.unmount()
+  })
+
+  it('does not automatically parse or execute a return after the recording limit cuts off audio', async () => {
+    vi.useFakeTimers()
+    installMicrophone()
+    const parse = vi.fn<VoiceIntelligenceAdapter['parse']>(async input => ({
+      ...await parseCandidate(input), deviceCommandType: 'UAV_RETURN',
+    }))
+    const wrapper = mountRefined(speechAdapter('一号无人机返航', parse))
+    try {
+      await wrapper.get('button[aria-label="开始录音"]').trigger('click')
+      await flushPromises()
+      await vi.advanceTimersByTimeAsync(SPEECH_RECORDING_MAX_MS)
+      await flushPromises()
+      expect(wrapper.text()).toContain('指令可能未说完')
+      expect(parse).not.toHaveBeenCalled()
+      expect(wrapper.emitted('voiceCandidate')).toBeUndefined()
+      expect(wrapper.emitted('candidate')).toBeUndefined()
+      await wrapper.get('.refined-preview').trigger('click')
+      await flushPromises()
+      expect(wrapper.emitted('candidate')).toEqual([['SINGLE_DEVICE_CONTROL', expect.any(String)]])
+      expect(wrapper.emitted('voiceCandidate')).toBeUndefined()
+    } finally { wrapper.unmount(); vi.useRealTimers() }
+  })
+
+  it.each([['speech', 5], ['manual', 5], ['speech', 9], ['manual', 9]] as const)('explains rejected %s input of %s steps without proposing another oversized batch', async (origin, stepCount) => {
+    installMicrophone()
+    const text = '开始任务，然后让一号无人机悬停，等待5秒，然后归队，然后二号无人艇驻留' + '，然后等待一秒'.repeat(stepCount - 5)
+    const parse: VoiceIntelligenceAdapter['parse'] = async input => ({
+      status: 'NEEDS_CLARIFICATION', reason: 'AMBIGUOUS_ACTION', requestId: input.requestId,
+      normalizedText: input.text, provider: 'local-rules', model: 'rules-sequence-v1',
+      message: '请一次说明 2–4 个顺序动作。',
+    })
+    const wrapper = mountRefined(speechAdapter(text, parse))
+    if (origin === 'speech') await recordSpeech(wrapper)
+    else {
+      await wrapper.get('textarea').setValue(text)
+      await wrapper.get('.refined-preview').trigger('click')
+      await flushPromises()
+    }
+    expect(wrapper.text()).toContain(`本句识别为 ${stepCount} 步，当前最多支持 4 步`)
+    expect(wrapper.text()).toContain('整条指令未下发')
+    expect(wrapper.text()).toContain('每次最多 4 步')
+    expect(wrapper.text()).toContain('等待前一条执行完成后再说下一条')
+    expect(wrapper.emitted('voiceCandidate')).toBeUndefined()
+    expect(wrapper.emitted('candidate')).toBeUndefined()
     wrapper.unmount()
   })
 
@@ -799,7 +1019,7 @@ describe('VoiceIntelligenceInput refined mode', () => {
     wrapper.unmount()
   })
 
-  const sequenceParse = (targetDeviceCode = 'UAV-001', deviceCommandType: 'UAV_HOVER' | 'USV_HOLD' = 'UAV_HOVER'): VoiceIntelligenceAdapter['parse'] => async input => ({
+  const sequenceParse = (targetDeviceCode = 'UAV-001', deviceCommandType: 'UAV_HOVER' | 'USV_HOLD' | 'UAV_RETURN' | 'UAV_LAND' | 'USV_RETURN' | 'USV_STOP' = 'UAV_HOVER'): VoiceIntelligenceAdapter['parse'] => async input => ({
     status: 'CANDIDATE', action: 'SEQUENCE', intent: 'COMMAND_SEQUENCE', requestId: input.requestId,
     normalizedText: input.text, provider: 'local-rules', model: 'rules-sequence-v1', confidence: null,
     steps: [{ index: 0, action: 'START' }, { index: 1, action: 'DEVICE_COMMAND', targetDeviceCode, deviceCommandType }],
@@ -810,6 +1030,10 @@ describe('VoiceIntelligenceInput refined mode', () => {
     ['开始任务让二号无人停驻留', 'USV-002', 'USV_HOLD'],
     ['开始任务，一号无人机悬停', 'UAV-001', 'UAV_HOVER'],
     ['开始任务一号无人机悬停', 'UAV-001', 'UAV_HOVER'],
+    ['开始任务，然后一号无人机返航', 'UAV-001', 'UAV_RETURN'],
+    ['开始任务，然后一号无人机降落', 'UAV-001', 'UAV_LAND'],
+    ['开始任务，然后二号无人艇返航', 'USV-002', 'USV_RETURN'],
+    ['开始任务，然后二号无人艇停止', 'USV-002', 'USV_STOP'],
   ] as const)('automatically emits the controlled two-step command %s', async (text, target, command) => {
     installMicrophone()
     const wrapper = mountRefined(speechAdapter(text, sequenceParse(target, command)))
@@ -935,6 +1159,40 @@ describe('VoiceIntelligenceInput refined mode', () => {
     expect(wrapper.emitted('candidate')).toBeUndefined()
     expect(wrapper.find('.refined-preview').exists()).toBe(false)
     wrapper.unmount()
+  })
+
+  it.each([false, true])('rejects mismatched speech interpretation without offering an executable candidate (refined=%s)', async refined => {
+    installMicrophone()
+    const parse = vi.fn<VoiceIntelligenceAdapter['parse']>(async input => ({ ...await parseCandidate(input), requestId: 'wrong-request' }))
+    const wrapper = mountRefined(speechAdapter('一号无人机悬停', parse))
+    try {
+      await recordSpeech(wrapper)
+      await wrapper.setProps({ refined })
+      expect(wrapper.text()).toContain('请求编号不一致')
+      expect(wrapper.find('.candidate').exists()).toBe(false)
+      expect(wrapper.emitted('candidate')).toBeUndefined()
+      expect(wrapper.emitted('voiceCandidate')).toBeUndefined()
+      expect(wrapper.emitted('interpretation')).toBeUndefined()
+      expect((wrapper.get('textarea').element as HTMLTextAreaElement).value).toBe('一号无人机悬停')
+    } finally { wrapper.unmount() }
+  })
+
+  it('keeps edited speech in manual confirmation when switching to the legacy panel', async () => {
+    installMicrophone()
+    const parse = vi.fn().mockRejectedValueOnce(new Error('network lost')).mockImplementation(parseCandidate)
+    const wrapper = mountRefined(speechAdapter('一号无人机悬停', parse))
+    try {
+      await recordSpeech(wrapper)
+      await wrapper.findAll('button').find(button => button.text() === '重新编辑文字')!.trigger('click')
+      await wrapper.setProps({ refined: false })
+      await wrapper.get('textarea').setValue('请让一号无人机悬停')
+      await wrapper.findAll('button').find(button => button.text() === '解析指令')!.trigger('click')
+      await flushPromises()
+      expect(wrapper.emitted('voiceCandidate')).toBeUndefined()
+      expect(wrapper.emitted('candidate')).toBeUndefined()
+      await wrapper.get('.candidate button').trigger('click')
+      expect(wrapper.emitted('candidate')).toEqual([['SINGLE_DEVICE_CONTROL', parse.mock.calls[1]![0].requestId]])
+    } finally { wrapper.unmount() }
   })
 
   it('demotes abandoned speech parsing to a new manual preview after editing', async () => {

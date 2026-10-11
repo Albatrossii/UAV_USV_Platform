@@ -64,8 +64,9 @@ public class IntentService {
                     Map.entry("立即停止任务", "STOP"),
                     Map.entry("马上停止任务", "STOP"),
                     Map.entry("请立即停止任务", "STOP"));
+    // Keep aligned with the browser's automatic-execution guard after whitespace normalization.
     private static final Pattern NEGATED =
-            Pattern.compile("(不要|别|无需|不用|禁止).{0,24}(开始|启动|暂停|继续|恢复|停止|终止|结束|悬停|驻留|待命|返航|归队|降落|停船)");
+            Pattern.compile("(?:不|没|未|别|无需|无须|禁止|取消|勿|莫|暂缓).{0,24}(?:开始|启动|执行|暂停|继续|恢复|停止|终止|结束|悬停|驻留|待命|保持|返航|返回|归队|降落|停船)");
     private static final Pattern UNSUPPORTED = Pattern.compile("攻击|打击|开火|围捕|包围|撤退|返航");
     private static final Pattern TARGETED =
             Pattern.compile(
@@ -204,6 +205,7 @@ public class IntentService {
         IntentClassification parsed = parse(text, body.path("allowedActions"), runtime);
         boolean localLlm = "local-llm".equals(settings.getIntentProvider())
                 && !exactCommand
+                && parsed.action() != null
                 && !Set.of("DEVICE_COMMAND", "SEQUENCE").contains(parsed.action());
         boolean sequence = "SEQUENCE".equals(parsed.action());
         ObjectNode data =

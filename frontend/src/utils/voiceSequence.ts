@@ -1,5 +1,6 @@
-import type { VoiceSequencePlanStep } from '@/types/voiceControl'
+import type { VoiceExecution, VoiceSequenceExecutionStep, VoiceSequencePlanStep, VoiceRuntimeContext } from '@/types/voiceControl'
 import { normalizeVoiceDeviceTerms } from './voiceTranscriptNormalization'
+import { voiceDeviceLabel } from './voiceCommandSafety'
 
 export const missionVoiceActions: Record<string, string> = {
   开始任务: 'START', 启动任务: 'START', 执行任务: 'START', 开始执行任务: 'START', 开始当前任务: 'START', 启动当前任务: 'START',
@@ -46,8 +47,61 @@ export const voiceActionLabels: Record<string, string> = {
 }
 export function voiceStepLabel(step: VoiceSequencePlanStep) {
   return step.action === 'WAIT' ? `等待 ${step.waitSeconds} 秒`
-    : step.action === 'DEVICE_COMMAND' ? `${step.targetDeviceCode} · ${voiceActionLabels[step.deviceCommandType ?? ''] ?? step.deviceCommandType}`
+    : step.action === 'DEVICE_COMMAND' ? `${voiceDeviceLabel(step.targetDeviceCode)} · ${voiceActionLabels[step.deviceCommandType ?? ''] ?? step.deviceCommandType}`
       : voiceActionLabels[step.action] ?? step.action
+}
+
+const interruptedSequenceStates = new Set(['FAILED', 'REJECTED', 'INVALIDATED', 'TIMED_OUT'])
+
+export function sequenceInterruptionNotice(execution: VoiceExecution | null, context?: Pick<VoiceRuntimeContext, 'runtimeRef' | 'runtimeGeneration' | 'state'> | null) {
+  if (!execution || execution.action !== 'SEQUENCE' || !interruptedSequenceStates.has(execution.state)) return ''
+  const notice = '顺序指令已中断，后续步骤不会自动继续；已成功步骤不会自动撤销。'
+  const reasons: Record<string, string> = {
+    GENERATION_MISMATCH: '场景运行代次已变化，原计划不再适用。',
+    HEARTBEAT_STALE: '算法心跳失效，不能继续核实执行条件。',
+    RUNTIME_UNAVAILABLE: '算法运行暂不可用。',
+    SEQUENCE_POLICY_VIOLATION: '后续动作未通过顺序指令安全校验。',
+    SEQUENCE_CHILD_MISSING: '子步骤回执缺失，需要核对原请求。',
+  }
+  let reason = reasons[execution.errorCode ?? ''] ?? ''
+  if (execution.errorCode === 'INVALID_STATE') {
+    const sameRuntime = context?.runtimeRef === execution.runtimeRef && context?.runtimeGeneration === execution.runtimeGeneration
+    const states: Record<string, string> = {
+      COMPLETED: '当前任务已完成，未下发的后续步骤不能再执行。',
+      STOPPED: '当前任务已停止，未下发的后续步骤不能再执行。',
+      CANCELLED: '当前任务已取消，未下发的后续步骤不能再执行。',
+      FAILED: '当前任务已失败，不能继续执行后续步骤。',
+      LOST: '当前算法进程已丢失，不能继续执行后续步骤。',
+      PAUSED: '当前任务已暂停，不满足后续步骤所需状态。',
+    }
+    reason = (sameRuntime && states[context!.state]) || '执行时的运行状态不满足后续步骤要求，请核对当前任务状态。'
+  }
+  const skipped = (execution.steps ?? []).filter(step => step.state === 'PENDING' && !step.executionId && !step.startedAt)
+  const details = skipped.length ? ` 未下发：${skipped.map(voiceStepLabel).join('；')}。` : ''
+  return execution.state === 'TIMED_OUT'
+    ? `${notice} 超时步骤结果仍待核对，请勿重复下发整条指令。${details}` : `${reason}${notice}${details}`
+}
+
+/** Describe only what the receipt proves; never turn an issued step into "not executed". */
+export function sequenceStepHint(execution: VoiceExecution, step: VoiceSequenceExecutionStep): string | null {
+  if (execution.action !== 'SEQUENCE') return null
+  const interrupted = interruptedSequenceStates.has(execution.state)
+  if (step.state === 'PENDING') {
+    if (interrupted) return step.executionId || step.startedAt ? '结果待核对' : '未执行（顺序已中断）'
+    return execution.state === 'SUCCEEDED' ? '步骤回执待核对' : '等待前一步'
+  }
+  if (interrupted && ['QUEUED', 'DISPATCHED', 'ACCEPTED', 'EXECUTING'].includes(step.state)) {
+    // The parent may have timed out while a child is still moving or awaiting a receipt.
+    return step.action === 'WAIT' && !step.executionId ? '等待已中断' : '执行结果待核对（不自动续跑）'
+  }
+  if (step.state === 'EXECUTING' && execution.state === 'EXECUTING') {
+    if (step.action === 'WAIT') return '计时等待中'
+    if (execution.sequenceStatus === 'WAITING_STEP_PRECONDITION' && step.index === execution.currentStepIndex
+      && ['UAV_RETURN', 'USV_RETURN', 'UAV_RESUME', 'USV_RESUME', 'UAV_LAND'].includes(step.deviceCommandType ?? '')) {
+      return '指令已接受，等待实际到位'
+    }
+  }
+  return null
 }
 
 /** Forecast every transition before sending any part of the frozen plan. */

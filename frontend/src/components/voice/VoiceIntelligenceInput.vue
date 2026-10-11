@@ -6,7 +6,8 @@ import { voiceRecoveryInfo } from '@/services/voiceIntelligenceRecovery'
 import { normalizeVoiceAudioType, VOICE_AUDIO_MAX_BYTES } from '@/api/voiceIntelligence'
 import { evaluateSpeechRecording, SPEECH_RECORDING_HINT, SPEECH_RECORDING_MAX_MS } from '@/utils/speechRecordingPolicy'
 import { normalizeVoiceDeviceTerms, repairContextualUsvHold } from '@/utils/voiceTranscriptNormalization'
-import { sequenceMatchesSpeech, voiceStepLabel } from '@/utils/voiceSequence'
+import { sequenceMatchesSpeech, splitVoiceSequence, voiceStepLabel } from '@/utils/voiceSequence'
+import { hasNegatedVoiceAction, isLocalVoiceSimulation, requiresVoiceConfirmation, voiceDeviceLabel, type VoiceAutomationRuntime } from '@/utils/voiceCommandSafety'
 import type { VoiceIntent } from '@/types/voiceControl'
 import type {
   VoiceAction,
@@ -22,6 +23,7 @@ const props = withDefaults(defineProps<{
   allowedActions: VoiceAction[]
   deviceCodes: string[]
   runtimeContext?: VoiceInterpretationRuntimeContext | null
+  automationRuntime?: VoiceAutomationRuntime | null
   operatorScope?: string
   inputDisabled?: boolean
   autoExecuteSpeech?: boolean
@@ -29,9 +31,10 @@ const props = withDefaults(defineProps<{
   submissionDisabled?: boolean
   refined?: boolean
   proposalReady?: boolean
+  reviewStatus?: string
   actionDisabledReason?: (action: VoiceAction) => string
 }>(), {
-  adapter: undefined, runtimeContext: null, operatorScope: '', inputDisabled: false,
+  adapter: undefined, runtimeContext: null, automationRuntime: null, operatorScope: '', inputDisabled: false,
   autoExecuteSpeech: false, allowMockSubmission: false, submissionDisabled: false, actionDisabledReason: undefined,
   refined: false, proposalReady: false,
 })
@@ -80,6 +83,11 @@ const recoveryLabel = computed(() => rateLimited.value
 
 const textLength = computed(() => [...draft.value].length)
 const automaticSpeech = computed(() => props.autoExecuteSpeech)
+const simulationSpeechEnabled = computed(() => automaticSpeech.value && isLocalVoiceSimulation(props.automationRuntime))
+const simulationSpeechRuntime = computed(() => automaticSpeech.value
+  && props.runtimeContext?.runtimeRef === props.automationRuntime?.runtimeRef
+  && props.runtimeContext?.runtimeGeneration === props.automationRuntime?.runtimeGeneration
+  && isLocalVoiceSimulation(props.automationRuntime) ? props.automationRuntime : null)
 const busy = computed(() => permissionPending.value || ['TRANSCRIBING', 'PARSING'].includes(stage.value))
 const blocked = computed(() => props.inputDisabled || accessDenied.value)
 const candidate = computed(() => result.value?.status === 'CANDIDATE' ? result.value : null)
@@ -139,7 +147,8 @@ const recordingSecondsLeft = computed(() => Math.ceil(evaluateSpeechRecording({ 
 const captureNote = computed(() => stage.value === 'RECORDING' ? `说完再次点击结束；停顿不会截断 · 剩余 ${recordingSecondsLeft.value} 秒`
   : stage.value === 'TRANSCRIBING' ? '请稍候，无需重复录音'
     : permissionPending.value ? '请在浏览器中允许使用麦克风'
-      : automaticSpeech.value ? '语音识别后自动执行，支持 2–4 步顺序指令' : '点击麦克风说话，核对文字后预览指令')
+      : simulationSpeechEnabled.value ? '本地仿真明确语音自动执行，支持返航、降落、停止；文字编辑后需确认'
+        : automaticSpeech.value ? '常规明确指令自动执行；返航、降落、停止需确认' : '点击麦克风说话，核对文字后预览指令')
 const examples = [
   { label: '开始任务 → 一号机悬停', text: '开始任务，然后让一号无人机悬停。' },
   { label: '二号艇驻留', text: '二号无人艇驻留。' },
@@ -250,6 +259,7 @@ function validDeviceTarget(target: string | undefined, command: string | undefin
 function safeSpeechCandidate(parsed: VoiceIntentCandidate, input: VoiceParseRequest) {
   if (adapter.mode !== 'BACKEND' || parsed.requestId !== input.requestId
     || normalizedSpeech(parsed.normalizedText) !== normalizedSpeech(input.text)
+    || hasNegatedVoiceAction(input.text) || hasNegatedVoiceAction(parsed.normalizedText)
     || /(不要|别|无需|不用|禁止|不想|不能|不必|取消|如果|是否|能否|可不可以|能不能|也许|或者|还是|吗|么|？|\?)/u.test(input.text)
     || !['local-rules', 'local-llm'].includes(parsed.provider)) return false
   if (parsed.action === 'DEVICE_COMMAND') {
@@ -270,29 +280,54 @@ function safeSpeechCandidate(parsed: VoiceIntentCandidate, input: VoiceParseRequ
     && (parsed.provider !== 'local-rules' || parsed.model === 'rules-v1')
     && (parsed.action !== 'STOP' || parsed.provider === 'local-rules')
 }
+function rejectNegatedInput(text: string, origin: 'speech' | 'manual') {
+  if (!hasNegatedVoiceAction(text)) return false
+  result.value = null
+  stage.value = 'NEEDS_CLARIFICATION'
+  speechFallbackAvailable.value = origin === 'speech'
+  message.value = '检测到否定表达，整条指令未下发。请重新明确要执行的动作；不会执行被否定的动作。'
+  return true
+}
 function handleParsed(parsed: VoiceParseResult, input: VoiceParseRequest, origin: 'speech' | 'manual') {
+  if (parsed.requestId !== input.requestId) {
+    result.value = null
+    stage.value = 'ERROR'
+    speechFallbackAvailable.value = origin === 'speech'
+    message.value = '解析响应与本次请求编号不一致，已阻止提交。请核对文字后重新预览。'
+    return
+  }
+  if (rejectNegatedInput(input.text, origin) || rejectNegatedInput(parsed.normalizedText, origin)) return
   emit('interpretation', { text: input.text, origin, result: parsed })
   result.value = parsed
   stage.value = parsed.status === 'NOT_ACTIONABLE' ? 'NEEDS_CLARIFICATION' : parsed.status
   if (parsed.status !== 'CANDIDATE') {
     speechFallbackAvailable.value = origin === 'speech'
-    message.value = parsed.message
+    const clauses = splitVoiceSequence(input.text).filter(Boolean)
+    message.value = parsed.reason === 'AMBIGUOUS_ACTION' && /2[–-]4/u.test(parsed.message) && clauses.length > 4
+      ? `本句识别为 ${clauses.length} 步，当前最多支持 4 步；整条指令未下发，本条指令中的动作均未执行。请拆分为多次输入，每次最多 4 步；等待前一条执行完成后再说下一条，每次都请写明设备编号。`
+      : parsed.message
     return
   }
-  if (origin === 'manual' && props.refined) {
+  if (origin === 'manual') {
     if (props.submissionDisabled || candidateDisabledReason.value) {
       message.value = candidateDisabledReason.value || '当前指令仍在处理，请稍后重新预览。'
     } else {
-      message.value = '请核对下方设备与动作，确认后执行。'
-      submitCandidate()
+      message.value = props.refined ? '请核对下方设备与动作，确认后执行。' : '请核对识别文字与动作，再生成待确认提案。'
+      if (props.refined) submitCandidate()
     }
     return
   }
-  const safeAutomaticCandidate = automaticSpeech.value && safeSpeechCandidate(parsed, input)
+  const safeAutomaticCandidate = origin === 'speech' && automaticSpeech.value && safeSpeechCandidate(parsed, input)
     && !blocked.value && !props.submissionDisabled && !candidateDisabledReason.value
     && draft.value === input.text && !emittedSpeechRequests.has(parsed.requestId)
   if (safeAutomaticCandidate) {
     emittedSpeechRequests.add(parsed.requestId)
+    if (requiresVoiceConfirmation(parsed, simulationSpeechRuntime.value)) {
+      speechFallbackAvailable.value = false
+      message.value = '包含高风险动作，尚未下发。请核对完整计划中的设备编号与动作后确认。'
+      submitCandidate()
+      return
+    }
     result.value = null
     automaticallySubmitted.value = true
     speechFallbackAvailable.value = false
@@ -300,7 +335,7 @@ function handleParsed(parsed: VoiceParseResult, input: VoiceParseRequest, origin
     message.value = parsed.action === 'DEVICE_COMMAND'
       ? repairedHold !== input.text
         ? `已按完整驻留口令纠错为“${normalizedSpeech(repairedHold)}”；正在校验并提交至 ${parsed.targetDeviceCode}。`
-        : '单设备指令已识别，正在校验目标和动作并自动提交至本地仿真。'
+        : `单设备指令已识别，正在校验并提交至 ${voiceDeviceLabel(parsed.targetDeviceCode)}。`
       : parsed.action === 'SEQUENCE' ? '顺序指令已识别，前一步完成后继续；第一步失败时不会下发第二步。'
         : '明确口令已识别，正在自动提交仿真动作并等待回执。'
     emit('voiceCandidate', parsed.intent, parsed.requestId, {
@@ -322,6 +357,10 @@ async function runRequest() {
   if (!pending.value || blocked.value || busy.value || coolingDown.value) return
   if (props.submissionDisabled && (pending.value.kind === 'audio' || pending.value.origin === 'speech')) return
   const current = pending.value
+  if (current.kind === 'text' && rejectNegatedInput(current.input.text, current.origin)) {
+    pending.value = null
+    return
+  }
   const ticket = epoch
   const active = new AbortController()
   controller = active
@@ -336,8 +375,8 @@ async function runRequest() {
     if (current.kind === 'audio') {
       const asrStartedAt = performance.now()
       const transcript = await adapter.transcribe({ ...current.input, signal: active.signal })
-      audioRequestElapsedMs += Math.round(performance.now() - asrStartedAt)
       if (ticket !== epoch || active.signal.aborted) return
+      audioRequestElapsedMs += Math.round(performance.now() - asrStartedAt)
       transcriptProvider.value = transcript.provider
       draft.value = transcript.text
       pending.value = null
@@ -362,6 +401,7 @@ async function runRequest() {
             ? '语音已识别，正在解析指令。'
             : '请核对识别文字后再解析。'
       if (automaticSpeech.value && !recordingWasCutOff && transcriptIsRealAsr && transcript.text.trim() && !props.submissionDisabled) {
+        if (rejectNegatedInput(transcript.text, 'speech')) return
         stage.value = 'PARSING'
         const parseInput: VoiceParseRequest = {
           requestId: crypto.randomUUID(),
@@ -375,8 +415,8 @@ async function runRequest() {
         pending.value = { kind: 'text', input: parseInput, origin: 'speech' }
         const parseStartedAt = performance.now()
         const parsed = await adapter.parse({ ...parseInput, signal: active.signal })
-        parseElapsedMs += Math.round(performance.now() - parseStartedAt)
         if (ticket !== epoch || active.signal.aborted) return
+        parseElapsedMs += Math.round(performance.now() - parseStartedAt)
         pending.value = null
         handleParsed(parsed, parseInput, 'speech')
         return
@@ -460,6 +500,8 @@ function preferredAudioType() {
 async function startRecording() {
   if (blocked.value || props.submissionDisabled || busy.value || coolingDown.value || pending.value || recorder) return
   emit('draftChange')
+  automaticallySubmitted.value = false
+  message.value = ''
   const ticket = epoch
   transcriptProvider.value = ''
   speechFallbackAvailable.value = false
@@ -548,6 +590,9 @@ function chooseAudioFile(event: Event) {
   const file = input.files?.[0]
   input.value = ''
   if (!file || blocked.value || props.submissionDisabled || busy.value || coolingDown.value || pending.value || stage.value === 'RECORDING') return
+  emit('draftChange')
+  automaticallySubmitted.value = false
+  result.value = null
   const extensionType = /\.wav$/i.test(file.name) ? 'audio/wav'
     : /\.mp3$/i.test(file.name) ? 'audio/mpeg'
       : /\.mp4$|\.m4a$/i.test(file.name) ? 'audio/mp4'
@@ -586,6 +631,7 @@ function chooseExample(text: string) {
 }
 function submitCandidate() {
   if (!candidate.value || props.submissionDisabled || candidateDisabledReason.value) return
+  if (rejectNegatedInput(draft.value, 'manual') || rejectNegatedInput(candidate.value.normalizedText, 'manual')) return
   if (adapter.mode === 'MOCK') emit('candidate', candidate.value.intent)
   else emit('candidate', candidate.value.intent, candidate.value.requestId)
   result.value = null
@@ -627,7 +673,7 @@ onBeforeUnmount(() => window.clearInterval(elapsedTimer))
       </section>
       <section class="refined-composer">
         <label class="refined-section-label">
-          <span>识别文字<small>{{ automaticSpeech ? '语音自动执行 · 编辑后手动确认' : '可编辑后再执行' }}</small></span>
+          <span>识别文字<small>{{ simulationSpeechEnabled ? '仿真语音自动执行 · 编辑后需确认' : automaticSpeech ? '常规语音自动执行 · 高风险与编辑后需确认' : '可编辑后再执行' }}</small></span>
           <div class="refined-transcript-box">
             <textarea v-model="draft" rows="3" placeholder="试着说：开始任务，然后让一号无人机悬停。"
               aria-label="识别文字" :disabled="busy || !!pending || blocked || stage === 'RECORDING'" />
@@ -640,8 +686,8 @@ onBeforeUnmount(() => window.clearInterval(elapsedTimer))
             :disabled="busy || !!pending || blocked || stage === 'RECORDING'" @click="chooseExample(example.text)">{{ example.label }}</button>
         </div>
       </section>
-      <p v-if="message && stage !== 'IDLE' && stage !== 'RECORDING'" class="refined-status" :class="{ 'refined-error': ['ERROR', 'UNSUPPORTED', 'NEEDS_CLARIFICATION'].includes(stage) }" role="status">
-        {{ message }}<span v-if="['TRANSCRIBING', 'PARSING'].includes(stage)"> · {{ stageElapsed }} 秒</span>
+      <p v-if="(reviewStatus || message) && stage !== 'IDLE' && stage !== 'RECORDING'" class="refined-status" :class="{ 'refined-error': ['ERROR', 'UNSUPPORTED', 'NEEDS_CLARIFICATION'].includes(stage) }" role="status">
+        {{ reviewStatus || message }}<span v-if="['TRANSCRIBING', 'PARSING'].includes(stage)"> · {{ stageElapsed }} 秒</span>
         <span v-if="coolingDown"> · {{ cooldownSeconds }} 秒后可重试</span>
       </p>
       <div v-if="(busy && pending) || (failed && pending) || speechFallbackAvailable" class="refined-recovery">

@@ -61,6 +61,81 @@ function displayed(wrapper: VueWrapper) {
 }
 
 describe('VirtualFleetConfigView authoritative mission completion display', () => {
+  it.each(['GB_SFLA_CS', 'ESCORT_GUARD'])('shows measured %s assembly progress and the clock even before mission progress starts', async algorithm => {
+    const { wrapper, setup } = await createView(algorithm)
+    setup.currentAlgorithmFrame = frame({
+      deploymentState: 'DEPLOYING', deploymentProgress: .56, deploymentTotalCount: 6,
+      deploymentReadyCount: 2, deployingDeviceCount: 4, missionProgress: 0,
+      simulationElapsedSeconds: 80,
+    })
+    await flushPromises()
+    expect(wrapper.get('.vf-live-strip').text()).toContain('集结进度 56%')
+    expect(wrapper.get('.vf-live-strip').text()).toContain('仿真时长 01:20')
+    expect(wrapper.get('.vf-return-notice').text()).toContain('已就位 2/6 台')
+    expect(wrapper.get('.vf-live-strip').text()).not.toContain('综合进度')
+    expect(wrapper.findAll('.vf-phase-stepper .active')).toHaveLength(0)
+
+    setup.currentAlgorithmFrame = frame({
+      deploymentState: 'COMPLETE', deploymentProgress: 1, missionStage: 'PURSUIT',
+      missionProgress: .12, simulationElapsedSeconds: 90,
+    })
+    await flushPromises()
+    expect(wrapper.get('.vf-live-strip').text()).toContain('综合进度 12%')
+    expect(wrapper.get('.vf-live-strip').text()).toContain('仿真时长 01:30')
+    expect(wrapper.get('.vf-live-strip').text()).not.toContain('集结进度')
+  })
+
+  it('does not count withdrawn devices as assembled or let elapsed wall time invent simulation progress', async () => {
+    const { wrapper, setup } = await createView()
+    setup.currentAlgorithmFrame = frame({
+      deploymentState: 'DEPLOYING', deploymentProgress: .4, deploymentTotalCount: 6,
+      deploymentReadyCount: 1, deploymentWithdrawnCount: 1, deployingDeviceCount: 4,
+      simulationElapsedSeconds: 30, missionProgress: 0,
+    })
+    setup.state.mission = 'PAUSED'
+    await flushPromises()
+    const before = wrapper.get('.vf-live-strip').text()
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(wrapper.get('.vf-live-strip').text()).toBe(before)
+    expect(before).toContain('集结进度 40%')
+    expect(before).toContain('已就位 1/6 台，1 台已返航退出集结')
+  })
+
+  it.each(['PARKED', 'DEPLOYING'])('shows %s departure before activating mission stages or exposing the inner stage', async deploymentState => {
+    const { wrapper, setup } = await createView()
+    setup.currentAlgorithmFrame = frame({
+      deploymentState, deployingDeviceCount: 6, missionStage: 'ESCAPE', missionProgress: 0,
+      stageSubjectThreatCode: 'THREAT-001',
+    })
+    await flushPromises()
+    const values = wrapper.get('.vf-live-strip').findAll('strong')
+    expect(values[0]!.text()).toBe(deploymentState === 'PARKED' ? '岸边待命' : '安全起飞 / 离泊')
+    expect(values[1]!.text()).toBe('0%')
+    expect(wrapper.findAll('.vf-phase-stepper .active')).toHaveLength(0)
+    expect(wrapper.get('.vf-return-notice').text()).toContain(deploymentState === 'PARKED' ? '原停机坪待命' : '6 台设备正在起飞')
+    setup.currentAlgorithmFrame = frame({ deploymentState: 'COMPLETE', missionStage: 'ESCAPE', missionProgress: .02 })
+    await flushPromises()
+    expect(displayed(wrapper).activeStep).toBe('目标逃逸')
+  })
+
+  it.each([0.42, 0.75])('does not claim progress is held at 99 percent during an earlier return (%s)', async progress => {
+    const { wrapper, setup } = await createView()
+    setup.currentAlgorithmFrame = frame({ missionStage: 'ENCIRCLEMENT', missionProgress: progress, returningDeviceCount: 1, completionBlocker: 'WAITING_FOR_RETURN' })
+    await flushPromises()
+    expect(displayed(wrapper).progress).toBe(`${Math.round(progress * 100)}%`)
+    expect(wrapper.get('.vf-return-notice').text()).toContain('进度以当前任务为准')
+    expect(wrapper.get('.vf-return-notice').text()).not.toContain('99%')
+  })
+
+  it('explains the real completion hold at 99 percent while waiting for return', async () => {
+    const { wrapper, setup } = await createView()
+    setup.currentAlgorithmFrame = frame({ returningDeviceCount: 1, completionBlocker: 'WAITING_FOR_RETURN' })
+    await flushPromises()
+    expect(displayed(wrapper).progress).toBe('99%')
+    expect(wrapper.get('.vf-return-notice').text()).toContain('尚未确认任务完成')
+    expect(wrapper.get('.vf-return-notice').text()).toContain('保持在 99%')
+  })
+
   beforeEach(() => {
     vi.useFakeTimers()
     vi.setSystemTime(new Date('2026-10-10T09:00:00.000Z'))

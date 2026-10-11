@@ -107,7 +107,8 @@ class EscortDefenseTests(unittest.TestCase):
                         a.step()
                         if a.threats[0].forced:
                             break
-                    self.assertEqual(3, sum(v.kind == "USV" and v.assigned_threat == 0 for v in a.vehicles))
+                    self.assertEqual(2, sum(v.kind == "USV" and v.assigned_threat == 0 for v in a.vehicles))
+                    self.assertEqual(1, sum(v.kind == "UAV" and v.role == "CLOSE_GUARD" for v in a.vehicles))
 
     def test_simultaneous_detection_is_required_before_allocating_cohort(self):
         a = AdaptiveEscortAdapter(1, {"uavCount": 30, "usvCount": 30})

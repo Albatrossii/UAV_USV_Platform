@@ -1,4 +1,5 @@
 import type { AlgorithmCoordinateFrame, EnuOrigin } from './virtualAlgorithmFrameAdapter'
+import type { GridScenarioPose } from './virtualFleetGridLayout'
 
 export interface ReturnParkingSlot {
   deviceCode: string
@@ -23,6 +24,27 @@ export interface ReturnInfrastructure {
     surfaceUpM: number
   }
   slots: ReturnParkingSlot[]
+}
+
+export const TARGET_SHORE_DISTANCE_RATIO = 2 / 3
+
+/** Move only target vessels toward the berth centre; retain height, identity and fleet parking. */
+export function moveTargetsTowardShore(
+  poses: GridScenarioPose[],
+  infrastructure: ReturnInfrastructure,
+  origin?: EnuOrigin,
+  ratio = TARGET_SHORE_DISTANCE_RATIO,
+): GridScenarioPose[] {
+  if (!Number.isFinite(ratio) || ratio <= 0 || ratio > 1) throw new Error('Invalid target shore distance ratio')
+  const berths = toGlobalReturnInfrastructure(infrastructure, origin).slots.filter(slot => slot.kind === 'BERTH')
+  if (!berths.length) throw new Error('Target placement requires verified shore berths')
+  const east = berths.reduce((sum, slot) => sum + slot.eastM, 0) / berths.length
+  const north = berths.reduce((sum, slot) => sum + slot.northM, 0) / berths.length
+  return poses.map(pose => pose.deviceType === 'TARGET' ? {
+    ...pose,
+    eastM: east + (pose.eastM - east) * ratio,
+    northM: north + (pose.northM - north) * ratio,
+  } : { ...pose })
 }
 
 /** Anchors reference the original Unity scene; this contract creates no geometry. */
@@ -128,4 +150,24 @@ export function toGlobalReturnInfrastructure(value: ReturnInfrastructure, origin
       approachUpM: slot.approachUpM + up,
     })),
   }
+}
+
+/** Use the same physical anchors for departure and return; never invent offshore slots. */
+export function placeFleetAtShore(
+  poses: GridScenarioPose[],
+  infrastructure: ReturnInfrastructure,
+  origin?: EnuOrigin,
+): GridScenarioPose[] {
+  const slots = new Map(toGlobalReturnInfrastructure(infrastructure, origin).slots.map(slot => [slot.deviceCode, slot]))
+  return poses.map(pose => {
+    if (pose.deviceType !== 'UAV' && pose.deviceType !== 'USV') return { ...pose }
+    const slot = slots.get(pose.deviceCode)
+    if (!slot || slot.kind !== (pose.deviceType === 'UAV' ? 'HELIPAD' : 'BERTH')) {
+      throw new Error(`${pose.deviceCode} 没有可用的原场景停机坪或岸边泊位，请减少设备数量。`)
+    }
+    return {
+      ...pose, eastM: slot.eastM, northM: slot.northM, upM: slot.upM,
+      headingDeg: slot.headingDeg, speedMps: 0, state: 'PARKED', valid: true,
+    }
+  })
 }

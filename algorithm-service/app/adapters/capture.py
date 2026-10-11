@@ -13,6 +13,7 @@ from typing import Dict, List, Tuple
 import numpy as np
 
 from app.adapters.base import AlgorithmAdapter
+from app.adapters.shore_target_layout import read_shore_target_layout
 from app.capture import (
     FormationSlot,
     assess_capture,
@@ -216,6 +217,11 @@ class CaptureAdapter(AlgorithmAdapter):
             "bounds": [-scene_extent, scene_extent, -scene_extent, scene_extent],
             "obstacles": list(TASK_CENTER_SCENE_MAP.get("obstacles", [])),
         })
+        if self._preserve_shore_target_spawn:
+            target = self._to_scene(self.env.targets[0, :3], "TARGET")
+            safe = self.safety.constrain(target, target, "TARGET", (), 0.0)
+            if not (math.isclose(target[0], safe.x, abs_tol=1e-7) and math.isclose(target[1], safe.y, abs_tol=1e-7)):
+                raise ValueError("shore target initial pose is outside navigable water")
         # Keep enough open water around the target for the complete outer
         # ring.  Previously the target used almost the entire rectangular
         # arena for its 80 m run, then stopped where a 30 m ring could no
@@ -1039,6 +1045,25 @@ class CaptureAdapter(AlgorithmAdapter):
             (math.hypot(item[0] - target_scene[0], item[1] - target_scene[1]) for item in scene_agents),
             default=minimum_spawn_distance,
         )
+        shore_layout = read_shore_target_layout(self.config)
+        self._preserve_shore_target_spawn = (
+            target_pose is not None and shore_layout is not None and shore_layout.ratio < 1.0
+        )
+        if self._preserve_shore_target_spawn:
+            # The UI has already placed this target at the requested shore
+            # distance. Preserve that physical point instead of pushing it
+            # away from the offshore assembly pattern a second time. Keep
+            # hull clearance and the unchanged 80m pursuit gate: proximity
+            # alone must not count as successful containment.
+            if not all(math.isfinite(value) for value in target_scene):
+                raise ValueError("shore target initial pose must be finite")
+            safety = SceneSafetyFilter(TASK_CENTER_SCENE_MAP)
+            for raw, agent in zip(self.env.agents, scene_agents):
+                kind = "UAV" if int(raw[6]) == 0 else "USV"
+                required = safety.required_separation(kind, "TARGET", agent[2], 0.0)
+                if math.dist(agent[:2], target_scene[:2]) < required:
+                    raise ValueError("shore target initial pose overlaps the assembly fleet")
+            return
         if nearest < minimum_spawn_distance:
             center_x = sum(item[0] for item in scene_agents) / max(1, len(scene_agents))
             center_y = sum(item[1] for item in scene_agents) / max(1, len(scene_agents))

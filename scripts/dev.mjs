@@ -1,6 +1,8 @@
 import { spawn, spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
+import { createDemoControl } from './demo-control.mjs'
+import { stopOwnedChildren } from './demo-processes.mjs'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const isWindows = process.platform === 'win32'
@@ -10,6 +12,7 @@ const healthUrl = `http://127.0.0.1:${resolvedBackendPort}/actuator/health`
 
 const processes = []
 let stopping = false
+let shutdownRequested = false
 
 function resolvePythonCommand() {
   const candidates = [
@@ -67,6 +70,8 @@ function resolvePythonCommand() {
 
 const pythonCommand = resolvePythonCommand()
 console.log(`Algorithm Python: ${pythonCommand}`)
+const demoControl = await createDemoControl(root, () => stopAll())
+console.log('Managed demo: scripts/demo.ps1 -Action Status / Stop. Ctrl+C also stops owned services.')
 
 const backend = spawn(
   path.join(root, 'backend', isWindows ? 'mvnw.cmd' : 'mvnw'),
@@ -74,6 +79,7 @@ const backend = spawn(
   {
     cwd: root,
     shell: isWindows,
+    windowsHide: true,
     stdio: 'inherit',
     env: {
       ...process.env,
@@ -85,10 +91,10 @@ processes.push(backend)
 
 async function waitForBackend(timeoutMs = 90_000) {
   const deadline = Date.now() + timeoutMs
-  while (!stopping && Date.now() < deadline) {
+  while (!shutdownRequested && Date.now() < deadline) {
     try {
       const response = await fetch(healthUrl, { signal: AbortSignal.timeout(1500) })
-      if (response.ok) return true
+      if (response.ok && (await response.json()).status === 'UP') return true
     } catch {
       // Spring Boot is still compiling or initializing its database pool.
     }
@@ -99,10 +105,12 @@ async function waitForBackend(timeoutMs = 90_000) {
 
 async function startFrontendWhenReady() {
   if (!await waitForBackend()) {
+    if (shutdownRequested) return
     console.error(`Backend did not become healthy within 90 seconds: ${healthUrl}`)
     stopAll(1)
     return
   }
+  if (shutdownRequested) return
   console.log(`Backend is healthy: ${healthUrl}`)
   const frontend = spawn(
     isWindows ? 'npm.cmd' : 'npm',
@@ -110,6 +118,7 @@ async function startFrontendWhenReady() {
     {
       cwd: root,
       shell: isWindows,
+      windowsHide: true,
       stdio: 'inherit',
       env: {
         ...process.env,
@@ -121,18 +130,33 @@ async function startFrontendWhenReady() {
   watchChild(frontend)
 }
 
-function stopAll(exitCode = 0) {
-  if (stopping) return
+async function stopAll(exitCode = 0) {
+  // A concurrent Ctrl+C/API attempt must not permanently consume the API's
+  // retry latch if the original cleanup later fails.
+  if (stopping) return false
   stopping = true
-  for (const child of processes) {
-    if (!child.killed) child.kill()
+  shutdownRequested = true
+  try {
+    stopOwnedChildren(processes)
+    console.log('Managed demo stopped. Database and unrelated services were not stopped.')
+  } catch (error) {
+    console.error(error.message)
+    for (const failure of error.errors ?? []) console.error(failure.message)
+    console.error('Shutdown incomplete. Launcher ownership is retained; run Stop again after resolving the failure.')
+    stopping = false
+    return false
+  }
+  try { await demoControl.close() } catch (error) {
+    console.error(`Stopped services, but ownership record cleanup failed: ${error.message}`)
+    exitCode = 1
   }
   setTimeout(() => process.exit(exitCode), 300)
 }
 
 function watchChild(child) {
+  child.on('error', error => { console.error(`Demo child failed to start: ${error.message}`); void stopAll(1) })
   child.on('exit', (code) => {
-    if (!stopping) stopAll(code ?? 1)
+    if (!shutdownRequested) void stopAll(code ?? 1)
   })
 }
 

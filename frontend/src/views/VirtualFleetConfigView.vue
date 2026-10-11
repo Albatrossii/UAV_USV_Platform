@@ -14,10 +14,9 @@ import {
 } from '@lucide/vue'
 
 import ConsoleLayout from '@/components/layout/ConsoleLayout.vue'
+import WebSocketQualityCard from '@/components/monitoring/WebSocketQualityCard.vue'
 import { ApiClientError } from '@/api/http'
 import VoiceP0ControlPanel from '@/components/voice/VoiceP0ControlPanel.vue'
-import ExperimentArchive from '@/components/voice/ExperimentArchive.vue'
-import { appendExperimentFrame, archiveError } from '@/services/experimentArchive'
 import {
   simulationRuntime,
   enqueueTacticalNotices,
@@ -32,6 +31,7 @@ import {
   prepareAlgorithmRun,
 } from '@/api/algorithm'
 import { useAuthStore } from '@/stores/auth'
+import { useUnityBridgeStore } from '@/stores/unityBridge'
 import { useVoiceControlStore } from '@/stores/voiceControl'
 import type { AlgorithmRuntimeFrame } from '@/types/mission'
 import type { UnityPresentationOutgoing, VoiceMockRuntimeHint, VoiceRuntimeState } from '@/types/voiceControl'
@@ -46,7 +46,7 @@ import {
 } from '@/utils/virtualFleetGridLayout'
 import { deriveAdaptiveScenarioPlan } from '@/utils/adaptiveScenarioPlan'
 import { createSingleDeviceCameraDirector } from '@/utils/singleDeviceCameraDirector'
-import { buildReturnInfrastructure, toGlobalReturnInfrastructure } from '@/utils/virtualReturnInfrastructure'
+import { buildReturnInfrastructure, moveTargetsTowardShore, placeFleetAtShore, TARGET_SHORE_DISTANCE_RATIO, toGlobalReturnInfrastructure } from '@/utils/virtualReturnInfrastructure'
 
 type UnityMessage = {
   type: string
@@ -138,14 +138,33 @@ let recoveryTimer: number | undefined
 let recoveryPoseSequence: number | null = null
 let restoredCamera = { mode: 'overview', deviceCode: '' }
 const unityReady = ref(false)
+const unityBridge = useUnityBridgeStore()
+// The iframe outlives this view. Rehydrate readiness from its validated channel
+// instead of requiring a second one-shot unityReady event after a view remount.
+// This only updates availability: never replay initialization or mission actions.
+watch(
+  () => unityBridge.channels.VIRTUAL_FLEET.connected
+    && unityBridge.channels.VIRTUAL_FLEET.platformReady,
+  ready => { unityReady.value = ready },
+  { immediate: true },
+)
 const selectedDevice = ref(restoredRuntime?.selectedDevice ?? '')
 const cameraMode = ref(restoredRuntime?.cameraMode ?? 'overview')
 const cameraViewActive = ref(true)
 const commandFocusActive = ref(false)
 const automaticCameraRequests = new Set<string>()
+const issuedCameraRequests = new Set<string>()
+const cameraFeedback = ref('')
+let latestCameraRequestId = ''
+let cameraInteractionRevision = 0
+let initialCameraTimer: number | undefined
+let confirmedCamera = { mode: cameraMode.value, deviceCode: selectedDevice.value }
 const scenarioReadyRunId = ref<number | null>(null)
 const scenarioLoading = ref(false)
 const algorithmPrepared = ref(restoredRuntime !== null)
+// A local preview ID is not evidence that the backend registered a runtime.
+// Retain known identity after stop/completion so its receipt remains inspectable.
+const registeredVoiceRunId = ref<number | null>(restoredRuntime?.state.runId ?? null)
 const algorithmPrepareError = ref('')
 const algorithmPreparing = ref(false)
 const missionActionMessage = ref('')
@@ -191,8 +210,16 @@ const configuredTargetCount = computed(() => (
 const stageCompositionLabel = computed(() => isCaptureAlgorithm.value
   ? `${state.uavCount} UAV · ${state.usvCount} USV · ${scenarioPlan.value.threatCount} 敌船`
   : `${state.uavCount} UAV · ${state.usvCount} USV · ${scenarioPlan.value.protectedCount} 护航目标 · ${scenarioPlan.value.threatCount} 敌船`)
+const departurePhase = computed(() => {
+  const deployment = String(currentAlgorithmFrame.value?.metrics?.deploymentState ?? '')
+  if (deployment === 'PARKED' || deployment === 'DEPLOYING') return deployment
+  if (!currentAlgorithmFrame.value && state.sequence === 0
+    && initialScenarioPoses.value.some(pose => pose.state === 'PARKED')) return 'PARKED'
+  return ''
+})
 const algorithmMissionPhase = computed(() => String(
-  currentAlgorithmFrame.value?.metrics?.missionStage
+  departurePhase.value
+  || currentAlgorithmFrame.value?.metrics?.missionStage
   || currentAlgorithmFrame.value?.phase
   || (state.mission === 'RUNNING' ? 'TRANSIT' : 'READY'),
 ).toUpperCase())
@@ -221,6 +248,7 @@ const stageSubjectThreatCode = computed(() => String(
   missionMetrics.value.stageSubjectThreatCode ?? '',
 ))
 const missionStageLabels: Record<string, string> = {
+  PARKED: '岸边待命', DEPLOYING: '安全起飞 / 离泊',
   PREVIEW: '预演', READY: '就绪', GUARDING: '编队护航', ESCORTING: '编队护航',
   THREAT_DETECTION: '意图识别', GUARD_RECONFIGURATION: '分向守卫', INTERCEPT: '加速拦截', BLOCKING: '阻断攻击',
   ESCAPE: '目标逃逸', PURSUIT: '协同追击', ENCIRCLEMENT: '动态围捕',
@@ -229,6 +257,7 @@ const missionStageLabels: Record<string, string> = {
 }
 const missionPhaseLabel = computed(() => {
   const label = missionStageLabels[missionPhase.value] ?? missionPhase.value
+  if (departurePhase.value) return label
   if (missionCompletionPendingReason.value) return `${label} · ${missionCompletionPendingReason.value}`
   return stageSubjectThreatCode.value && missionPhase.value !== 'COMPLETED'
     ? `${label} · ${stageSubjectThreatCode.value}`
@@ -243,6 +272,15 @@ const displayMissionProgress = computed(() => {
   // pose frame. Treat it as authoritative: the preceding metrics frame can
   // legitimately still contain the non-terminal 0.99 sentinel.
   return missionCompletionCommitted.value ? 100 : Math.round(Math.min(raw, 0.99) * 100)
+})
+// Departure is real motion, but not yet escort/capture mission progress. Show
+// the wrapper's measured route progress instead of a misleading frozen 0%.
+const showingDeploymentProgress = computed(() => Boolean(departurePhase.value) && !missionCompletionCommitted.value)
+const liveProgressLabel = computed(() => showingDeploymentProgress.value ? '集结进度' : '综合进度')
+const displayLiveProgress = computed(() => {
+  if (!showingDeploymentProgress.value) return displayMissionProgress.value
+  const progress = Number(missionMetrics.value.deploymentProgress ?? 0)
+  return Number.isFinite(progress) ? Math.round(Math.max(0, Math.min(.99, progress)) * 100) : 0
 })
 const postMissionFormationReadyCount = computed(() => Number(
   missionMetrics.value.postMissionFormationReadyCount ?? 0,
@@ -296,6 +334,22 @@ function handleWorkbenchTransitionCancel(event: TransitionEvent) {
 }
 const singleDeviceRuntimeNotice = computed(() => {
   if (!isSingleDeviceAlgorithm.value) return ''
+  if (departurePhase.value === 'PARKED') return '无人机在原停机坪待命，无人艇在岸边泊位待命；开始任务后起飞、离泊并前往任务区域。'
+  if (departurePhase.value === 'DEPLOYING') {
+    const remaining = Number(missionMetrics.value.deployingDeviceCount ?? 0)
+    const total = Number(missionMetrics.value.deploymentTotalCount ?? 0)
+    const ready = Number(missionMetrics.value.deploymentReadyCount ?? 0)
+    const withdrawn = Number(missionMetrics.value.deploymentWithdrawnCount ?? 0)
+    const summary = total > 0 ? `已就位 ${ready}/${total} 台${withdrawn > 0 ? `，${withdrawn} 台已返航退出集结` : ''}；` : ''
+    const safeRelease = String(missionMetrics.value.deploymentMode ?? '') === 'SAFE_RELEASE'
+    return summary + (remaining > 0
+      ? safeRelease
+        ? `${remaining} 台设备正在完成安全起飞或离泊；抵达近岸释放点后立即开始任务。`
+        : `${remaining} 台设备正在起飞、离泊或前往集结点；集结完成后推进任务。`
+      : safeRelease
+        ? '设备正在完成安全离岸，随后立即进入任务阶段。'
+        : '设备正在完成出发集结，随后进入任务阶段。')
+  }
   const blocker = String(missionMetrics.value.completionBlocker ?? '')
   if (blocker === 'INSUFFICIENT_ACTIVE_FORCE') {
     const deficit = Math.max(1, Number(missionMetrics.value.activeMissionDeviceDeficit ?? 1))
@@ -309,7 +363,9 @@ const singleDeviceRuntimeNotice = computed(() => {
   const returning = Number(missionMetrics.value.returningDeviceCount ?? 0)
   const returned = Number(missionMetrics.value.returnedDeviceCount ?? 0)
   if (returning > 0) {
-    return `等待 ${returning} 台设备抵达返航点；任务完成度暂时保持在 99%。`
+    return displayMissionProgress.value === 99
+      ? `等待 ${returning} 台设备抵达返航点；尚未确认任务完成，进度暂时保持在 99%。`
+      : `等待 ${returning} 台设备抵达返航点；返航尚未完成，进度以当前任务为准。`
   }
   if (returned > 0) {
     return `${returned} 台设备已返航并退出任务编组，不再阻塞任务成功。`
@@ -325,6 +381,7 @@ const phaseSteps = computed(() => isEscortAlgorithm.value
 const activePhaseIndex = computed(() => {
   const phase = missionPhase.value
   if (missionCompletionCommitted.value) return phaseSteps.value.length - 1
+  if (departurePhase.value) return -1
   if (isEscortAlgorithm.value) {
     if (phase === 'SAFE_GATE_TRANSIT' || phase === 'STABLE_CONTAINMENT') return 6
     if (phase === 'GAP_REPAIR' || phase === 'ENCIRCLEMENT') return 5
@@ -454,7 +511,7 @@ const voiceRuntimeHint = computed<VoiceMockRuntimeHint>(() => {
     .map(pose => pose.deviceCode)
     .filter((code): code is string => Boolean(code))
   return {
-    algorithmRunId: String(state.runId),
+    algorithmRunId: registeredVoiceRunId.value === state.runId ? String(state.runId) : '',
     state: stateMap[state.mission] ?? 'PREVIEW',
     sceneReady: unityReady.value && scenarioReadyRunId.value === state.runId,
     deviceCodes,
@@ -532,7 +589,6 @@ function send(type: string, payload: Record<string, unknown> = {}) {
   if (type === 'loadScenario') {
     presentationSceneRevision.value += 1
     savedScenario = JSON.parse(JSON.stringify(payload))
-    if (currentAlgorithmFrame.value?.runId === state.runId) recordExperimentFrame(currentAlgorithmFrame.value)
     // Recreating only the renderer must not erase its final authoritative
     // positions. In particular, a completed run no longer polls new frames.
     if (!recoveringScene.value || Number(latestPoseBatch?.runId) !== Number(payload.runId)) {
@@ -576,6 +632,9 @@ function finalizeTerminalMission(status: string, sequence: number) {
 }
 
 function onUnityLoading() {
+  clearTimeout(initialCameraTimer)
+  latestCameraRequestId = ''
+  cameraFeedback.value = ''
   if (commandFocusActive.value) cameraMode.value = 'overview'
   commandCameraDirector.cancel()
   unityReady.value = false
@@ -761,14 +820,6 @@ function onUnityMessage(message: UnityMessage) {
       + ` type=${String(message.payload?.requestedType ?? '-')}`,
     )
   }
-  if (message.type === 'platformBridgeReady') {
-    unityReady.value = message.payload?.ready === true
-      || (
-        message.payload?.controlsReady === true
-        && message.payload?.cameraReady === true
-        && message.payload?.algorithmReady === true
-      )
-  }
   if (message.type === 'scenarioReady' || message.type === 'scenarioLoaded') {
     const readyRunId = Number(message.payload?.runId ?? 0)
     const success = message.payload?.success === true
@@ -813,15 +864,27 @@ function onUnityMessage(message: UnityMessage) {
             && Number.isFinite(pose.headingDeg)
           ))
         : []
-      initialScenarioPoses.value = returnedPoses.length > 0
-        ? returnedPoses
-        : plannedScenarioPoses.value
+      try {
+        initialScenarioPoses.value = reconcileInitialScenePoses(returnedPoses)
+      } catch (error) {
+        scenarioReadyRunId.value = null
+        scenarioLoading.value = false
+        missionActionMessage.value = error instanceof Error ? error.message : String(error)
+        addLog(`shore scene readiness blocked: ${missionActionMessage.value}`)
+        return
+      }
       addLog(`scenario initial poses: ${initialScenarioPoses.value.length}`)
       // Frame the validated preview only after Unity has created every
       // scenario object. Sending overview while loadScenario is still in
       // flight can focus the bootstrap origin and produce an empty/default
       // view depending on machine timing.
-      window.setTimeout(() => setOverviewCamera(), 80)
+      const cameraRevision = cameraInteractionRevision
+      const cameraRunId = state.runId
+      clearTimeout(initialCameraTimer)
+      initialCameraTimer = window.setTimeout(() => {
+        if (cameraRevision === cameraInteractionRevision && cameraRunId === state.runId
+          && unityReady.value && !scenarioLoading.value && !recoveringScene.value) showOverviewCamera()
+      }, 80)
     }
     if (runIdMatches) scenarioLoading.value = false
     if (success && runIdMatches) void prepareExternalAlgorithm()
@@ -886,17 +949,52 @@ function onUnityMessage(message: UnityMessage) {
     )
   }
   if (message.type === 'cameraChanged') {
-    if (recoveringScene.value || message.payload?.success === false) return
+    if (recoveringScene.value) return
+    const requestId = message.requestId ?? ''
+    // A late acknowledgment for a previous automatic close-up must not make
+    // a newer manual global/follow choice appear to switch back.
+    if (issuedCameraRequests.has(requestId) && requestId !== latestCameraRequestId) return
+    if (!issuedCameraRequests.has(requestId)) latestCameraRequestId = ''
+    if (message.payload?.success === false) {
+      commandCameraDirector.cancel()
+      cameraMode.value = confirmedCamera.mode
+      selectedDevice.value = confirmedCamera.deviceCode
+      cameraFeedback.value = `视角切换失败：${String(message.payload.status ?? message.payload.message ?? '请重新选择设备后重试')}`
+      return
+    }
     const mode = String(message.payload?.mode ?? '').trim().toLowerCase()
     const deviceCode = String(message.payload?.deviceCode ?? '').trim()
     // User camera controls take precedence over the pending automatic return.
-    if (commandFocusActive.value && !automaticCameraRequests.has(message.requestId ?? '')) {
+    if (!automaticCameraRequests.has(requestId)) {
+      cameraInteractionRevision += 1
       commandCameraDirector.cancel()
     }
     if (mode) cameraMode.value = mode
     if (deviceCode) selectedDevice.value = deviceCode
+    confirmedCamera = { mode: cameraMode.value, deviceCode: selectedDevice.value }
+    cameraFeedback.value = ''
     addLog(`cameraChanged: ${deviceCode || '-'} / ${mode || '-'}`)
   }
+}
+
+function reconcileInitialScenePoses(returnedPoses: ScenarioInitialPose[]): ScenarioInitialPose[] {
+  if (returnedPoses.length === 0) return plannedScenarioPoses.value
+  if (savedScenario?.startFromShore !== true) return returnedPoses
+  const parked = plannedScenarioPoses.value.filter(pose => (
+    (pose.deviceType === 'UAV' || pose.deviceType === 'USV') && pose.state === 'PARKED'
+  ))
+  const plannedByCode = new Map(parked.map(pose => [pose.deviceCode, pose]))
+  for (const planned of parked) {
+    const reported = returnedPoses.find(pose => pose.deviceCode === planned.deviceCode)
+    if (!reported || reported.valid === false || reported.state === 'SAFETY_HOLD'
+      || Math.hypot(reported.eastM - planned.eastM, reported.northM - planned.northM) > 0.1) {
+      throw new Error(`${planned.deviceCode} 的岸边待命位置未通过场景校验，请重新生成场景；任务尚未启动。`)
+    }
+  }
+  // Unity reports the rendered model pivot (including landing-foot clearance)
+  // and model-facing yaw. Keep the validated contact anchor / ENU heading as
+  // the algorithm input; feeding the pivot back would lift UAVs off the pad.
+  return returnedPoses.map(pose => ({ ...(plannedByCode.get(pose.deviceCode) ?? pose) }))
 }
 
 function validateSpeed(value: number, max: number) {
@@ -909,6 +1007,10 @@ function validateFleetCount(value: number) {
 
 async function generateScenario() {
   if (sceneLocked.value || scenarioLoading.value) return
+  if (state.uavCount > 3 || state.usvCount > 3) {
+    missionActionMessage.value = '原场景提供 3 个停机坪和 3 个岸边泊位；岸边出发模式下，无人机和无人艇数量各不得超过 3 台。'
+    return
+  }
   commandCameraDirector.cancel()
   state.uavSpeed = validateSpeed(state.uavSpeed, 15)
   state.usvSpeed = validateSpeed(state.usvSpeed, 4)
@@ -936,7 +1038,7 @@ async function generateScenario() {
   clearTacticalNotices()
   previousAlgorithmPoses = new Map()
   currentAlgorithmFrame.value = null
-  plannedScenarioPoses.value = buildVirtualFleetGridLayout({
+  plannedScenarioPoses.value = moveTargetsTowardShore(placeFleetAtShore(buildVirtualFleetGridLayout({
     uavCount: state.uavCount,
     usvCount: state.usvCount,
     fleetOrigin: fleetOriginEnu,
@@ -944,7 +1046,7 @@ async function generateScenario() {
     usvSpeedMps: state.usvSpeed,
     captureMode: isCaptureAlgorithm.value,
     scenarioId: state.runId,
-  })
+  }), returnInfrastructure.value, fleetOriginEnu), returnInfrastructure.value, fleetOriginEnu)
   initialScenarioPoses.value = plannedScenarioPoses.value
   scenarioReadyRunId.value = null
   scenarioLoading.value = true
@@ -996,6 +1098,8 @@ async function generateScenario() {
   addLog(`loadScenario pending: runId=${state.runId}`)
   send('loadScenario', {
     runtimeMode: 'VIRTUAL_SIMULATION',
+    startFromShore: true,
+    targetShoreDistanceRatio: TARGET_SHORE_DISTANCE_RATIO,
     algorithmCode: state.algorithm,
     runId: state.runId,
     uavCount: state.uavCount,
@@ -1005,7 +1109,7 @@ async function generateScenario() {
     initialPosesCoordinateFrame: 'GLOBAL_ENU',
     initialPoses: plannedScenarioPoses.value,
     returnInfrastructure: toGlobalReturnInfrastructure(returnInfrastructure.value, fleetOriginEnu),
-    initialSpeedMps: isCaptureAlgorithm.value ? state.uavSpeed : state.usvSpeed,
+    initialSpeedMps: 0,
   })
 }
 
@@ -1021,6 +1125,8 @@ function buildAlgorithmPrepareConfig(initialPoses: ScenarioInitialPose[]) {
     worldHeight: scenarioPlan.value.worldHeight,
     adaptiveMultiTarget: isEscortAlgorithm.value,
     singleDeviceControlEnabled: isSingleDeviceAlgorithm.value,
+    startFromShore: true,
+    targetShoreDistanceRatio: TARGET_SHORE_DISTANCE_RATIO,
     uavSpeedMps: state.uavSpeed,
     usvSpeedMps: state.usvSpeed,
     coordinateFrame: 'FLEET_LOCAL_ENU',
@@ -1055,6 +1161,7 @@ function prepareExternalAlgorithm(
       )
       if (state.runId !== prepareRunId) return false
       algorithmPrepared.value = true
+      registeredVoiceRunId.value = prepareRunId
       // PREVIEW keeps producing frames after prepare. Start at zero so the
       // first poll applies the authoritative ambient positions instead of
       // skipping directly to the latest sequence number reported by status.
@@ -1223,6 +1330,7 @@ async function resetMission() {
   previousAlgorithmPoses = new Map()
   currentAlgorithmFrame.value = null
   plannedScenarioPoses.value = []
+  registeredVoiceRunId.value = null
   initialScenarioPoses.value = []
   scenarioReadyRunId.value = null
   selectedDevice.value = ''
@@ -1243,7 +1351,6 @@ async function applyAlgorithmFrame(
   )
   previousAlgorithmPoses = adapted.nextState
   currentAlgorithmFrame.value = frame
-  recordExperimentFrame(frame)
   consumeTacticalEvents(frame)
   state.sequence = frame.sequence
   const trackedPose = adapted.payload.vehicles.find((pose) => pose.deviceCode === 'UAV-001')
@@ -1326,13 +1433,6 @@ async function synchronizeInitialAlgorithmFrame(): Promise<boolean> {
   }
 }
 
-function recordExperimentFrame(frame: AlgorithmRuntimeFrame) {
-  appendExperimentFrame(authStore.user?.username ?? '', frame, {
-    algorithm: state.algorithm, uavCount: state.uavCount, usvCount: state.usvCount,
-    uavSpeed: state.uavSpeed, usvSpeed: state.usvSpeed, scenario: savedScenario,
-  })
-}
-
 async function pollAlgorithmFrame() {
   if (
     algorithmPollInFlight
@@ -1387,44 +1487,80 @@ function stopAlgorithmPolling() {
   }
 }
 
-function sendAutomaticCamera(type: 'selectDevice' | 'setCameraMode', payload: Record<string, unknown>) {
-  const requestId = send(type, payload)
-  if (requestId) {
+const cameraDeviceCodes = computed(() => [...new Set(
+  (initialScenarioPoses.value.length ? initialScenarioPoses.value : plannedScenarioPoses.value)
+    .filter(pose => pose.valid !== false && /^(UAV|USV)-\d+$/i.test(pose.deviceCode))
+    .map(pose => pose.deviceCode),
+)])
+const cameraTargetDevice = computed(() => cameraDeviceCodes.value.includes(selectedDevice.value)
+  ? selectedDevice.value : cameraDeviceCodes.value[0] ?? '')
+const cameraControlsReady = computed(() => unityReady.value && !scenarioLoading.value
+  && !recoveringScene.value && scenarioReadyRunId.value === state.runId)
+const cameraStatus = computed(() => {
+  if (cameraFeedback.value) return cameraFeedback.value
+  if (!unityReady.value) return '等待画面连接'
+  if (!cameraControlsReady.value) return '等待场景就绪'
+  if (cameraMode.value === 'device-follow') return commandFocusActive.value
+    ? `指令定位 ${selectedDevice.value} · 2.5 秒后回全局`
+    : `持续跟随 ${selectedDevice.value}`
+  return cameraDeviceCodes.value.length ? '全局视角' : '全局视角 · 暂无可跟随设备'
+})
+
+function requestCamera(mode: 'overview' | 'device-follow', deviceCode = '', automatic = false) {
+  const requestId = mode === 'overview'
+    ? send('setCameraMode', { mode })
+    : send('selectDevice', { deviceCode })
+  if (!requestId) {
+    cameraFeedback.value = '视角切换未发送，请等待画面连接后重试'
+    return
+  }
+  cameraInteractionRevision += 1
+  latestCameraRequestId = requestId
+  issuedCameraRequests.add(requestId)
+  if (issuedCameraRequests.size > 128) issuedCameraRequests.delete(issuedCameraRequests.values().next().value!)
+  if (automatic) {
     automaticCameraRequests.add(requestId)
     if (automaticCameraRequests.size > 64) {
       automaticCameraRequests.delete(automaticCameraRequests.values().next().value!)
     }
   }
+  cameraFeedback.value = ''
+  cameraMode.value = mode
+  if (deviceCode) selectedDevice.value = deviceCode
 }
 
 function showOverviewCamera() {
-  cameraMode.value = 'overview'
-  sendAutomaticCamera('setCameraMode', { mode: 'overview' })
+  requestCamera('overview', '', true)
 }
 
 const commandCameraDirector = createSingleDeviceCameraDirector({
   focusDurationMs: 2500,
   onFocusChange: active => { commandFocusActive.value = active },
   focus: deviceCode => {
-    selectedDevice.value = deviceCode
-    cameraMode.value = 'device-follow'
     // The deployed Unity bridge selects AND follows here; SetCameraMode does
     // not accept a target. Trajectories remain disabled by the Unity build.
-    sendAutomaticCamera('selectDevice', { deviceCode })
+    requestCamera('device-follow', deviceCode, true)
   },
   overview: showOverviewCamera,
 })
 
 function setOverviewCamera() {
+  if (!cameraControlsReady.value) return
   commandCameraDirector.cancel()
-  showOverviewCamera()
+  requestCamera('overview')
 }
 
 function followSelectedDevice() {
-  if (!selectedDevice.value) return
+  if (!cameraControlsReady.value || !cameraTargetDevice.value) return
   commandCameraDirector.cancel()
-  cameraMode.value = 'device-follow'
-  send('selectDevice', { deviceCode: selectedDevice.value })
+  requestCamera('device-follow', cameraTargetDevice.value)
+}
+
+function chooseCameraDevice(event: Event) {
+  const deviceCode = (event.target as HTMLSelectElement).value
+  if (!cameraControlsReady.value || !cameraDeviceCodes.value.includes(deviceCode)) return
+  selectedDevice.value = deviceCode
+  followSelectedDevice()
 }
 
 watch(() => ({
@@ -1450,7 +1586,8 @@ onDeactivated(() => {
 })
 
 // Registration lasts as long as the cached business view, not its activation.
-simulationRuntime.events = { ready: onUnityReady, loading: onUnityLoading, message: onUnityMessage, error: onUnityError }
+const runtimeEvents = { ready: onUnityReady, loading: onUnityLoading, message: onUnityMessage, error: onUnityError }
+simulationRuntime.events = runtimeEvents
 simulationRuntime.requested.value = true
 watch(webglExpanded, () => window.dispatchEvent(new CustomEvent('unity-runtime-track')))
 let lastVoiceVisualStateVersion = -1
@@ -1470,7 +1607,7 @@ watch(
       pauseMissionClock()
       stopAlgorithmPolling()
       frameFailures.value = 0
-      frameConnectionError.value = '算法运行进程已结束，已保留最后画面与实验记录。请点击“生成场景”创建新运行；未自动恢复或重发指令。'
+      frameConnectionError.value = '算法运行进程已结束，已保留最后画面。请点击“生成场景”创建新运行；未自动恢复或重发指令。'
       send('missionStop', { runtimeMode: 'VIRTUAL_SIMULATION', runId: state.runId })
       addLog(`voice runtime synchronized: LOST stateVersion=${stateVersion}; last picture preserved`)
     } else if (runtimeState === 'RUNNING') {
@@ -1507,11 +1644,15 @@ onBeforeUnmount(() => {
   window.removeEventListener('pagehide', persistRuntimeRecovery)
   persistRuntimeRecovery()
   commandCameraDirector.dispose()
+  clearTimeout(initialCameraTimer)
   clearTimeout(recoveryTimer)
-  clearTacticalNotices()
-  simulationRuntime.events = null
-  simulationRuntime.requested.value = false
-  recoveringScene.value = false
+  // A replaced view must not detach a newer owner's persistent renderer.
+  if (simulationRuntime.events === runtimeEvents) {
+    clearTacticalNotices()
+    simulationRuntime.events = null
+    simulationRuntime.requested.value = false
+    recoveringScene.value = false
+  }
   stopAlgorithmPolling()
   pauseMissionClock()
 })
@@ -1539,10 +1680,9 @@ onBeforeUnmount(() => {
           <i></i>
           独立仿真 WebGL · {{ unityReady ? 'ONLINE' : 'CONNECTING' }}
         </div>
-        <ExperimentArchive :owner="authStore.user?.username ?? ''" />
       </header>
-      <p v-if="frameConnectionError || archiveError" class="vf-recovery-notice" role="status">
-        {{ frameConnectionError || archiveError }}
+      <p v-if="frameConnectionError" class="vf-recovery-notice" role="status">
+        {{ frameConnectionError }}
         <button v-if="frameConnectionError && frameFailures > 0" type="button" @click="nextFramePollAt = 0; pollAlgorithmFrame()">立即查询</button>
       </p>
 
@@ -1587,13 +1727,14 @@ onBeforeUnmount(() => {
               <span>{{ state.uavCount }} UAV · {{ state.usvCount }} USV · 世界 {{ scenarioPlan.worldWidth }}×{{ scenarioPlan.worldHeight }} m</span>
               <small v-if="isEscortAlgorithm">规划预览 · 同时来袭 {{ scenarioPlan.simultaneousThreats }} 艘 · {{ scenarioPlan.realtimeTier === 'PHASE_TWO_REALTIME' ? '实时仿真' : '容量模式' }}</small>
               <small v-else>规划预览 · 自动拆分协同围捕编组 · {{ scenarioPlan.realtimeTier === 'PHASE_TWO_REALTIME' ? '实时仿真' : '容量模式' }}</small>
+              <small>岸边出发 · 无人机从停机坪起飞 · 无人艇从泊位离港</small>
             </div>
             <div class="vf-two-col">
               <label>UAV 数量
-                <input v-model.number="state.uavCount" type="number" min="1" max="128" :disabled="sceneLocked">
+                <input v-model.number="state.uavCount" type="number" min="1" max="3" :disabled="sceneLocked">
               </label>
               <label>USV 数量
-                <input v-model.number="state.usvCount" type="number" min="1" max="128" :disabled="sceneLocked">
+                <input v-model.number="state.usvCount" type="number" min="1" max="3" :disabled="sceneLocked">
               </label>
               <label>UAV 巡航速度 m/s
                 <input v-model.number="state.uavSpeed" type="number" min="0" max="15" step="0.1" :disabled="sceneLocked">
@@ -1605,7 +1746,7 @@ onBeforeUnmount(() => {
               </label>
             </div>
             <p v-if="state.uavCount > 3 || state.usvCount > 3" class="vf-note" role="status">
-              保留原场景设计：固定返航支持 1–3 号无人机与无人艇。其余设备可继续执行其他控制指令。
+              原场景只有 3 个停机坪和 3 个岸边泊位，请将两类设备数量分别设为 1–3 台后生成场景。
             </p>
             <div class="vf-actions">
               <button class="vf-button primary" type="button" :disabled="sceneLocked || !unityReady || scenarioLoading" @click="generateScenario">
@@ -1617,6 +1758,7 @@ onBeforeUnmount(() => {
             </div>
             <p v-if="!speedValid" class="vf-error">速度超过协议上限，请修正后再开始任务。</p>
             <p v-if="missionActionMessage" class="vf-action-message">{{ missionActionMessage }}</p>
+            <WebSocketQualityCard />
           </section>
         </aside>
 
@@ -1637,10 +1779,14 @@ onBeforeUnmount(() => {
               </button>
             </div>
           </div>
+          <div class="vf-target-legend" aria-label="敌我目标标识">
+            <span v-if="isEscortAlgorithm" class="friendly"><i></i>我方护航船</span>
+            <span class="hostile"><i></i>{{ isCaptureAlgorithm ? '围捕目标' : '敌方威胁船' }}</span>
+          </div>
           <div class="vf-unity-stage" data-simulation-viewport></div>
           <div class="vf-live-strip">
             <span><i></i>阶段 <strong>{{ missionPhaseLabel }}</strong></span>
-            <span>综合进度 <strong>{{ displayMissionProgress }}%</strong></span>
+            <span :title="showingDeploymentProgress ? '按实际起飞、离泊和集结路径计算；不是围捕或护航任务完成率' : '当前护航或围捕任务进度'">{{ liveProgressLabel }} <strong>{{ displayLiveProgress }}%</strong></span>
             <span>可见目标 <strong>{{ visibleTargetCount }}</strong></span>
             <span v-if="isCaptureAlgorithm">行动距离 <strong>{{ Number(missionMetrics.targetTravelDistanceM ?? 0).toFixed(0) }} m</strong></span>
             <span v-else>已捕获 <strong>{{ Number(missionMetrics.capturedThreatCount ?? 0) }}/{{ scenarioPlan.threatCount }}</strong></span>
@@ -1673,12 +1819,17 @@ onBeforeUnmount(() => {
               </li>
             </ol>
             <div class="vf-camera-actions">
-              <button type="button" aria-label="跟随设备" title="手动持续跟随所选设备" :disabled="!selectedDevice || !unityReady" @click="followSelectedDevice">
+              <select aria-label="跟随目标" :value="cameraTargetDevice" :disabled="!cameraControlsReady || !cameraDeviceCodes.length" @change="chooseCameraDevice">
+                <option v-if="!cameraDeviceCodes.length" value="">暂无设备</option>
+                <option v-for="deviceCode in cameraDeviceCodes" :key="deviceCode" :value="deviceCode">{{ deviceCode }}</option>
+              </select>
+              <button type="button" aria-label="跟随设备" :title="cameraTargetDevice ? `持续跟随 ${cameraTargetDevice}` : '等待场景中的无人机或无人艇就绪'" :class="{ active: cameraMode === 'device-follow' }" :aria-pressed="cameraMode === 'device-follow'" :disabled="!cameraTargetDevice || !cameraControlsReady" @click="followSelectedDevice">
                 <Eye :size="15" /><span>跟随设备</span>
               </button>
-              <button type="button" aria-label="全局视角" title="全局观察无人机与无人艇" :class="{ active: cameraMode === 'overview' }" :disabled="!unityReady" @click="setOverviewCamera">
+              <button type="button" aria-label="全局视角" title="全局观察无人机与无人艇" :class="{ active: cameraMode === 'overview' }" :aria-pressed="cameraMode === 'overview'" :disabled="!cameraControlsReady" @click="setOverviewCamera">
                 <Globe2 :size="15" /><span>全局视角</span>
               </button>
+              <small class="vf-camera-status" :class="{ error: cameraFeedback }" role="status" aria-live="polite">{{ cameraStatus }}</small>
             </div>
           </div>
         </section>
@@ -1790,6 +1941,13 @@ onBeforeUnmount(() => {
 .vf-stage-panel.expanded { position: fixed; inset: 10px; z-index: 2100; display: flex; flex-direction: column; background: #031015; box-shadow: 0 0 0 100vmax rgba(0,0,0,.82); }
 .vf-stage-panel.expanded .vf-unity-stage { flex: 1; min-height: 0; }
 .vf-stage-panel.expanded .vf-unity-stage :deep(.unity-webgl-panel) { height: 100%; }
+.vf-target-legend { position: absolute; z-index: 12; top: 62px; left: 12px; display: flex; gap: 7px; padding: 6px 8px; color: #b9d5d2; pointer-events: none; background: rgba(3,16,21,.78); border: 1px solid rgba(108,228,213,.18); border-radius: 5px; backdrop-filter: blur(4px); }
+.vf-target-legend span { display: inline-flex; align-items: center; gap: 5px; font-size: 10px; font-weight: 700; }
+.vf-target-legend i { width: 8px; height: 8px; border: 1px solid currentColor; border-radius: 2px; }
+.vf-target-legend .friendly { color: #ffd45e; }
+.vf-target-legend .friendly i { background: #f05a35; box-shadow: inset 0 0 0 2px #ffd45e; }
+.vf-target-legend .hostile { color: #ff8b84; }
+.vf-target-legend .hostile i { background: #59666b; box-shadow: inset 0 0 0 1px #ff625b; }
 .vf-unity-stage { height: 100%; min-height: 0; flex: 1; overflow: hidden; background: #031015; }
 .vf-unity-stage :deep(.unity-webgl-panel) { width: 100%; height: 100%; min-height: 0; }
 .vf-live-strip { display: flex; min-height: 34px; padding: 0 13px; align-items: center; flex-wrap: wrap; gap: 8px 18px; color: #7ea7a5; background: #06191f; border-top: 1px solid rgba(108,228,213,.16); border-bottom: 1px solid rgba(108,228,213,.1); font-size: 10px; }
@@ -1797,13 +1955,17 @@ onBeforeUnmount(() => {
 .vf-live-strip strong { color: #eafffb; font-size: 11px; }
 .vf-command-bar { display: grid; min-height: 94px; padding: 9px 12px; align-items: center; gap: 8px 14px; background: #06151a; grid-template-columns: auto 1fr; grid-template-areas: 'commands cameras' 'steps steps'; }
 .vf-command-actions { grid-area: commands; }
-.vf-camera-actions { grid-area: cameras; justify-self: end; }
+.vf-camera-actions { grid-area: cameras; justify-self: end; flex-wrap: wrap; justify-content: flex-end; }
 .vf-phase-stepper { grid-area: steps; }
 .vf-command-actions, .vf-camera-actions { display: flex; align-items: center; gap: 7px; }
 .vf-command-actions .vf-button { margin: 0; }
 .vf-camera-actions button { display: inline-flex; min-height: 32px; padding: 0 9px; align-items: center; gap: 5px; color: #b8d8d4; cursor: pointer; background: #081e24; border: 1px solid rgba(108,228,213,.22); border-radius: 4px; font-size: 10px; }
 .vf-camera-actions button.active, .vf-camera-actions button:hover:not(:disabled) { color: #6ce4d5; border-color: rgba(108,228,213,.5); }
 .vf-camera-actions button:disabled { cursor: not-allowed; opacity: .38; }
+.vf-camera-actions select { min-width: 92px; min-height: 32px; padding: 0 5px; color: #b8d8d4; background: #081e24; border: 1px solid rgba(108,228,213,.22); border-radius: 4px; font-size: 10px; }
+.vf-camera-actions select:disabled { opacity: .38; }
+.vf-camera-status { flex-basis: 100%; color: #8fb4b2; font-size: 10px; text-align: right; overflow-wrap: anywhere; }
+.vf-camera-status.error { color: #ff8179; }
 .vf-phase-stepper { display: flex; min-width: 0; overflow-x: auto; margin: 0; padding: 0 2px; align-items: center; justify-content: center; list-style: none; }
 .vf-phase-stepper li { display: flex; min-width: 70px; align-items: center; gap: 6px; color: #617e7c; font-size: 10px; font-weight: 800; }
 .vf-phase-stepper li:not(:last-child)::after { height: 1px; min-width: 16px; margin: 0 6px; flex: 1; content: ''; background: #274044; }

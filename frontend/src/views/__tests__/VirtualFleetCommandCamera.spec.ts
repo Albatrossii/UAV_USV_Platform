@@ -187,6 +187,86 @@ describe('VirtualFleetConfigView single-device command camera', () => {
     expect(view.setup.selectedDevice).toBe('')
   })
 
+  it('offers a camera target during initial shore assembly and switches follow/global without a voice command', async () => {
+    const view = await createView()
+    const follow = view.wrapper.get('button[aria-label="跟随设备"]')
+    const overview = view.wrapper.get('button[aria-label="全局视角"]')
+    expect(view.setup.selectedDevice).toBe('')
+    expect(follow.attributes('disabled')).toBeUndefined()
+    expect((view.wrapper.get('select[aria-label="跟随目标"]').element as HTMLSelectElement).value).toBe('UAV-001')
+    await follow.trigger('click')
+    expect(cameraCalls(view)).toEqual([['selectDevice', { deviceCode: 'UAV-001' }]])
+    expect(follow.attributes('aria-pressed')).toBe('true')
+    expect(view.wrapper.get('.vf-camera-status').text()).toBe('持续跟随 UAV-001')
+    await overview.trigger('click')
+    expect(cameraCalls(view)[1]).toEqual(['setCameraMode', { mode: 'overview' }])
+    expect(follow.attributes('aria-pressed')).toBe('false')
+    expect(overview.attributes('aria-pressed')).toBe('true')
+    expect(view.store.proposal).toBeNull()
+    expect(view.store.execution).toBeNull()
+  })
+
+  it('switches the camera to the explicitly selected USV without issuing a device command', async () => {
+    const view = await createView()
+    await view.wrapper.get('select[aria-label="跟随目标"]').setValue('USV-001')
+    expect(view.postToUnity.mock.calls).toEqual([['selectDevice', { deviceCode: 'USV-001' }]])
+    expect(view.setup.selectedDevice).toBe('USV-001')
+    expect(view.wrapper.get('.vf-camera-status').text()).toBe('持续跟随 USV-001')
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(cameraCalls(view)).toHaveLength(1)
+  })
+
+  it('falls back from an unavailable selection to an available fleet device and excludes targets and invalid poses', async () => {
+    const view = await createView()
+    view.setup.selectedDevice = 'UAV-099'
+    view.setup.plannedScenarioPoses = [
+      { ...view.setup.plannedScenarioPoses[0]!, valid: false },
+      { ...view.setup.plannedScenarioPoses[0]!, deviceCode: 'TARGET-001' },
+      view.setup.plannedScenarioPoses[1]!,
+    ]
+    await nextTick()
+    expect(view.wrapper.findAll('select[aria-label="跟随目标"] option').map(option => option.text())).toEqual(['USV-001'])
+    await view.wrapper.get('button[aria-label="跟随设备"]').trigger('click')
+    expect(cameraCalls(view)).toEqual([['selectDevice', { deviceCode: 'USV-001' }]])
+  })
+
+  it('explains unavailable following and disables camera controls while the scene loads', async () => {
+    const view = await createView()
+    view.setup.plannedScenarioPoses = []
+    await nextTick()
+    expect(view.wrapper.get('button[aria-label="跟随设备"]').attributes('disabled')).toBeDefined()
+    expect(view.wrapper.get('.vf-camera-status').text()).toContain('暂无可跟随设备')
+    view.setup.scenarioLoading = true
+    await nextTick()
+    expect(view.wrapper.get('button[aria-label="全局视角"]').attributes('disabled')).toBeDefined()
+    expect(view.wrapper.get('.vf-camera-status').text()).toBe('等待场景就绪')
+  })
+
+  it('shows a rejected camera request and restores the last acknowledged camera mode', async () => {
+    const view = await createView()
+    await view.wrapper.get('button[aria-label="跟随设备"]').trigger('click')
+    simulationRuntime.events!.message({ type: 'cameraChanged',
+      requestId: view.postToUnity.mock.results[0]!.value,
+      payload: { success: false, mode: 'device-follow', status: 'Unity scene device not found: UAV-001' },
+    })
+    await nextTick()
+    expect(view.setup.cameraMode).toBe('overview')
+    expect(view.wrapper.get('.vf-camera-status').text()).toContain('视角切换失败')
+    expect(view.wrapper.get('button[aria-label="全局视角"]').attributes('aria-pressed')).toBe('true')
+  })
+
+  it('keeps a manual follow selection when the delayed initial scene overview fires', async () => {
+    const view = await createView()
+    view.setup.scenarioReadyRunId = null
+    view.setup.scenarioLoading = true
+    simulationRuntime.events!.message({ type: 'scenarioReady', payload: { runId, success: true } })
+    await nextTick()
+    await view.wrapper.get('button[aria-label="跟随设备"]').trigger('click')
+    await vi.advanceTimersByTimeAsync(100)
+    expect(cameraCalls(view)).toEqual([['selectDevice', { deviceCode: 'UAV-001' }]])
+    expect(view.setup.cameraMode).toBe('device-follow')
+  })
+
   it.each(['UAV-001', 'USV-001'])('briefly focuses dispatched %s then restores the global camera without trajectories', async target => {
     const view = await createView()
     await dispatch(view, target)
@@ -276,11 +356,15 @@ describe('VirtualFleetConfigView single-device command camera', () => {
   it('cancels the timer when the user changes the camera directly inside Unity', async () => {
     const view = await createView()
     await dispatch(view)
+    const automaticRequestId = view.postToUnity.mock.results[0]!.value
     simulationRuntime.events!.message({
       type: 'cameraChanged',
       payload: { mode: 'device-follow', deviceCode: 'USV-001', success: true },
     })
     await nextTick()
+    simulationRuntime.events!.message({ type: 'cameraChanged', requestId: automaticRequestId,
+      payload: { mode: 'device-follow', deviceCode: 'UAV-001', success: true },
+    })
     await vi.advanceTimersByTimeAsync(5000)
     expect(cameraCalls(view)).toEqual([['selectDevice', { deviceCode: 'UAV-001' }]])
     expect(view.setup.selectedDevice).toBe('USV-001')
@@ -293,6 +377,21 @@ describe('VirtualFleetConfigView single-device command camera', () => {
     await view.wrapper.get('button[aria-label="全局视角"]').trigger('click')
     expect(cameraCalls(view)).toHaveLength(2)
     expect(cameraCalls(view)[1]).toEqual(['setCameraMode', { mode: 'overview' }])
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(cameraCalls(view)).toHaveLength(2)
+  })
+
+  it('ignores a delayed automatic focus acknowledgment after manual global selection', async () => {
+    const view = await createView()
+    await dispatch(view)
+    const automaticRequestId = view.postToUnity.mock.results[0]!.value
+    await view.wrapper.get('button[aria-label="全局视角"]').trigger('click')
+    simulationRuntime.events!.message({ type: 'cameraChanged', requestId: automaticRequestId,
+      payload: { success: true, mode: 'device-follow', deviceCode: 'UAV-001' },
+    })
+    await nextTick()
+    expect(view.setup.cameraMode).toBe('overview')
+    expect(view.wrapper.get('.vf-camera-status').text()).toBe('全局视角')
     await vi.advanceTimersByTimeAsync(5000)
     expect(cameraCalls(view)).toHaveLength(2)
   })

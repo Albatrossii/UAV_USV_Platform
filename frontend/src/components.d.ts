@@ -53,6 +53,7 @@ declare module 'vue' {
     VehicleQuickControl: typeof import('./components/control/VehicleQuickControl.vue')['default']
     VoiceIntelligenceInput: typeof import('./components/voice/VoiceIntelligenceInput.vue')['default']
     VoiceP0ControlPanel: typeof import('./components/voice/VoiceP0ControlPanel.vue')['default']
+    WebSocketQualityCard: typeof import('./components/monitoring/WebSocketQualityCard.vue')['default']
   }
   export interface GlobalDirectives {
     vLoading: typeof import('element-plus/es')['ElLoadingDirective']
