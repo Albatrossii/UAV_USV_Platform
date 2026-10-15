@@ -8,7 +8,7 @@ import sys
 import tempfile
 import time
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Mapping, Sequence, Tuple
 
 import numpy as np
 
@@ -59,12 +59,9 @@ class CaptureAdapter(AlgorithmAdapter):
             # Such fleets remain valid intercept/tracking runs but can never
             # report a false encirclement success.
             self.required_capture_agents = fleet_size if fleet_size >= 3 else fleet_size + 1
-            # The adapter validates against the target's post-motion position.
-            # Disable the vendor core's pre-motion irreversible latch; when it
-            # fires during pursuit it repeatedly prints success and rebuilds
-            # stale guard state, which both obscures logs and hurts WebGL
-            # smoothness.
-            source.MIN_CAPTURE_AGENTS = fleet_size + 1
+            # Capture latching and GB partition capacity are different
+            # contracts. Disable only the former on the environment below.
+            source.MIN_CAPTURE_AGENTS = 3
             # The Task Center maps three native units to one scene metre.
             # Surface craft finish on a 22 m ring; UAVs finish on a 30 m
             # triangle at 26 m altitude.  The two layers remain readable in
@@ -188,7 +185,7 @@ class CaptureAdapter(AlgorithmAdapter):
             self._vendor_runtime_config = {
                 name: getattr(source, name)
                 for name in (
-                    "UAV_COUNT", "USV_COUNT", "TARGET_COUNT",
+                    "SEED", "UAV_COUNT", "USV_COUNT", "TARGET_COUNT",
                     "MIN_CAPTURE_AGENTS", "ARENA_SIZE_XY", "ARENA_SIZE_Z",
                     "CAPTURE_RADIUS", "CAPTURE_FORMATION_USV_RADIUS",
                     "CAPTURE_FORMATION_UAV_RADIUS",
@@ -202,6 +199,7 @@ class CaptureAdapter(AlgorithmAdapter):
             }
             self.source = source
             self.env = source.SwarmEnv3D()
+            self.env.capture_latch_enabled = False
             self._reset_positions()
             self._initial_frame_pending = True
         scene_extent = max(
@@ -273,6 +271,8 @@ class CaptureAdapter(AlgorithmAdapter):
         self.stalled_frames = 0
         self.last_capture_blocker = "PREVIEW_NOT_STARTED"
         self.preview_frame = 0
+        self.unavailable_codes: set[str] = set()
+        self.withdrawn_codes: set[str] = set()
         self._mission_start_pose_pending = False
         self._mission_has_started = False
         self.preview_centers: Dict[str, Tuple[float, float, float]] = {}
@@ -291,6 +291,72 @@ class CaptureAdapter(AlgorithmAdapter):
                        self._to_scene(raw[:3], "UAV" if int(raw[6]) == 0 else "USV")[1] - target[1])
             for raw in self.env.agents
         ]))
+
+    def reconcile_execution(
+        self,
+        agents: Sequence[AgentFrame],
+        previous_agents: Mapping[str, AgentFrame],
+        unavailable_codes: Sequence[str] = (),
+    ) -> None:
+        """Plan from the actual handoff/manual-control output, never a reset."""
+        by_code = {agent.code: agent for agent in agents}
+        changed = set(unavailable_codes) != self.unavailable_codes
+        self.unavailable_codes = set(unavailable_codes)
+        withdrawn = {agent.code for agent in agents if agent.status == "RETURNED"}
+        membership_changed = withdrawn != self.withdrawn_codes
+        self.withdrawn_codes = withdrawn
+        self.env.withdrawn_agent_ids = set()
+        ordinals = {"UAV": 0, "USV": 0}
+        for raw in self.env.agents:
+            kind = "UAV" if int(raw[6]) == 0 else "USV"
+            ordinals[kind] += 1
+            code = f"{kind}-{ordinals[kind]:03d}"
+            if code in self.withdrawn_codes:
+                self.env.withdrawn_agent_ids.add(int(raw[7]))
+            actual = by_code.get(code)
+            if actual is None:
+                continue
+            scene = (actual.x, actual.y, actual.z)
+            predicted = self._to_scene(raw[:3], kind)
+            changed = changed or math.dist(scene, predicted) > 0.25
+            raw[:3] = self._to_internal(scene, kind)
+            raw[4] = math.radians(actual.heading)
+            old = previous_agents.get(code)
+            if old is not actual:
+                raw[3] = 0.0 if old is None else math.hypot(actual.x-old.x, actual.y-old.y) * 3.0
+            self.previous_scene[code] = scene
+            self._stable_headings[code] = actual.heading
+        if membership_changed:
+            self.env.algorithm.formation_slot_assignment.clear()
+            self.env.algorithm.desired_slots.clear()
+            self.env.algorithm.last_assignments.clear()
+            if not self.external_containment_authority:
+                uavs = sum(int(row[6]) == 0 and int(row[7]) not in self.env.withdrawn_agent_ids for row in self.env.agents)
+                usvs = sum(int(row[6]) == 1 and int(row[7]) not in self.env.withdrawn_agent_ids for row in self.env.agents)
+                self.usv_slot_specs = build_formation_slots(usvs, kind="USV", phase=-math.pi/2,
+                    minimum_radius=22.0, minimum_spacing=13.8)
+                uav_radius = max(46.0, max((slot.radius for slot in self.usv_slot_specs), default=22.0)+24.0)
+                self.uav_slot_specs = build_formation_slots(uavs, kind="UAV", phase=-math.pi/2+math.pi/max(2,uavs),
+                    minimum_radius=uav_radius, minimum_spacing=8.4, altitude=26.0)
+                for kind, specs in (("UAV", self.uav_slot_specs), ("USV", self.usv_slot_specs)):
+                    self._vendor_runtime_config[f"CAPTURE_FORMATION_{kind}_SLOT_SPECS"] = [
+                        (slot.radius*3, slot.angle, (slot.altitude-9)*4.4 if kind == "UAV" else 0.0, slot.ring)
+                        for slot in specs]
+                self.outer_formation_radius = max((slot.radius for slot in self.uav_slot_specs+self.usv_slot_specs), default=46.0)
+        if changed or membership_changed:
+            self.env.algorithm.planning_step = 0
+        if changed or membership_changed:
+            self.containment_candidate_at_sequence = None
+            self.formation_ready_at_sequence = None
+            if self.captured_at_sequence is not None:
+                self.revoke_executed_containment()
+
+    def rejoin_target(self, device_code: str) -> Tuple[float, float, float] | None:
+        slot = self._planned_formation_slots().get(device_code)
+        if slot is None:
+            return None
+        target = self.previous_scene.get("TARGET", self._to_scene(self.env.targets[0, :3], "TARGET"))
+        return slot.point(target)
 
     def set_mission_active(self, active: bool) -> None:
         was_active = self.mission_active
@@ -351,7 +417,7 @@ class CaptureAdapter(AlgorithmAdapter):
         if not self.mission_active or self.captured_at_sequence is not None:
             return
         self.captured_at_sequence = self.sequence
-        guard_ids = {int(raw[7]) for raw in self.env.agents}
+        guard_ids = {int(raw[7]) for raw in self.env.agents} - set(getattr(self.env, "withdrawn_agent_ids", ()))
         self.env.guarding_agents[0] = guard_ids
         self.env.permanently_captured.add(0)
         self.target_behavior_state = "CAPTURED"
@@ -691,6 +757,34 @@ class CaptureAdapter(AlgorithmAdapter):
             slot.altitude,
         )
 
+    def _planned_formation_slots(self) -> Dict[str, FormationSlot]:
+        """Expose committed SFLA goals in scene coordinates, without replanning."""
+        algorithm = self.env.algorithm
+        origin = algorithm._target_reference_cache.get(0, self.env.targets[0, :3])
+        result: Dict[str, FormationSlot] = {}
+        ordinals = {"UAV": 0, "USV": 0}
+        for raw in self.env.agents:
+            kind = "UAV" if int(raw[6]) == 0 else "USV"
+            ordinals[kind] += 1
+            code = f"{kind}-{ordinals[kind]:03d}"
+            if code in self.withdrawn_codes:
+                continue
+            agent_id = int(raw[7])
+            point = algorithm.desired_slots.get(agent_id)
+            if point is None:
+                continue
+            record = algorithm.formation_slot_assignment.get((0, int(raw[6])), {})
+            index = record.get("slots", {}).get(agent_id, ordinals[kind] - 1)
+            specs = self.uav_slot_specs if kind == "UAV" else self.usv_slot_specs
+            delta = np.asarray(point) - np.asarray(origin)
+            result[code] = FormationSlot(
+                float(np.linalg.norm(delta[:2])) / 3.0,
+                math.atan2(float(delta[1]), float(delta[0])),
+                self._to_scene(np.asarray(point), kind)[2],
+                specs[min(int(index), len(specs)-1)].ring if specs else 0,
+            )
+        return result
+
     def _pursuit_proposal(
         self,
         current: Tuple[float, float, float],
@@ -698,6 +792,7 @@ class CaptureAdapter(AlgorithmAdapter):
         kind: str,
         ordinal: int,
         count: int,
+        planned_slot: FormationSlot | None = None,
     ) -> Tuple[float, float, float]:
         """Generate a visibly closing, bounded-lead interception step."""
         dx = target[0] - current[0]
@@ -741,8 +836,9 @@ class CaptureAdapter(AlgorithmAdapter):
         centered = ordinal - (max(1, count) - 1) * 0.5
         lane_spacing = 3.2 if kind == "USV" else 4.5
         lane_offset = centered * lane_spacing * min(1.0, distance / 45.0)
-        aim_x = target[0] + lead_x + normal_x * lane_offset
-        aim_y = target[1] + lead_y + normal_y * lane_offset
+        aim = target if planned_slot is None else planned_slot.point(target)
+        aim_x = aim[0] + lead_x + (normal_x * lane_offset if planned_slot is None else 0.0)
+        aim_y = aim[1] + lead_y + (normal_y * lane_offset if planned_slot is None else 0.0)
         aim_dx = aim_x - current[0]
         aim_dy = aim_y - current[1]
         aim_distance = math.hypot(aim_dx, aim_dy)
@@ -764,6 +860,7 @@ class CaptureAdapter(AlgorithmAdapter):
         scene_agents = [
             self._to_scene(raw[:3], "UAV" if int(raw[6]) == 0 else "USV")
             for raw in self.env.agents
+            if int(raw[7]) not in set(getattr(self.env, "withdrawn_agent_ids", ()))
         ]
         if scene_agents:
             nearest = min(
@@ -1130,6 +1227,7 @@ class CaptureAdapter(AlgorithmAdapter):
         if not initial_frame and not preview:
             with contextlib.redirect_stdout(sys.stderr):
                 self.env.step()
+        planned_slots = self._planned_formation_slots()
 
         target_scene = self.previous_scene.get(
             "TARGET",
@@ -1165,9 +1263,6 @@ class CaptureAdapter(AlgorithmAdapter):
             # latched below only after the executed, collision-safe positions
             # form a real closed annulus around the target.
             self.settling_started_at_sequence = self.sequence
-        if formation_settling and not self.presentation_slot_assignments:
-            self._align_capture_slots_to_open_water((safe_target.x, safe_target.y, safe_target.z))
-            self._assign_presentation_slots((safe_target.x, safe_target.y, safe_target.z))
         uav_no = usv_no = 0
         guided_pursuit = (
             not preview
@@ -1192,10 +1287,13 @@ class CaptureAdapter(AlgorithmAdapter):
                 proposed_scene = (east, north, up if kind == "UAV" else 0.0)
             elif preview and not initial_frame:
                 proposed_scene = self._preview_agent_proposal(code, kind, index)
+            elif code in self.unavailable_codes or code in self.withdrawn_codes:
+                proposed_scene = self.previous_scene.get(code, self._to_scene(raw[:3], kind))
             elif formation_settling:
                 specs = self.uav_slot_specs if kind == "UAV" else self.usv_slot_specs
-                slot_index = self.presentation_slot_assignments[code]
-                assigned_slot = specs[slot_index]
+                assigned_slot = planned_slots.get(code)
+                if assigned_slot is None:
+                    raise RuntimeError(f"capture planner omitted executed slot for {code}")
                 current_scene = self.previous_scene.get(code, self._to_scene(raw[:3], kind))
                 # Once the chase distance is complete, convergence is the
                 # mission objective.  The old sub-metre settle step could
@@ -1223,9 +1321,23 @@ class CaptureAdapter(AlgorithmAdapter):
                         len(self.uav_slot_specs)
                         if kind == "UAV" else len(self.usv_slot_specs)
                     ),
+                    planned_slots.get(code),
                 )
             else:
                 proposed_scene = self._to_scene(raw[:3], kind)
+            previous = self.previous_scene.get(code)
+            if previous is not None and not initial_snapshot:
+                # The planner's altitude is a goal too, not a teleport when
+                # pursuit switches to formation. Budget one 3-D physical step.
+                speed = (
+                    min(15.0, max(0.1, float(self.config.get("uavSpeedMps", 5.0))))
+                    if kind == "UAV" else
+                    min(4.0, max(self.usv_pursuit_mps, math.hypot(*self.target_velocity) + 0.65))
+                )
+                delta = tuple(proposed_scene[i] - previous[i] for i in range(3))
+                distance = math.sqrt(sum(value*value for value in delta))
+                ratio = min(1.0, speed*0.1/max(distance, 1e-9))
+                proposed_scene = tuple(previous[i]+delta[i]*ratio for i in range(3))
             proposals[code] = (kind, proposed_scene)
             rows[code] = (index, raw)
 
@@ -1245,12 +1357,12 @@ class CaptureAdapter(AlgorithmAdapter):
                 iterations=96 if formation_settling else 48,
                 max_steps={
                     "UAV": (
-                        min(1.0, max(0.08, float(self.config.get("uavSpeedMps", 5.0)) * 0.20))
+                        min(1.5, max(0.01, float(self.config.get("uavSpeedMps", 5.0)) * 0.10))
                         if formation_settling
                         else min(0.35, max(0.05, float(self.config.get("uavSpeedMps", 5.0)) * 0.1))
                     ),
                     "USV": (
-                        min(0.72, max(0.06, float(self.config.get("usvSpeedMps", 3.0)) * 0.28))
+                        min(0.4, max(self.usv_pursuit_mps, math.hypot(*self.target_velocity) + 0.65) * 0.1)
                         if formation_settling
                         else min(0.32, max(0.04, float(self.config.get("usvSpeedMps", 3.0)) * 0.18))
                     ),
@@ -1294,11 +1406,14 @@ class CaptureAdapter(AlgorithmAdapter):
                 *scene,
                 heading,
                 "PATROL" if preview else "INTERCEPTOR" if not pursuit_complete else "ENCIRCLEMENT",
+                "RETURNED" if code in self.withdrawn_codes else "UNAVAILABLE" if code in self.unavailable_codes else "ACTIVE",
             ))
+        emitted_agents = agents
+        agents = [agent for agent in emitted_agents if agent.code not in self.withdrawn_codes]
         mean_distance = float(np.mean([
             math.hypot(agent.x - safe_target.x, agent.y - safe_target.y)
             for agent in agents
-        ]))
+        ])) if agents else 0.0
         usv_radii = [
             math.hypot(agent.x - safe_target.x, agent.y - safe_target.y)
             for agent in agents
@@ -1339,8 +1454,10 @@ class CaptureAdapter(AlgorithmAdapter):
                 if agent_type == 1
                 else f"UAV-{agent_id - 999:03d}"
             )
+            if code in self.withdrawn_codes:
+                continue
             presentation_col = self.presentation_slot_assignments.get(code)
-            assigned = (
+            assigned = planned_slots.get(code) or (
                 specs[int(presentation_col)]
                 if presentation_col is not None and 0 <= int(presentation_col) < len(specs)
                 else specs[int(col)] if col is not None and 0 <= int(col) < len(specs)
@@ -1458,6 +1575,10 @@ class CaptureAdapter(AlgorithmAdapter):
             [(agent.x, agent.y, agent.z) for agent in agents],
             (safe_target.x, safe_target.y, safe_target.z),
             required_count=len(agents),
+            # ENU/native round trips can represent an exact 120-degree gap
+            # as 120.00000000000011. This is numerical roundoff only, not an
+            # angular safety margin (less than a nanodegree).
+            tolerance_deg=1e-9,
             device_types=[agent.type for agent in agents],
             minimum_type_counts={"UAV": 1, "USV": 1},
             minimum_radius_m=lower_radius,
@@ -1546,6 +1667,10 @@ class CaptureAdapter(AlgorithmAdapter):
         # never be promoted to completion.
         joint_safe_containment = (
             len(agents) >= 6
+            # A balanced 3+3 mission has two complete triangles. Its own
+            # domain-ring contract remains mandatory; the mixed/asymmetric
+            # fallback must not finish before those triangles are seated.
+            and not (len(usv_radii) == 3 and len(uav_radii) == 3)
             and pursuit_complete
             and assessment.target_inside
             and assessment.combined_max_gap_deg <= max_gap_limit_deg + 0.5
@@ -1568,8 +1693,8 @@ class CaptureAdapter(AlgorithmAdapter):
         )
         self.last_containment_confidence = containment_confidence
         coarse_containment = self.mission_active and pursuit_complete and annulus_ready
-        expected_usv_radius = sum(slot.radius for slot in self.usv_slot_specs) / max(1, len(self.usv_slot_specs))
-        expected_uav_radius = sum(slot.radius for slot in self.uav_slot_specs) / max(1, len(self.uav_slot_specs))
+        expected_usv_radius = sum(planned_slots.get(a.code, self.usv_slot_specs[0]).radius for a in agents if a.type == "USV") / max(1, len(usv_radii))
+        expected_uav_radius = sum(planned_slots.get(a.code, self.uav_slot_specs[0]).radius for a in agents if a.type == "UAV") / max(1, len(uav_radii))
         usv_mean_radius = sum(usv_radii) / max(1, len(usv_radii))
         uav_mean_radius = sum(uav_radii) / max(1, len(uav_radii))
         # Compact fleets are visually sensitive: three craft must reach their
@@ -1600,6 +1725,7 @@ class CaptureAdapter(AlgorithmAdapter):
             and annulus_ready
             and domain_formation_ready
             and containment_contract.ready
+            and not (self.unavailable_codes - self.withdrawn_codes)
         )
         if formation_ready and not self.external_containment_authority:
             if self.containment_candidate_at_sequence is None:
@@ -1631,7 +1757,7 @@ class CaptureAdapter(AlgorithmAdapter):
             and not self.external_containment_authority
         ):
             self.captured_at_sequence = self.sequence
-            guard_ids = {int(raw[7]) for raw in self.env.agents}
+            guard_ids = {int(raw[7]) for raw in self.env.agents} - set(getattr(self.env, "withdrawn_agent_ids", ()))
             self.env.guarding_agents[0] = guard_ids
             self.env.permanently_captured.add(0)
             self.target_behavior_state = "CAPTURED"
@@ -1752,7 +1878,9 @@ class CaptureAdapter(AlgorithmAdapter):
             self.replan_count += 1
             self.last_replan_sequence = self.sequence
             self.progress_best_sequence = self.sequence
-            self._rotate_capture_slots()
+            # Re-evaluate the optimiser from executed poses. A repair must not
+            # silently replace its selected geometry with a presentation ring.
+            self.env.algorithm.planning_step = 0
             self.presentation_slot_assignments.clear()
             self.containment_candidate_at_sequence = None
             self.formation_ready_at_sequence = None
@@ -1794,6 +1922,13 @@ class CaptureAdapter(AlgorithmAdapter):
             default=None,
         )
         metrics = {
+            "plannerSource": "GB_SFLA_CS",
+            "planRevision": self.env.algorithm.plan_revision,
+            "plannerDiagnostics": self.env.algorithm.last_plan_diagnostics,
+            "plannerGoals": {
+                code: {"radiusM": slot.radius, "angleRad": slot.angle, "altitudeM": slot.altitude}
+                for code, slot in planned_slots.items()
+            },
             "progress": round(self.display_progress, 3),
             "captured": captured,
             "formationReady": formation_held,
@@ -1885,12 +2020,14 @@ class CaptureAdapter(AlgorithmAdapter):
                 ),
                 3,
             ),
-            "captureRadius": round(max(slot.radius for slot in self.usv_slot_specs + self.uav_slot_specs), 2),
-            "usvFormationRadius": round(self.usv_formation_radius_scene, 2),
-            "uavFormationRadius": round(self.uav_slot_specs[0].radius, 2),
+            "captureRadius": round(max((slot.radius for slot in self.usv_slot_specs + self.uav_slot_specs), default=0.0), 2),
+            "usvFormationRadius": round(expected_usv_radius, 2),
+            "uavFormationRadius": round(expected_uav_radius, 2),
+            "baseUsvFormationRadius": round(self.usv_formation_radius_scene, 2),
+            "baseUavFormationRadius": round(self.uav_slot_specs[0].radius, 2) if self.uav_slot_specs else 0.0,
             "uavFormationAltitude": 26.0,
-            "usvFormationRings": 1 + max(slot.ring for slot in self.usv_slot_specs),
-            "uavFormationRings": 1 + max(slot.ring for slot in self.uav_slot_specs),
+            "usvFormationRings": 1 + max((slot.ring for slot in self.usv_slot_specs), default=-1),
+            "uavFormationRings": 1 + max((slot.ring for slot in self.uav_slot_specs), default=-1),
             "usvAngularErrorDeg": round(math.degrees(usv_angular_error), 2),
             "uavAngularErrorDeg": round(math.degrees(uav_angular_error), 2),
             "minimumUsvSpacing": round(
@@ -1900,7 +2037,7 @@ class CaptureAdapter(AlgorithmAdapter):
         }
         return RuntimeFrame(
             self.run_id, self.code, self.sequence, int(time.time() * 1000), phase,
-            agents,
+            emitted_agents,
             [
                 TargetFrame(
                     "TARGET-001",

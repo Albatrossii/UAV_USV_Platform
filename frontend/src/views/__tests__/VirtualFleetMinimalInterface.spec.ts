@@ -105,6 +105,12 @@ describe('VirtualFleetConfigView minimal simulation interface', () => {
     expect(wrapper.find('[aria-label="全局视角"]').exists()).toBe(true)
   })
 
+  it('preserves the original algorithm display names and protocol codes', async () => {
+    const { wrapper } = await createView()
+    expect(wrapper.get('option[value="ESCORT_GUARD"]').text()).toBe('智能粒球仿真护航')
+    expect(wrapper.get('option[value="GB_SFLA_CS"]').text()).toBe('GB-SFLA-CS 协同围捕')
+  })
+
   it('does not render experiment archive, replay, or archive errors', async () => {
     const { wrapper } = await createView()
     archiveError.value = 'archive-disabled-sentinel'
@@ -125,21 +131,20 @@ describe('VirtualFleetConfigView minimal simulation interface', () => {
     expect(wrapper.text()).not.toMatch(/通信链路|语义通讯|4G|5G|质量|待上报|96%|72%/)
   })
 
-  it('retains existing Unity connection badges and updates them on disconnect', async () => {
+  it('keeps one header connection status without a redundant badge over the scene', async () => {
     const { wrapper } = await createView()
     const bridge = useUnityBridgeStore()
     expect(wrapper.get('.vf-instance-status').text()).toContain('CONNECTING')
-    expect(wrapper.get('.vf-unity-state').text()).toBe('UNITY WEBGL LOADING')
+    expect(wrapper.find('.vf-unity-state').exists()).toBe(false)
     bridge.channels.VIRTUAL_FLEET.connected = true
     bridge.channels.VIRTUAL_FLEET.platformReady = true
     await flushPromises()
     expect(wrapper.get('.vf-instance-status').text()).toContain('ONLINE')
-    expect(wrapper.get('.vf-unity-state').classes()).toContain('online')
-    expect(wrapper.get('.vf-unity-state').text()).toBe('UNITY WEBGL ONLINE')
+    expect(wrapper.find('.vf-unity-state').exists()).toBe(false)
     bridge.channels.VIRTUAL_FLEET.connected = false
     await flushPromises()
     expect(wrapper.get('.vf-instance-status').classes()).toContain('offline')
-    expect(wrapper.get('.vf-unity-state').text()).toBe('UNITY WEBGL LOADING')
+    expect(wrapper.find('.vf-unity-state').exists()).toBe(false)
   })
 
   it('continues applying live and terminal algorithm frames without writing experiment records', async () => {

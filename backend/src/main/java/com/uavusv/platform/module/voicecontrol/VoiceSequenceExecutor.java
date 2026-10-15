@@ -77,6 +77,58 @@ public class VoiceSequenceExecutor {
             fail(parent, "FAILED", "SEQUENCE_STATE_INVALID");
             return;
         }
+        // Migrate an in-flight legacy sequence without replaying its child.
+        if (parent.has("_stepFrameAtDispatch")) {
+            parent.withObject("/_stepFramesAtDispatch").set(Integer.toString(index), parent.remove("_stepFrameAtDispatch"));
+        }
+        boolean completed = false;
+        for (int i = 0; i < parent.path("steps").size(); i++) {
+            ObjectNode step = (ObjectNode) parent.path("steps").path(i);
+            if ("SUCCEEDED".equals(step.path("state").asText())) continue;
+            if (!step.path("executionId").asText("").isEmpty() || step.hasNonNull("startedAt")) {
+                advanceStep(parent, context, i);
+                if (!"EXECUTING".equals(parent.path("state").asText())) return;
+                completed |= "SUCCEEDED".equals(step.path("state").asText());
+            }
+        }
+        // Reconcile every issued child before considering new work. A failed receipt
+        // must stop dispatch even when an earlier device is still travelling.
+        if (!completed) {
+            for (int i = 0; i < parent.path("steps").size(); i++) {
+                JsonNode step = parent.path("steps").path(i);
+                if (!"PENDING".equals(step.path("state").asText())) continue;
+                if (canDispatch(parent, i)) {
+                    advanceStep(parent, context, i);
+                    if (!"EXECUTING".equals(parent.path("state").asText())) return;
+                    break; // Keep receipt/command order; physical movement may overlap.
+                }
+            }
+        }
+        refresh(parent);
+    }
+
+    private boolean canDispatch(ObjectNode parent, int index) {
+        JsonNode next = parent.path("steps").path(index);
+        for (int i = 0; i < index; i++) {
+            JsonNode previous = parent.path("steps").path(i);
+            if ("SUCCEEDED".equals(previous.path("state").asText())) continue;
+            // WAIT and mission-wide controls are barriers. Commands for the same
+            // device cannot override a movement that has not physically finished.
+            if (next.path("waitForPrevious").asBoolean()
+                    || previous.path("waitForPrevious").asBoolean()
+                    || !"DEVICE_COMMAND".equals(next.path("action").asText())
+                    || !"DEVICE_COMMAND".equals(previous.path("action").asText())
+                    || next.path("targetDeviceCode").equals(previous.path("targetDeviceCode"))) return false;
+            // Different devices may overlap, but never race an unacknowledged write.
+            // A not-yet-dispatched conflicting step does not block another device.
+            if ("PENDING".equals(previous.path("state").asText())) continue;
+            ObjectNode child = store.get("voice_execution", previous.path("executionId").asText(""));
+            if (child == null || !"SUCCEEDED".equals(child.path("state").asText())) return false;
+        }
+        return true;
+    }
+
+    private void advanceStep(ObjectNode parent, ObjectNode context, int index) {
         ObjectNode step = (ObjectNode) parent.path("steps").path(index);
         JsonNode frozenStep = parent.path("_plan").path("steps").path(index);
         if ("WAIT".equals(frozenStep.path("action").asText())) {
@@ -95,7 +147,7 @@ public class VoiceSequenceExecutor {
                 store.save("voice_execution", parent);
                 return;
             }
-            completeStep(parent, step, index);
+            completeStep(parent, step);
             return;
         }
         String childId = step.path("executionId").asText("");
@@ -111,7 +163,7 @@ public class VoiceSequenceExecutor {
                     runtimes.checkDevice(context, target, commandType);
                 }
                 childId = commands.enqueueSequenceChild(parent, context, frozenStep);
-                parent.put("_stepFrameAtDispatch", context.path("latestFrameSequence").asLong());
+                parent.withObject("/_stepFramesAtDispatch").put(Integer.toString(index), context.path("latestFrameSequence").asLong());
                 step.put("executionId", childId)
                         .put("state", "QUEUED")
                         .put("startedAt", time.stamp());
@@ -151,27 +203,31 @@ public class VoiceSequenceExecutor {
         if ("DEVICE_COMMAND".equals(frozenStep.path("action").asText())
                 && Set.of("UAV_RETURN", "USV_RETURN", "UAV_RESUME", "USV_RESUME", "UAV_LAND")
                         .contains(frozenStep.path("deviceCommandType").asText())
-                && (context.path("latestFrameSequence").asLong() <= parent.path("_stepFrameAtDispatch").asLong()
+                && (context.path("latestFrameSequence").asLong() <= parent.path("_stepFramesAtDispatch").path(Integer.toString(index)).asLong()
                     || !VoiceSequencePolicy.deviceCompleted(context, frozenStep))) {
             step.put("state", "EXECUTING");
             parent.put("sequenceStatus", "WAITING_STEP_PRECONDITION");
             store.save("voice_execution", parent);
             return;
         }
-        completeStep(parent, step, index);
+        completeStep(parent, step);
     }
 
-    private void completeStep(ObjectNode parent, ObjectNode step, int index) {
-        parent.remove("_stepFrameAtDispatch");
-        parent.remove("_waitingRuntimeState");
+    private void completeStep(ObjectNode parent, ObjectNode step) {
+        if ("WAIT".equals(step.path("action").asText())) parent.remove("_waitingRuntimeState");
         step.put("completedAt", time.stamp());
         step.put("state", "SUCCEEDED").putNull("errorCode");
-        if (index + 1 < parent.path("steps").size()) {
-            parent.put("currentStepIndex", index + 1)
-                    .put("sequenceStatus", "WAITING_STEP_PRECONDITION")
-                    .put("updatedAt", time.stamp());
-            store.save("voice_execution", parent);
-            return;
+    }
+
+    private void refresh(ObjectNode parent) {
+        for (int i = 0; i < parent.path("steps").size(); i++) {
+            if (!"SUCCEEDED".equals(parent.path("steps").path(i).path("state").asText())) {
+                parent.put("currentStepIndex", i)
+                        .put("sequenceStatus", "WAITING_STEP_PRECONDITION")
+                        .put("updatedAt", time.stamp());
+                store.save("voice_execution", parent);
+                return;
+            }
         }
         parent.put("state", "SUCCEEDED")
                 .put("outcome", "SUCCESS")

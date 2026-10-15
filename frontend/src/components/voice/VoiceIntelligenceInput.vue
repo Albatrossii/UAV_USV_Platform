@@ -332,11 +332,14 @@ function handleParsed(parsed: VoiceParseResult, input: VoiceParseRequest, origin
     automaticallySubmitted.value = true
     speechFallbackAvailable.value = false
     const repairedHold = repairContextualUsvHold(input.text)
+    const repairedDevice = normalizeVoiceDeviceTerms(input.text)
     message.value = parsed.action === 'DEVICE_COMMAND'
       ? repairedHold !== input.text
         ? `已按完整驻留口令纠错为“${normalizedSpeech(repairedHold)}”；正在校验并提交至 ${parsed.targetDeviceCode}。`
+        : repairedDevice !== input.text
+          ? `已按设备指令上下文纠错为“${normalizedSpeech(repairedDevice)}”；正在校验并提交至 ${voiceDeviceLabel(parsed.targetDeviceCode)}。`
         : `单设备指令已识别，正在校验并提交至 ${voiceDeviceLabel(parsed.targetDeviceCode)}。`
-      : parsed.action === 'SEQUENCE' ? '顺序指令已识别，前一步完成后继续；第一步失败时不会下发第二步。'
+      : parsed.action === 'SEQUENCE' ? '多步指令已识别：不同设备可并行；明确先后、等待、同设备冲突和任务级动作按顺序执行。失败后不再下发剩余动作。'
         : '明确口令已识别，正在自动提交仿真动作并等待回执。'
     emit('voiceCandidate', parsed.intent, parsed.requestId, {
       startedAt: origin === 'speech' ? audioPipelineStartedAt ?? Date.now() : Date.now(),

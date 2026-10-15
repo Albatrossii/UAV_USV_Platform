@@ -108,6 +108,24 @@ function expiredBackend(reason: 'LOST' | '404') {
   else vi.mocked(fetchAlgorithmRunStatus).mockResolvedValue({ state: 'LOST', sequence: 77 } as Awaited<ReturnType<typeof fetchAlgorithmRunStatus>>)
 }
 
+function escortBerthPreview(runId: number, local: ReturnInfrastructure): AlgorithmRuntimeFrame {
+  return {
+    runId, sequence: 1, timestamp: Date.now(), coordinateFrame: 'FLEET_LOCAL_ENU',
+    algorithmCode: 'ESCORT_GUARD', phase: 'PARKED', terminalStatus: null,
+    agents: local.slots.map(slot => ({
+      code: slot.deviceCode, type: slot.kind === 'HELIPAD' ? 'UAV' : 'USV',
+      x: slot.eastM, y: slot.northM, z: slot.upM, heading: slot.headingDeg,
+      status: 'PARKED', role: 'PARKED',
+    })),
+    targets: [
+      { code: 'PROTECTED-001', type: 'PROTECTED', x: 213, y: 115, z: 0, heading: 192, visible: true },
+      { code: 'THREAT-001', type: 'THREAT', x: 100, y: 90, z: 0, heading: 12, visible: true },
+    ],
+    metrics: { deploymentState: 'PARKED', missionStage: 'GUARDING', returnInfrastructure: local },
+    route: [], obstacles: [],
+  } as AlgorithmRuntimeFrame
+}
+
 describe('VirtualFleetConfigView return infrastructure payloads', () => {
   beforeEach(() => {
     vi.useFakeTimers()
@@ -170,6 +188,7 @@ describe('VirtualFleetConfigView return infrastructure payloads', () => {
     expect(config).toMatchObject({
       coordinateFrame: 'FLEET_LOCAL_ENU',
       startFromShore: true,
+      escortStartAtBerth: false,
       targetShoreDistanceRatio: 2 / 3,
       fleetOrigin: { eastM: -360, northM: -285, upM: 0 },
       returnInfrastructure: expectedLocal,
@@ -193,24 +212,10 @@ describe('VirtualFleetConfigView return infrastructure payloads', () => {
   it('prepares shore departure before loading the authoritative escort frame without scaling its targets twice', async () => {
     const { setup, postToUnity } = await createView()
     const local = buildReturnInfrastructure({ uavCount: 3, usvCount: 3, worldHeight: 280 })
-    vi.mocked(fetchAlgorithmFrames).mockImplementation(async runId => [{
-      runId, sequence: 1, timestamp: Date.now(), coordinateFrame: 'FLEET_LOCAL_ENU',
-      algorithmCode: 'ESCORT_GUARD', phase: 'PARKED', terminalStatus: null,
-      agents: local.slots.map(slot => ({
-        code: slot.deviceCode, type: slot.kind === 'HELIPAD' ? 'UAV' : 'USV',
-        x: slot.eastM, y: slot.northM, z: slot.upM, heading: slot.headingDeg,
-        status: 'PARKED', role: 'PARKED',
-      })),
-      targets: [
-        { code: 'PROTECTED-001', type: 'PROTECTED', x: 0, y: 0, z: 0, heading: 90, visible: true },
-        { code: 'THREAT-001', type: 'THREAT', x: 100, y: 50, z: 0, heading: 90, visible: true },
-      ],
-      metrics: { deploymentState: 'PARKED', missionStage: 'GUARDING', returnInfrastructure: local },
-      route: [], obstacles: [],
-    }] as AlgorithmRuntimeFrame[])
+    vi.mocked(fetchAlgorithmFrames).mockImplementation(async runId => [escortBerthPreview(runId, local)])
     await setup.generateScenario()
     expect(prepareAlgorithmRun).toHaveBeenCalledExactlyOnceWith(setup.state.runId, 'ESCORT_GUARD', expect.objectContaining({
-      startFromShore: true, targetShoreDistanceRatio: 2 / 3, returnInfrastructure: local, initialPoses: [],
+      startFromShore: true, escortStartAtBerth: true, targetShoreDistanceRatio: 2 / 3, returnInfrastructure: local, initialPoses: [],
     }))
     const scene = postToUnity.mock.calls.find(([type]) => type === 'loadScenario')![1]
     const poses = scene.initialPoses as Array<Record<string, unknown>>
@@ -219,9 +224,51 @@ describe('VirtualFleetConfigView return infrastructure payloads', () => {
         eastM: slot.eastM, northM: slot.northM, upM: slot.upM, state: 'PARKED', speedMps: 0,
       })
     }
-    expect(poses.find(pose => pose.deviceCode === 'PROTECTED-001')).toMatchObject({ eastM: -360, northM: -285 })
-    expect(poses.find(pose => pose.deviceCode === 'THREAT-001')).toMatchObject({ eastM: -260, northM: -235 })
+    expect(scene.escortStartAtBerth).toBe(true)
+    expect(poses.find(pose => pose.deviceCode === 'PROTECTED-001')).toMatchObject({ eastM: -147, northM: -170 })
+    expect(poses.find(pose => pose.deviceCode === 'THREAT-001')).toMatchObject({ eastM: -260, northM: -195 })
     expect(controlAlgorithmRun).not.toHaveBeenCalled()
+  })
+
+  it.each(['moved', 'safety-hold', 'missing', 'invalid'])('blocks a displaced or unsafe %s escort-target preview before starting', async fault => {
+    const { wrapper, setup, postToUnity } = await createView()
+    const local = buildReturnInfrastructure({ uavCount: 3, usvCount: 3, worldHeight: 280 })
+    vi.mocked(fetchAlgorithmFrames).mockImplementation(async runId => [escortBerthPreview(runId, local)])
+    await setup.generateScenario()
+    const scene = postToUnity.mock.calls.find(([type]) => type === 'loadScenario')![1]
+    const reported = (scene.initialPoses as Array<Record<string, unknown>>).map(pose => ({ ...pose }))
+    const target = reported.find(pose => pose.deviceCode === 'PROTECTED-001')!
+    if (fault === 'moved') target.eastM = Number(target.eastM) + 2
+    if (fault === 'safety-hold') target.state = 'SAFETY_HOLD'
+    if (fault === 'missing') reported.splice(reported.indexOf(target), 1)
+    if (fault === 'invalid') target.valid = false
+    simulationRuntime.events!.message({ type: 'scenarioReady', payload: {
+      success: true, runId: setup.state.runId, initialPoses: reported,
+    } })
+    await flushPromises()
+    expect(setup.scenarioReadyRunId).toBeNull()
+    expect(setup.scenarioLoading).toBe(false)
+    expect(wrapper.text()).toContain('PROTECTED-001 的护航初始位置未通过场景校验')
+    expect(controlAlgorithmRun).not.toHaveBeenCalled()
+    expect(prepareAlgorithmRun).toHaveBeenCalledOnce()
+  })
+
+  it('accepts rendered hull pivot offsets without moving the authoritative escort route origin', async () => {
+    const { setup, postToUnity } = await createView()
+    const local = buildReturnInfrastructure({ uavCount: 3, usvCount: 3, worldHeight: 280 })
+    vi.mocked(fetchAlgorithmFrames).mockImplementation(async runId => [escortBerthPreview(runId, local)])
+    await setup.generateScenario()
+    const scene = postToUnity.mock.calls.find(([type]) => type === 'loadScenario')![1]
+    const poses = scene.initialPoses as Array<Record<string, unknown>>
+    simulationRuntime.events!.message({ type: 'scenarioReady', payload: {
+      success: true, runId: setup.state.runId,
+      initialPoses: poses.map(pose => ({ ...pose, upM: Number(pose.upM) + 1, headingDeg: Number(pose.headingDeg) + 90 })),
+    } })
+    await flushPromises()
+    expect(setup.scenarioReadyRunId).toBe(setup.state.runId)
+    expect(prepareAlgorithmRun).toHaveBeenCalledOnce()
+    expect(controlAlgorithmRun).not.toHaveBeenCalled()
+    expect(setup.currentAlgorithmFrame?.targets[0]).toMatchObject({ x: 213, y: 115, z: 0, heading: 192 })
   })
 
   it('keeps physical parking anchors when Unity acknowledges rendered UAV pivot height and model-facing yaw', async () => {

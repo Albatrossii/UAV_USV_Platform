@@ -45,6 +45,7 @@ import {
   type GridScenarioPose,
 } from '@/utils/virtualFleetGridLayout'
 import { deriveAdaptiveScenarioPlan } from '@/utils/adaptiveScenarioPlan'
+import { getMissionStageProgress } from '@/utils/missionStageProgress'
 import { createSingleDeviceCameraDirector } from '@/utils/singleDeviceCameraDirector'
 import { buildReturnInfrastructure, moveTargetsTowardShore, placeFleetAtShore, TARGET_SHORE_DISTANCE_RATIO, toGlobalReturnInfrastructure } from '@/utils/virtualReturnInfrastructure'
 
@@ -217,8 +218,15 @@ const departurePhase = computed(() => {
     && initialScenarioPoses.value.some(pose => pose.state === 'PARKED')) return 'PARKED'
   return ''
 })
+// missionStage describes the inner threat response, which can still be
+// GUARDING while the physical guard pair is en route from the shore.
+const escortAssemblyPending = computed(() => isEscortAlgorithm.value
+  && !currentAlgorithmFrame.value?.terminalStatus
+  && (currentAlgorithmFrame.value?.phase === 'ASSEMBLING_ESCORT'
+    || currentAlgorithmFrame.value?.metrics?.escortAssemblyState === 'ASSEMBLING'))
 const algorithmMissionPhase = computed(() => String(
   departurePhase.value
+  || (escortAssemblyPending.value ? 'ASSEMBLING_ESCORT' : '')
   || currentAlgorithmFrame.value?.metrics?.missionStage
   || currentAlgorithmFrame.value?.phase
   || (state.mission === 'RUNNING' ? 'TRANSIT' : 'READY'),
@@ -249,7 +257,7 @@ const stageSubjectThreatCode = computed(() => String(
 ))
 const missionStageLabels: Record<string, string> = {
   PARKED: '岸边待命', DEPLOYING: '安全起飞 / 离泊',
-  PREVIEW: '预演', READY: '就绪', GUARDING: '编队护航', ESCORTING: '编队护航',
+  PREVIEW: '预演', READY: '就绪', ASSEMBLING_ESCORT: '近护动态就位', GUARDING: '编队护航', ESCORTING: '编队护航',
   THREAT_DETECTION: '意图识别', GUARD_RECONFIGURATION: '分向守卫', INTERCEPT: '加速拦截', BLOCKING: '阻断攻击',
   ESCAPE: '目标逃逸', PURSUIT: '协同追击', ENCIRCLEMENT: '动态围捕',
   GAP_REPAIR: '动态围捕', STABLE_CONTAINMENT: '稳定闭环',
@@ -257,7 +265,7 @@ const missionStageLabels: Record<string, string> = {
 }
 const missionPhaseLabel = computed(() => {
   const label = missionStageLabels[missionPhase.value] ?? missionPhase.value
-  if (departurePhase.value) return label
+  if (departurePhase.value || missionPhase.value === 'ASSEMBLING_ESCORT') return label
   if (missionCompletionPendingReason.value) return `${label} · ${missionCompletionPendingReason.value}`
   return stageSubjectThreatCode.value && missionPhase.value !== 'COMPLETED'
     ? `${label} · ${stageSubjectThreatCode.value}`
@@ -265,22 +273,34 @@ const missionPhaseLabel = computed(() => {
 })
 const visibleTargetCount = computed(() => currentAlgorithmFrame.value?.targets.filter(target => target.visible !== false).length ?? configuredTargetCount.value)
 const displayMissionProgress = computed(() => {
-  const raw = Math.max(0, Math.min(1, Number(
+  const reported = Number(
     missionMetrics.value.missionProgress ?? missionMetrics.value.progress ?? 0,
-  )))
+  )
+  const raw = Number.isFinite(reported) ? Math.max(0, Math.min(1, reported)) : 0
   // The terminal state is committed only after Unity acknowledges the final
   // pose frame. Treat it as authoritative: the preceding metrics frame can
   // legitimately still contain the non-terminal 0.99 sentinel.
-  return missionCompletionCommitted.value ? 100 : Math.round(Math.min(raw, 0.99) * 100)
+  return missionCompletionCommitted.value ? 100 : Math.round(Math.min(raw, 0.99) * 1000) / 10
 })
-// Departure is real motion, but not yet escort/capture mission progress. Show
-// the wrapper's measured route progress instead of a misleading frozen 0%.
+// The authoritative runtime includes departure and initial protection in overall
+// progress. Stage facts explain each component without weighting it a second time.
+const missionProgressDescription = computed(() => missionMetrics.value.progressCompositionVersion === 'shore-lifecycle-v1'
+  ? isEscortAlgorithm.value
+    ? '全流程综合进度：出发 10% + 近卫就位 20% + 任务执行 70%；按真实执行状态推进，不按时间虚增'
+    : '全流程综合进度：出发 10% + 任务执行 90%；按真实执行状态推进，不按时间虚增'
+  : '算法上报的任务进度；全流程加权进度将在重新生成场景后生效')
 const showingDeploymentProgress = computed(() => Boolean(departurePhase.value) && !missionCompletionCommitted.value)
-const liveProgressLabel = computed(() => showingDeploymentProgress.value ? '集结进度' : '综合进度')
-const displayLiveProgress = computed(() => {
-  if (!showingDeploymentProgress.value) return displayMissionProgress.value
-  const progress = Number(missionMetrics.value.deploymentProgress ?? 0)
-  return Number.isFinite(progress) ? Math.round(Math.max(0, Math.min(.99, progress)) * 100) : 0
+const showingEscortAssembly = computed(() => isEscortAlgorithm.value && !showingDeploymentProgress.value
+  && !missionCompletionCommitted.value && missionPhase.value === 'ASSEMBLING_ESCORT')
+const stageProgress = computed(() => missionCompletionCommitted.value
+  ? null : getMissionStageProgress(currentAlgorithmFrame.value))
+const escortProtectionCounts = computed(() => {
+  const count = (value: unknown, fallback: number) => {
+    const numeric = Number(value)
+    return Number.isFinite(numeric) ? Math.max(0, Math.floor(numeric)) : fallback
+  }
+  const required = Math.max(1, count(missionMetrics.value.escortProtectionRequiredCount ?? 2, 2))
+  return { required, ready: Math.min(required, count(missionMetrics.value.escortProtectionReadyCount ?? 0, 0)) }
 })
 const postMissionFormationReadyCount = computed(() => Number(
   missionMetrics.value.postMissionFormationReadyCount ?? 0,
@@ -340,7 +360,10 @@ const singleDeviceRuntimeNotice = computed(() => {
     const total = Number(missionMetrics.value.deploymentTotalCount ?? 0)
     const ready = Number(missionMetrics.value.deploymentReadyCount ?? 0)
     const withdrawn = Number(missionMetrics.value.deploymentWithdrawnCount ?? 0)
-    const summary = total > 0 ? `已就位 ${ready}/${total} 台${withdrawn > 0 ? `，${withdrawn} 台已返航退出集结` : ''}；` : ''
+    const deferred = Number(missionMetrics.value.deploymentDeferredCount ?? 0)
+    const summary = total > 0
+      ? `已就位 ${ready}/${total} 台${withdrawn > 0 ? `，${withdrawn} 台已返航退出集结` : ''}${deferred > 0 ? `，${deferred} 台由人工接管` : ''}；`
+      : ''
     const safeRelease = String(missionMetrics.value.deploymentMode ?? '') === 'SAFE_RELEASE'
     return summary + (remaining > 0
       ? safeRelease
@@ -349,6 +372,18 @@ const singleDeviceRuntimeNotice = computed(() => {
       : safeRelease
         ? '设备正在完成安全离岸，随后立即进入任务阶段。'
         : '设备正在完成出发集结，随后进入任务阶段。')
+  }
+  const deferredCodes = Array.isArray(missionMetrics.value.deploymentDeferredDeviceCodes)
+    ? missionMetrics.value.deploymentDeferredDeviceCodes.map(String).filter(Boolean)
+    : []
+  const deferred = Number(missionMetrics.value.deploymentDeferredCount ?? deferredCodes.length)
+  if (deferred > 0) {
+    const subject = deferredCodes.length ? deferredCodes.join('、') : `${deferred} 台设备`
+    return `${subject} 已由人工接管并保持当前位置；其余设备继续执行任务，发送“归队”后自动重新加入。`
+  }
+  if (showingEscortAssembly.value) {
+    const { ready, required } = escortProtectionCounts.value
+    return `近护设备已就位 ${ready}/${required} 台；保护形成前我方船保持待航，其余设备继续动态入列。`
   }
   const blocker = String(missionMetrics.value.completionBlocker ?? '')
   if (blocker === 'INSUFFICIENT_ACTIVE_FORCE') {
@@ -991,6 +1026,18 @@ function reconcileInitialScenePoses(returnedPoses: ScenarioInitialPose[]): Scena
       throw new Error(`${planned.deviceCode} 的岸边待命位置未通过场景校验，请重新生成场景；任务尚未启动。`)
     }
   }
+  if (savedScenario?.escortStartAtBerth === true) {
+    for (const planned of plannedScenarioPoses.value.filter(pose => pose.deviceType === 'TARGET')) {
+      const reported = returnedPoses.find(pose => pose.deviceCode === planned.deviceCode)
+      if (!reported || reported.valid === false || reported.state === 'SAFETY_HOLD'
+        || Math.hypot(reported.eastM - planned.eastM, reported.northM - planned.northM) > 0.1) {
+        throw new Error(`${planned.deviceCode} 的护航初始位置未通过场景校验，请重新生成场景；任务尚未启动。`)
+      }
+      // Keep the authoritative sea-level pose instead of feeding rendered
+      // model pivot offsets back into the route planner.
+      plannedByCode.set(planned.deviceCode, planned)
+    }
+  }
   // Unity reports the rendered model pivot (including landing-foot clearance)
   // and model-facing yaw. Keep the validated contact anchor / ENU heading as
   // the algorithm input; feeding the pivot back would lift UAVs off the pad.
@@ -1018,8 +1065,9 @@ async function generateScenario() {
   state.usvCount = validateFleetCount(state.usvCount)
   // The Unity scene has a verified open-water operating box southwest of
   // Catalina.  Keep the algorithm's complete local safety domain inside it:
-  // global east [-510,-210], north [-435,-135].  Scaling the origin with the
-  // UI "world size" previously moved fleets onto the decorative outer coast.
+  // global east [-510,-210], north [-435,-135]. The escort adapter also owns
+  // the validated near-berth departure corridor; retain this same origin
+  // for both domains rather than shifting it with UI "world size".
   fleetOriginEnu.eastM = -360
   fleetOriginEnu.northM = -285
   // Standalone virtual simulation uses one isolated ID across Unity and the
@@ -1099,6 +1147,7 @@ async function generateScenario() {
   send('loadScenario', {
     runtimeMode: 'VIRTUAL_SIMULATION',
     startFromShore: true,
+    escortStartAtBerth: isEscortAlgorithm.value,
     targetShoreDistanceRatio: TARGET_SHORE_DISTANCE_RATIO,
     algorithmCode: state.algorithm,
     runId: state.runId,
@@ -1126,6 +1175,7 @@ function buildAlgorithmPrepareConfig(initialPoses: ScenarioInitialPose[]) {
     adaptiveMultiTarget: isEscortAlgorithm.value,
     singleDeviceControlEnabled: isSingleDeviceAlgorithm.value,
     startFromShore: true,
+    escortStartAtBerth: isEscortAlgorithm.value,
     targetShoreDistanceRatio: TARGET_SHORE_DISTANCE_RATIO,
     uavSpeedMps: state.uavSpeed,
     usvSpeedMps: state.usvSpeed,
@@ -1769,10 +1819,7 @@ onBeforeUnmount(() => {
             </div>
             <div class="vf-stage-actions">
               <strong>{{ stageCompositionLabel }}</strong>
-              <span class="vf-unity-state" :class="{ online: unityReady }">
-                <i></i>{{ unityReady ? 'UNITY WEBGL ONLINE' : 'UNITY WEBGL LOADING' }}
-              </span>
-              <button class="vf-expand" type="button" @click="toggleWebglExpanded">
+              <button class="vf-expand" type="button" :aria-label="webglExpanded ? '还原画面' : '放大画面'" @click="toggleWebglExpanded">
                 <Minimize2 v-if="webglExpanded" :size="16" />
                 <Maximize2 v-else :size="16" />
                 <span>{{ webglExpanded ? '退出放大' : '放大画面' }}</span>
@@ -1786,7 +1833,7 @@ onBeforeUnmount(() => {
           <div class="vf-unity-stage" data-simulation-viewport></div>
           <div class="vf-live-strip">
             <span><i></i>阶段 <strong>{{ missionPhaseLabel }}</strong></span>
-            <span :title="showingDeploymentProgress ? '按实际起飞、离泊和集结路径计算；不是围捕或护航任务完成率' : '当前护航或围捕任务进度'">{{ liveProgressLabel }} <strong>{{ displayLiveProgress }}%</strong></span>
+            <span :title="missionProgressDescription">综合进度 <strong>{{ displayMissionProgress }}%</strong></span>
             <span>可见目标 <strong>{{ visibleTargetCount }}</strong></span>
             <span v-if="isCaptureAlgorithm">行动距离 <strong>{{ Number(missionMetrics.targetTravelDistanceM ?? 0).toFixed(0) }} m</strong></span>
             <span v-else>已捕获 <strong>{{ Number(missionMetrics.capturedThreatCount ?? 0) }}/{{ scenarioPlan.threatCount }}</strong></span>
@@ -1794,6 +1841,10 @@ onBeforeUnmount(() => {
               机动余量归队 <strong>{{ postMissionFormationReadyCount }}/{{ postMissionFormationRequiredCount }}</strong>
             </span>
             <span>仿真时长 <strong>{{ simulationElapsedLabel }}</strong></span>
+            <span v-if="stageProgress" class="vf-stage-progress" title="当前算法帧的实际阶段数据；不根据等待时间递增">
+              {{ stageProgress.label }} <strong>{{ stageProgress.value }}</strong>
+              <small v-if="stageProgress.detail">{{ stageProgress.detail }}</small>
+            </span>
             <span v-if="singleDeviceRuntimeNotice" class="vf-return-notice">{{ singleDeviceRuntimeNotice }}</span>
           </div>
           <div class="vf-command-bar">
@@ -1880,7 +1931,7 @@ onBeforeUnmount(() => {
 .vf-workspace-switch a, .vf-workspace-switch span { min-width: 108px; padding: 8px 16px; color: #789d9b; font-size: 12px; font-weight: 800; text-align: center; text-decoration: none; border-radius: 4px; }
 .vf-workspace-switch .active { color: #effffd; background: rgba(108, 228, 213, .12); box-shadow: inset 0 -2px #6ce4d5; }
 .vf-instance-status { display: flex; justify-self: end; align-items: center; gap: 7px; color: #9fe8df; font-size: 11px; font-weight: 800; }
-.vf-instance-status i, .vf-unity-state i, .vf-live-strip i { width: 7px; height: 7px; background: #62e4c9; border-radius: 50%; box-shadow: 0 0 9px rgba(98, 228, 201, .75); }
+.vf-instance-status i, .vf-live-strip i { width: 7px; height: 7px; background: #62e4c9; border-radius: 50%; box-shadow: 0 0 9px rgba(98, 228, 201, .75); }
 .vf-instance-status.offline { color: #8aa8a5; }
 .vf-instance-status.offline i { background: #718987; box-shadow: none; }
 .vf-workbench { --vf-left-width: clamp(238px, 15vw, 288px); --vf-right-width: clamp(248px, 15.6vw, 300px); --vf-current-left: var(--vf-left-width); --vf-current-right: var(--vf-right-width); display: grid; min-height: 0; overflow: hidden; flex: 1; gap: 12px; grid-template-rows: minmax(0, 1fr); grid-template-columns: var(--vf-current-left) minmax(0, 1fr) var(--vf-current-right); transition: grid-template-columns 240ms cubic-bezier(.22,.8,.3,1); }
@@ -1933,11 +1984,7 @@ onBeforeUnmount(() => {
 .vf-stage-head > div:first-child { display: grid; gap: 3px; }
 .vf-stage-head strong { color: #ffcf72; font-size: 12px; }
 .vf-stage-actions { display: flex; align-items: center; gap: 10px; }
-.vf-unity-state { display: inline-flex; align-items: center; gap: 6px; padding: 6px 8px; color: #7c9997; background: #06171c; border: 1px solid rgba(108,228,213,.15); border-radius: 4px; font-size: 9px; font-weight: 800; }
-.vf-unity-state i { background: #718987; box-shadow: none; }
-.vf-unity-state.online { color: #c7fff6; }
-.vf-unity-state.online i { background: #62e4c9; box-shadow: 0 0 9px rgba(98,228,201,.75); }
-.vf-expand { display: inline-flex; align-items: center; gap: 6px; min-height: 30px; padding: 0 9px; color: #dff8f4; background: #092027; border: 1px solid rgba(108,228,213,.3); border-radius: 4px; cursor: pointer; }
+.vf-expand { display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; gap: 6px; min-height: 30px; padding: 0 9px; color: #dff8f4; background: #092027; border: 1px solid rgba(108,228,213,.3); border-radius: 4px; cursor: pointer; }
 .vf-stage-panel.expanded { position: fixed; inset: 10px; z-index: 2100; display: flex; flex-direction: column; background: #031015; box-shadow: 0 0 0 100vmax rgba(0,0,0,.82); }
 .vf-stage-panel.expanded .vf-unity-stage { flex: 1; min-height: 0; }
 .vf-stage-panel.expanded .vf-unity-stage :deep(.unity-webgl-panel) { height: 100%; }
@@ -1953,13 +2000,15 @@ onBeforeUnmount(() => {
 .vf-live-strip { display: flex; min-height: 34px; padding: 0 13px; align-items: center; flex-wrap: wrap; gap: 8px 18px; color: #7ea7a5; background: #06191f; border-top: 1px solid rgba(108,228,213,.16); border-bottom: 1px solid rgba(108,228,213,.1); font-size: 10px; }
 .vf-live-strip span { display: inline-flex; align-items: center; gap: 5px; }
 .vf-live-strip strong { color: #eafffb; font-size: 11px; }
+.vf-live-strip .vf-stage-progress { flex-basis: 100%; flex-wrap: wrap; padding: 3px 0; color: #8ed4ca; }
+.vf-stage-progress small { font-size: 10px; color: #a7c4c0; overflow-wrap: anywhere; }
 .vf-command-bar { display: grid; min-height: 94px; padding: 9px 12px; align-items: center; gap: 8px 14px; background: #06151a; grid-template-columns: auto 1fr; grid-template-areas: 'commands cameras' 'steps steps'; }
 .vf-command-actions { grid-area: commands; }
 .vf-camera-actions { grid-area: cameras; justify-self: end; flex-wrap: wrap; justify-content: flex-end; }
 .vf-phase-stepper { grid-area: steps; }
 .vf-command-actions, .vf-camera-actions { display: flex; align-items: center; gap: 7px; }
 .vf-command-actions .vf-button { margin: 0; }
-.vf-camera-actions button { display: inline-flex; min-height: 32px; padding: 0 9px; align-items: center; gap: 5px; color: #b8d8d4; cursor: pointer; background: #081e24; border: 1px solid rgba(108,228,213,.22); border-radius: 4px; font-size: 10px; }
+.vf-camera-actions button { display: inline-flex; min-height: 32px; padding: 0 9px; align-items: center; justify-content: center; flex-shrink: 0; gap: 5px; color: #b8d8d4; cursor: pointer; background: #081e24; border: 1px solid rgba(108,228,213,.22); border-radius: 4px; font-size: 10px; }
 .vf-camera-actions button.active, .vf-camera-actions button:hover:not(:disabled) { color: #6ce4d5; border-color: rgba(108,228,213,.5); }
 .vf-camera-actions button:disabled { cursor: not-allowed; opacity: .38; }
 .vf-camera-actions select { min-width: 92px; min-height: 32px; padding: 0 5px; color: #b8d8d4; background: #081e24; border: 1px solid rgba(108,228,213,.22); border-radius: 4px; font-size: 10px; }
@@ -1992,7 +2041,7 @@ onBeforeUnmount(() => {
   .vf-command-actions .vf-button span { display: none; }
   .vf-camera-actions button { width: 32px; padding: 0; justify-content: center; }
   .vf-camera-actions button span { display: none; }
-  .vf-stage-actions > strong, .vf-unity-state, .vf-expand span { display: none; }
+  .vf-stage-actions > strong, .vf-expand span { display: none; }
   .vf-expand { width: 32px; padding: 0; justify-content: center; }
   .vf-phase-stepper li { min-width: 52px; }
   .vf-phase-stepper li:not(:last-child)::after { min-width: 8px; margin: 0 3px; }
@@ -2020,7 +2069,7 @@ onBeforeUnmount(() => {
   .vf-drawer-reopen span { writing-mode: horizontal-tb; }
   .vf-unity-stage, .vf-unity-stage :deep(.unity-webgl-panel) { min-height: 380px; }
   .vf-two-col { grid-template-columns: 1fr; }
-  .vf-stage-actions strong, .vf-unity-state { display: none; }
+  .vf-stage-actions strong { display: none; }
   .vf-command-bar { min-height: 126px; grid-template-columns: 1fr; grid-template-areas: 'commands' 'cameras' 'steps'; }
   .vf-command-actions, .vf-camera-actions { justify-content: center; }
   .vf-command-actions .vf-button { width: auto; padding: 0 10px; }

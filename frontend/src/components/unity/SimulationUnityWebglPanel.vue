@@ -14,7 +14,7 @@ import type { UnityPresentationOutgoing } from '@/types/voiceControl'
 
 const RUNTIME_SCOPE = 'VIRTUAL_FLEET' as const
 const RUNTIME_INSTANCE_ID = 'virtual-fleet-unity-01'
-const WEBGL_SOURCE = '/unity-virtual-fleet/index.html?embedded=1&build=20261010-existing-scene-v1'
+const WEBGL_SOURCE = '/unity-virtual-fleet/index.html?embedded=1&build=20261015-compact-device-labels'
 
 const emit = defineEmits<{
   unityReady: []
@@ -51,7 +51,6 @@ const iframeUrl = computed(() => appendUnityRuntimeParams(WEBGL_SOURCE, {
   scope: RUNTIME_SCOPE,
   instanceId: RUNTIME_INSTANCE_ID,
 }))
-const statusText = computed(() => ready.value ? 'UNITY WEBGL ONLINE' : 'WAITING FOR WEBGL')
 
 function markReady(payload: Record<string, unknown> = {}) {
   if (probeTimer !== null) {
@@ -362,7 +361,6 @@ onBeforeUnmount(() => {
       <p>{{ errorMessage }}</p>
       <button type="button" @click="reload">重新加载</button>
     </div>
-    <div class="unity-webgl-status" :class="ready ? 'ready' : 'pending'"><i></i>{{ statusText }}</div>
   </div>
 </template>
 

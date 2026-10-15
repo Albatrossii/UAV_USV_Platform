@@ -1019,6 +1019,118 @@ describe('VoiceIntelligenceInput refined mode', () => {
     wrapper.unmount()
   })
 
+  describe('bounded USV ASR repair', () => {
+    it.each([
+      ['二号无人船主流。', '二号无人艇驻留', 'USV_HOLD'],
+      ['二号无人听驻流', '二号无人艇驻留', 'USV_HOLD'],
+      ['二号无人停驻流', '二号无人艇驻留', 'USV_HOLD'],
+      ['请让第二号无人船注。流！', '请让第二号无人艇驻留', 'USV_HOLD'],
+      ['二号无人听归队', '二号无人艇归队', 'USV_RESUME'],
+      ['二号无人听返航', '二号无人艇返航', 'USV_RETURN'],
+      ['二号无人船归队', '二号无人艇归队', 'USV_RESUME'],
+      ['二号无人船返航', '二号无人艇返航', 'USV_RETURN'],
+    ] as const)('submits only the corrected USV-002 intent while retaining the original: %s', async (text, normalizedText, deviceCommandType) => {
+      installMicrophone()
+      const parse = vi.fn<VoiceIntelligenceAdapter['parse']>(async input => ({
+        ...await parseCandidate(input), normalizedText, targetDeviceCode: 'USV-002', deviceCommandType,
+      }))
+      const wrapper = mountRefined(speechAdapter(text, parse))
+      try {
+        await recordSpeech(wrapper)
+        expect(parse).toHaveBeenCalledOnce()
+        expect(parse.mock.calls[0]![0].text).toBe(text)
+        expect((wrapper.get('textarea').element as HTMLTextAreaElement).value).toBe(text)
+        expect(wrapper.emitted('interpretation')).toEqual([[expect.objectContaining({
+          text, origin: 'speech', result: expect.objectContaining({
+            normalizedText, targetDeviceCode: 'USV-002', deviceCommandType,
+          }),
+        })]])
+        expect(wrapper.emitted('voiceCandidate')).toEqual([
+          ['SINGLE_DEVICE_CONTROL', parse.mock.calls[0]![0].requestId, expect.any(Object)],
+        ])
+        expect(wrapper.emitted('candidate')).toBeUndefined()
+        await flushPromises()
+        expect(wrapper.emitted('voiceCandidate')).toHaveLength(1)
+      } finally { wrapper.unmount() }
+    })
+
+    it.each([
+      ['USV-001', 'USV_HOLD'], ['UAV-002', 'UAV_HOVER'], ['USV-002', 'USV_RETURN'],
+    ] as const)('rejects a corrected transcript paired with the wrong target or action: %s / %s', async (targetDeviceCode, deviceCommandType) => {
+      installMicrophone()
+      const text = '二号无人船主流。'
+      const wrapper = mountRefined(speechAdapter(text, async input => ({
+        ...await parseCandidate(input), normalizedText: '二号无人艇驻留', targetDeviceCode, deviceCommandType,
+      })))
+      try {
+        // All proposed devices exist: this must be a semantic rejection, not
+        // an accidental unknown-device rejection masking the mismatch.
+        await wrapper.setProps({ deviceCodes: ['USV-001', 'USV-002', 'UAV-002'] })
+        await recordSpeech(wrapper)
+        expect(wrapper.emitted('voiceCandidate')).toBeUndefined()
+        expect(wrapper.emitted('candidate')).toBeUndefined()
+        expect((wrapper.get('textarea').element as HTMLTextAreaElement).value).toBe(text)
+      } finally { wrapper.unmount() }
+    })
+
+    it.each([
+      '报告二号无人船主流。', '不要二号无人听驻流', '二号无人停驻流吗？',
+      '无人船主流。', '一号二号无人船主流。', '一号无人船和二号无人船主流。',
+      '二号无人船主流然后返航', '二号无人听归队然后返航',
+      '开始任务，然后二号无人船主流。', '今天讨论无人船主流技术。',
+    ])('does not turn a fragment, report or multi-action utterance into a single command: %s', async text => {
+      installMicrophone()
+      const wrapper = mountRefined(speechAdapter(text, async input => ({
+        ...await parseCandidate(input), normalizedText: '二号无人艇驻留',
+        targetDeviceCode: 'USV-002', deviceCommandType: 'USV_HOLD',
+      })))
+      try {
+        await recordSpeech(wrapper)
+        expect(wrapper.emitted('voiceCandidate')).toBeUndefined()
+        expect(wrapper.emitted('candidate')).toBeUndefined()
+        expect((wrapper.get('textarea').element as HTMLTextAreaElement).value).toBe(text)
+      } finally { wrapper.unmount() }
+    })
+
+    it.each(['二号无人船主流。', '二号无人听驻流', '二号无人停驻流'])(
+      'keeps manually entered repairable text in the confirmation flow: %s', async text => {
+        const parse = vi.fn<VoiceIntelligenceAdapter['parse']>(async input => ({
+          ...await parseCandidate(input), normalizedText: '二号无人艇驻留',
+          targetDeviceCode: 'USV-002', deviceCommandType: 'USV_HOLD',
+        }))
+        const wrapper = mountRefined(speechAdapter(text, parse))
+        try {
+          await wrapper.get('textarea').setValue(text)
+          await wrapper.get('.refined-preview').trigger('click')
+          await flushPromises()
+          expect(parse.mock.calls[0]![0].text).toBe(text)
+          expect(wrapper.emitted('voiceCandidate')).toBeUndefined()
+          expect(wrapper.emitted('candidate')).toEqual([['SINGLE_DEVICE_CONTROL', expect.any(String)]])
+          expect(wrapper.text()).toContain('确认后执行')
+          expect((wrapper.get('textarea').element as HTMLTextAreaElement).value).toBe(text)
+        } finally { wrapper.unmount() }
+      },
+    )
+
+    it.each(['开始任务，然后二号无人船主流', '开始任务，然后二号无人听归队'])(
+      'does not repair a fragment a second time after a permissive backend splits a sequence: %s', async text => {
+        installMicrophone()
+        const wrapper = mountRefined(speechAdapter(text, async input => ({
+          status: 'CANDIDATE', action: 'SEQUENCE', intent: 'COMMAND_SEQUENCE', requestId: input.requestId,
+          normalizedText: input.text, provider: 'local-rules', model: 'rules-sequence-v1', confidence: null,
+          steps: [{ index: 0, action: 'START' }, { index: 1, action: 'DEVICE_COMMAND',
+            targetDeviceCode: 'USV-002', deviceCommandType: text.endsWith('归队') ? 'USV_RESUME' : 'USV_HOLD' }],
+        })))
+        try {
+          await recordSpeech(wrapper)
+          expect(wrapper.emitted('voiceCandidate')).toBeUndefined()
+          expect(wrapper.emitted('candidate')).toBeUndefined()
+          expect((wrapper.get('textarea').element as HTMLTextAreaElement).value).toBe(text)
+        } finally { wrapper.unmount() }
+      },
+    )
+  })
+
   const sequenceParse = (targetDeviceCode = 'UAV-001', deviceCommandType: 'UAV_HOVER' | 'USV_HOLD' | 'UAV_RETURN' | 'UAV_LAND' | 'USV_RETURN' | 'USV_STOP' = 'UAV_HOVER'): VoiceIntelligenceAdapter['parse'] => async input => ({
     status: 'CANDIDATE', action: 'SEQUENCE', intent: 'COMMAND_SEQUENCE', requestId: input.requestId,
     normalizedText: input.text, provider: 'local-rules', model: 'rules-sequence-v1', confidence: null,
@@ -1027,6 +1139,8 @@ describe('VoiceIntelligenceInput refined mode', () => {
   it.each([
     ['开始任务，然后让一号无人机悬停。', 'UAV-001', 'UAV_HOVER'],
     ['开始任务后二号无人艇驻留', 'USV-002', 'USV_HOLD'],
+    ['开始任务后二号无人船驻留', 'USV-002', 'USV_HOLD'],
+    ['开始任务，然后让二号无人船返航', 'USV-002', 'USV_RETURN'],
     ['开始任务让二号无人停驻留', 'USV-002', 'USV_HOLD'],
     ['开始任务，一号无人机悬停', 'UAV-001', 'UAV_HOVER'],
     ['开始任务一号无人机悬停', 'UAV-001', 'UAV_HOVER'],
@@ -1040,8 +1154,27 @@ describe('VoiceIntelligenceInput refined mode', () => {
     await recordSpeech(wrapper)
     expect(wrapper.emitted('voiceCandidate')).toEqual([['COMMAND_SEQUENCE', expect.any(String), expect.any(Object)]])
     expect(wrapper.emitted('candidate')).toBeUndefined()
-    expect(wrapper.text()).toContain('第一步失败时不会下发第二步')
+    expect(wrapper.text()).toContain('不同设备可并行')
+    expect(wrapper.text()).toContain('失败后不再下发剩余动作')
     wrapper.unmount()
+  })
+
+  it('auto-submits the UAV return and boat hold screenshot without requiring a single-device utterance', async () => {
+    installMicrophone()
+    const text = '一号无人机返航，然后让二号无人船驻留'
+    const wrapper = mountRefined(speechAdapter(text, async input => ({
+      status: 'CANDIDATE', action: 'SEQUENCE', intent: 'COMMAND_SEQUENCE', requestId: input.requestId,
+      normalizedText: '一号无人机返航，然后让二号无人艇驻留', provider: 'local-rules', model: 'rules-sequence-v1', confidence: null,
+      steps: [
+        { index: 0, action: 'DEVICE_COMMAND', targetDeviceCode: 'UAV-001', deviceCommandType: 'UAV_RETURN' },
+        { index: 1, action: 'DEVICE_COMMAND', targetDeviceCode: 'USV-002', deviceCommandType: 'USV_HOLD' },
+      ],
+    })))
+    try {
+      await recordSpeech(wrapper)
+      expect(wrapper.emitted('voiceCandidate')).toEqual([['COMMAND_SEQUENCE', expect.any(String), expect.any(Object)]])
+      expect(wrapper.emitted('candidate')).toBeUndefined()
+    } finally { wrapper.unmount() }
   })
 
   it('auto-submits the screenshot utterance as START then USV-001 HOLD after normalization', async () => {

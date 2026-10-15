@@ -24,6 +24,8 @@ namespace UavUsv
             public Vector2 anchor;
             public Rect rect;
             public bool selected;
+            public string code;
+            public string status;
         }
 
         private readonly List<LabelTarget> targets = new List<LabelTarget>();
@@ -37,12 +39,7 @@ namespace UavUsv
         private GUIStyle statusStyle;
         private Texture2D backgroundTexture;
         private Texture2D selectedBackgroundTexture;
-        private Texture2D lineTexture;
-        private Texture2D uavTexture;
-        private Texture2D usvTexture;
-        private Texture2D activeTexture;
-        private Texture2D warningTexture;
-        private Texture2D inactiveTexture;
+        private float labelScale;
         private float nextBindingRefreshAt;
 
         private const float BindingRefreshSeconds = 0.75f;
@@ -148,8 +145,11 @@ namespace UavUsv
             occupied.Clear();
             string selectedCode = observer ? observer.CurrentDeviceCode : string.Empty;
             float scale = Mathf.Clamp(Screen.height / 900f, 0.72f, 1.18f);
-            float width = (targets.Count > 30 ? 92f : 112f) * scale;
-            float height = (targets.Count > 30 ? 23f : 31f) * scale;
+            labelScale = scale;
+            // Preserve existing font sizes. Shrink empty space, never the text.
+            float previousHeight = (targets.Count > 30 ? 23f : 31f) * scale;
+            codeStyle.fontSize = Mathf.RoundToInt(Mathf.Clamp(previousHeight * 0.39f, 9f, 14f));
+            statusStyle.fontSize = Mathf.RoundToInt(Mathf.Clamp(previousHeight * 0.29f, 8f, 11f));
 
             for (int i = 0; i < targets.Count; i++)
             {
@@ -158,6 +158,11 @@ namespace UavUsv
                     !target.state.transform.gameObject.activeInHierarchy)
                     continue;
 
+                string code = target.state.deviceCode;
+                string status = NormalizeStatus(target.state.status);
+                Vector2 size = MeasureLabel(code, status, scale, codeStyle, statusStyle);
+                float width = size.x;
+                float height = size.y;
                 Vector3 world = target.state.transform.position + Vector3.up * target.anchorHeight;
                 Vector3 screen = sceneCamera.WorldToScreenPoint(world);
                 if (screen.z <= sceneCamera.nearClipPlane || screen.x < -width ||
@@ -169,6 +174,8 @@ namespace UavUsv
                 visible.Add(new VisibleLabel
                 {
                     target = target,
+                    code = code,
+                    status = status,
                     anchor = anchor,
                     rect = new Rect(anchor.x - width * 0.5f, anchor.y - height - 9f * scale, width, height),
                     selected = !string.IsNullOrEmpty(selectedCode) &&
@@ -186,6 +193,7 @@ namespace UavUsv
             {
                 VisibleLabel label = visible[i];
                 label.rect.x = Mathf.Clamp(label.rect.x, 4f, Mathf.Max(4f, Screen.width - label.rect.width - 4f));
+                label.rect.y = Mathf.Max(4f, label.rect.y);
                 ResolveOverlap(label);
                 occupied.Add(label.rect);
             }
@@ -214,59 +222,30 @@ namespace UavUsv
 
         private void DrawLabel(VisibleLabel label)
         {
-            VirtualFleetDeviceState state = label.target.state;
-            bool isUav = string.Equals(state.deviceType, "UAV", StringComparison.OrdinalIgnoreCase);
             Color border = label.selected
                 ? new Color(1f, 0.76f, 0.24f, 1f)
-                : isUav
-                    ? new Color(0.35f, 0.94f, 0.89f, 0.95f)
-                    : new Color(0.78f, 0.88f, 0.88f, 0.9f);
+                : new Color(0.64f, 0.81f, 0.82f, 0.95f);
 
-            DrawStem(label.anchor, label.rect, border);
             GUI.DrawTexture(label.rect, label.selected ? selectedBackgroundTexture : backgroundTexture);
-            DrawBorder(label.rect, border, label.selected ? 2f : 1f);
-
-            float padding = Mathf.Max(5f, label.rect.height * 0.17f);
-            float markerSize = Mathf.Clamp(label.rect.height * 0.23f, 5f, 8f);
-            Rect typeMarker = new Rect(
-                label.rect.x + padding,
-                label.rect.center.y - markerSize * 0.5f,
-                markerSize,
-                markerSize
-            );
-            GUI.DrawTexture(typeMarker, isUav ? uavTexture : usvTexture);
-
-            codeStyle.fontSize = Mathf.RoundToInt(Mathf.Clamp(label.rect.height * 0.39f, 9f, 14f));
-            statusStyle.fontSize = Mathf.RoundToInt(Mathf.Clamp(label.rect.height * 0.29f, 8f, 11f));
-            codeStyle.normal.textColor = label.selected
-                ? new Color(1f, 0.83f, 0.38f, 1f)
-                : Color.white;
-            Rect codeRect = new Rect(
-                typeMarker.xMax + padding * 0.72f,
-                label.rect.y + 1f,
-                label.rect.width - typeMarker.width - padding * 2.7f,
-                label.rect.height * 0.56f
-            );
-            GUI.Label(codeRect, state.deviceCode, codeStyle);
-
-            string status = NormalizeStatus(state.status);
-            Texture2D statusTexture = StatusTexture(status);
-            float dotSize = Mathf.Clamp(label.rect.height * 0.19f, 4f, 7f);
-            Rect statusDot = new Rect(codeRect.x, label.rect.yMax - label.rect.height * 0.31f, dotSize, dotSize);
-            GUI.DrawTexture(statusDot, statusTexture);
-            Rect statusRect = new Rect(statusDot.xMax + 3f, label.rect.y + label.rect.height * 0.52f,
-                label.rect.width - (statusDot.xMax - label.rect.x) - padding, label.rect.height * 0.38f);
-            GUI.Label(statusRect, status, statusStyle);
+            DrawBorder(label.rect, border, 1f);
+            float paddingX = 5f * labelScale;
+            float paddingY = 3f * labelScale;
+            float codeHeight = codeStyle.CalcSize(new GUIContent(label.code)).y;
+            float statusHeight = statusStyle.CalcSize(new GUIContent(label.status)).y;
+            codeStyle.normal.textColor = Color.white;
+            statusStyle.normal.textColor = StatusColor(label.status);
+            GUI.Label(new Rect(label.rect.x + paddingX, label.rect.y + paddingY,
+                label.rect.width - paddingX * 2f, codeHeight), label.code, codeStyle);
+            GUI.Label(new Rect(label.rect.x + paddingX, label.rect.y + paddingY + codeHeight + 2f * labelScale,
+                label.rect.width - paddingX * 2f, statusHeight), label.status, statusStyle);
         }
 
-        private void DrawStem(Vector2 anchor, Rect rect, Color color)
+        private static Vector2 MeasureLabel(string code, string status, float scale, GUIStyle codeFont, GUIStyle statusFont)
         {
-            float top = Mathf.Min(anchor.y, rect.center.y);
-            float bottom = Mathf.Max(anchor.y, rect.center.y);
-            GUI.color = new Color(color.r, color.g, color.b, 0.62f);
-            GUI.DrawTexture(new Rect(anchor.x - 0.5f, top, 1f, Mathf.Max(2f, bottom - top)), lineTexture);
-            GUI.DrawTexture(new Rect(anchor.x - 2.5f, anchor.y - 2.5f, 5f, 5f), lineTexture);
-            GUI.color = Color.white;
+            Vector2 codeSize = codeFont.CalcSize(new GUIContent(code));
+            Vector2 statusSize = statusFont.CalcSize(new GUIContent(status));
+            return new Vector2(Mathf.Ceil(Mathf.Max(codeSize.x, statusSize.x) + 10f * scale),
+                Mathf.Ceil(codeSize.y + statusSize.y + 8f * scale));
         }
 
         private static void DrawBorder(Rect rect, Color color, float thickness)
@@ -280,42 +259,39 @@ namespace UavUsv
             GUI.color = previous;
         }
 
-        private Texture2D StatusTexture(string status)
+        private static Color StatusColor(string status)
         {
+            if (status.Contains("RETURN") || status.Contains("REJOIN"))
+                return new Color(1f, 0.85f, 0.51f, 1f);
             if (status.Contains("HOVER") || status.Contains("HOLD") || status.Contains("PAUS"))
-                return warningTexture;
+                return new Color(0.71f, 0.82f, 0.92f, 1f);
             if (status.Contains("RUN") || status.Contains("ACTIVE") || status.Contains("ONLINE") ||
                 status.Contains("SUCCESS"))
-                return activeTexture;
-            return inactiveTexture;
+                return new Color(0.76f, 0.9f, 0.89f, 1f);
+            return new Color(0.65f, 0.8f, 0.8f, 1f);
         }
 
         private static string NormalizeStatus(string status)
         {
             if (string.IsNullOrWhiteSpace(status))
                 return "ONLINE";
-            string normalized = status.Trim().ToUpperInvariant();
-            return normalized.Length <= 12 ? normalized : normalized.Substring(0, 12);
+            return status.Trim().ToUpperInvariant();
         }
 
         private void EnsureGuiResources()
         {
             if (backgroundTexture)
                 return;
-            backgroundTexture = Solid(new Color(0.018f, 0.085f, 0.102f, 0.9f));
+            backgroundTexture = Solid(new Color(0.035f, 0.137f, 0.16f, 0.85f));
             selectedBackgroundTexture = Solid(new Color(0.12f, 0.105f, 0.045f, 0.94f));
-            lineTexture = Solid(Color.white);
-            uavTexture = Solid(new Color(1f, 0.31f, 0.29f, 1f));
-            usvTexture = Solid(new Color(0.78f, 0.88f, 0.88f, 1f));
-            activeTexture = Solid(new Color(0.28f, 0.91f, 0.58f, 1f));
-            warningTexture = Solid(new Color(1f, 0.76f, 0.24f, 1f));
-            inactiveTexture = Solid(new Color(0.49f, 0.61f, 0.63f, 1f));
 
             codeStyle = new GUIStyle(GUI.skin.label)
             {
-                alignment = TextAnchor.MiddleLeft,
+                alignment = TextAnchor.MiddleCenter,
                 fontStyle = FontStyle.Bold,
                 clipping = TextClipping.Clip,
+                richText = false,
+                wordWrap = false,
                 padding = new RectOffset(0, 0, 0, 0)
             };
             statusStyle = new GUIStyle(codeStyle)
@@ -344,12 +320,6 @@ namespace UavUsv
                 fleetManager.FleetChanged -= RebuildTargets;
             DestroyTexture(backgroundTexture);
             DestroyTexture(selectedBackgroundTexture);
-            DestroyTexture(lineTexture);
-            DestroyTexture(uavTexture);
-            DestroyTexture(usvTexture);
-            DestroyTexture(activeTexture);
-            DestroyTexture(warningTexture);
-            DestroyTexture(inactiveTexture);
         }
 
         private static void DestroyTexture(Texture2D texture)

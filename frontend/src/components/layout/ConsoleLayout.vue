@@ -334,8 +334,14 @@ async function logout() {
 
 .sidebar-collapsed .console-navigation :deep(.nav-item) {
   justify-content: center;
+  gap: 0;
   padding-right: 0;
   padding-left: 0;
+}
+
+.sidebar-collapsed .console-sidebar-user {
+  justify-content: center;
+  gap: 0;
 }
 
 .sidebar-collapsed .console-sidebar-footer {

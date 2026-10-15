@@ -249,7 +249,7 @@ onBeforeUnmount(() => monitoringStore.disconnectEvents())
 </script>
 
 <template>
-  <ConsoleLayout title="设备管理" eyebrow="DEVICE REGISTRY">
+  <ConsoleLayout title="设备管理" eyebrow="DEVICE REGISTRY" class="device-management-theme">
     <template #actions>
       <el-button v-if="canManage" type="primary" :icon="Plus" @click="openCreate">新增设备</el-button>
     </template>
@@ -346,6 +346,7 @@ onBeforeUnmount(() => monitoringStore.disconnectEvents())
 
       <div class="table-footer">
         <el-pagination
+          popper-class="device-management-popper"
           background
           layout="total, prev, pager, next, sizes"
           :total="deviceStore.total"
@@ -364,10 +365,10 @@ onBeforeUnmount(() => monitoringStore.disconnectEvents())
           <el-form-item label="设备编号" prop="code"><el-input v-model="form.code" placeholder="例如 uav-01" /></el-form-item>
           <el-form-item label="设备名称" prop="name"><el-input v-model="form.name" placeholder="例如 协同无人机" /></el-form-item>
           <el-form-item label="设备类型" prop="type">
-            <el-select v-model="form.type"><el-option v-for="item in typeOptions" :key="item.value" :label="item.label" :value="item.value" /></el-select>
+            <el-select v-model="form.type" popper-class="device-management-popper"><el-option v-for="item in typeOptions" :key="item.value" :label="item.label" :value="item.value" /></el-select>
           </el-form-item>
           <el-form-item label="运行状态" prop="status">
-            <el-select v-model="form.status"><el-option v-for="item in statusOptions" :key="item.value" :label="item.label" :value="item.value" /></el-select>
+            <el-select v-model="form.status" popper-class="device-management-popper"><el-option v-for="item in statusOptions" :key="item.value" :label="item.label" :value="item.value" /></el-select>
           </el-form-item>
           <el-form-item label="主机地址" prop="host"><el-input v-model="form.host" placeholder="例如 172.30.244.87" /></el-form-item>
           <el-form-item label="端口" prop="port"><el-input-number v-model="form.port" :min="1" :max="65535" controls-position="right" class="full-control" /></el-form-item>

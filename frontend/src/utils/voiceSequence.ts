@@ -20,11 +20,13 @@ export function splitVoiceSequence(text: string) {
 export function sequenceMatchesSpeech(text: string, steps: VoiceSequencePlanStep[],
   deviceValid: (target: string | undefined, command: string | undefined, text: string) => boolean) {
   const clauses = splitVoiceSequence(text)
+  const explicitlyOrdered = /^(?:请)?先/u.test(text.replace(/\s+/gu, ''))
   if (clauses.length < 2 || clauses.length > 4 || clauses.length !== steps.length) return false
   let lastTarget: string | undefined
   return steps.every((step, index) => {
     let clause = clauses[index]!
     if (step.index !== index) return false
+    if (Boolean(step.waitForPrevious) !== (explicitlyOrdered && index > 0)) return false
     if (step.action === 'WAIT') {
       const wait = clause.match(/^(?:等待|等)([一二三四五六七八九十]|\d{1,2})秒$/u)
       const seconds = wait ? /^\d+$/.test(wait[1]!) ? Number(wait[1]) : '一二三四五六七八九十'.indexOf(wait[1]!) + 1 : 0
@@ -36,6 +38,9 @@ export function sequenceMatchesSpeech(text: string, steps: VoiceSequencePlanStep
     }
     if (lastTarget && /^(?:它)?(?:悬停|驻留|待命|返航|返回|归队|继续|停止|降落|停船)$/u.test(clause)) clause = lastTarget + clause.replace(/^它/u, '')
     lastTarget = step.targetDeviceCode
+    // Whole-utterance normalization already ran before splitting. A clause
+    // must not gain a new single-command ASR repair by losing its context.
+    if (normalizeVoiceDeviceTerms(clause) !== clause) return false
     return deviceValid(step.targetDeviceCode, step.deviceCommandType, clause)
   })
 }
@@ -55,7 +60,7 @@ const interruptedSequenceStates = new Set(['FAILED', 'REJECTED', 'INVALIDATED', 
 
 export function sequenceInterruptionNotice(execution: VoiceExecution | null, context?: Pick<VoiceRuntimeContext, 'runtimeRef' | 'runtimeGeneration' | 'state'> | null) {
   if (!execution || execution.action !== 'SEQUENCE' || !interruptedSequenceStates.has(execution.state)) return ''
-  const notice = '顺序指令已中断，后续步骤不会自动继续；已成功步骤不会自动撤销。'
+  const notice = '顺序指令已中断，后续步骤不会自动继续；已成功步骤不会自动撤销。已下发的并行动作不会自动撤销，请核对设备状态。'
   const reasons: Record<string, string> = {
     GENERATION_MISMATCH: '场景运行代次已变化，原计划不再适用。',
     HEARTBEAT_STALE: '算法心跳失效，不能继续核实执行条件。',
@@ -88,7 +93,13 @@ export function sequenceStepHint(execution: VoiceExecution, step: VoiceSequenceE
   const interrupted = interruptedSequenceStates.has(execution.state)
   if (step.state === 'PENDING') {
     if (interrupted) return step.executionId || step.startedAt ? '结果待核对' : '未执行（顺序已中断）'
-    return execution.state === 'SUCCEEDED' ? '步骤回执待核对' : '等待前一步'
+    if (execution.state === 'SUCCEEDED') return '步骤回执待核对'
+    if (!execution.steps) return '等待前一步'
+    const preceding = execution.steps.filter(item => item.index < step.index && item.state !== 'SUCCEEDED')
+    if (preceding.some(item => item.action === 'WAIT')) return '等待计时步骤完成'
+    if (step.waitForPrevious || step.action !== 'DEVICE_COMMAND' || preceding.some(item => item.waitForPrevious || item.action !== 'DEVICE_COMMAND')) return '等待前序动作完成'
+    if (preceding.some(item => item.targetDeviceCode === step.targetDeviceCode)) return '等待同一设备前序动作完成'
+    return '等待调度 · 可与其他设备并行'
   }
   if (interrupted && ['QUEUED', 'DISPATCHED', 'ACCEPTED', 'EXECUTING'].includes(step.state)) {
     // The parent may have timed out while a child is still moving or awaiting a receipt.
@@ -96,8 +107,7 @@ export function sequenceStepHint(execution: VoiceExecution, step: VoiceSequenceE
   }
   if (step.state === 'EXECUTING' && execution.state === 'EXECUTING') {
     if (step.action === 'WAIT') return '计时等待中'
-    if (execution.sequenceStatus === 'WAITING_STEP_PRECONDITION' && step.index === execution.currentStepIndex
-      && ['UAV_RETURN', 'USV_RETURN', 'UAV_RESUME', 'USV_RESUME', 'UAV_LAND'].includes(step.deviceCommandType ?? '')) {
+    if (['UAV_RETURN', 'USV_RETURN', 'UAV_RESUME', 'USV_RESUME', 'UAV_LAND'].includes(step.deviceCommandType ?? '')) {
       return '指令已接受，等待实际到位'
     }
   }

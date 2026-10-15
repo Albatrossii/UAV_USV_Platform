@@ -421,15 +421,12 @@ def build_adapter(algorithm: str, run_id: int, config: dict):
                 "state": "SHORE_RELEASE",
                 "valid": True,
             })
-        if base_algorithm == "GB_SFLA_CS":
+        if base_algorithm == "GB_SFLA_CS" or bool(config.get("adaptiveMultiTarget", False)):
             planner_config["initialPoses"] = [*launch_poses, *target_poses]
             planner_config["shoreDeploymentMode"] = "SAFE_RELEASE"
         else:
-            # Escort formation generation is coupled to its guarded convoy
-            # geometry. Keep that planner's established offshore handoff;
-            # the short safe-release optimization applies to direct capture,
-            # which is the mode whose target must escape immediately after
-            # the near-shore launch completes.
+            # The legacy vendor controller has no executed-pose handoff. Its
+            # separate compatibility path retains the original assembly gate.
             planner_config["initialPoses"] = target_poses
     if base_algorithm == "GB_SFLA_CS":
         adapter = (AdaptiveCaptureAdapter(run_id, planner_config)
@@ -459,7 +456,7 @@ def main() -> int:
     parser.add_argument("--config", default="{}")
     parser.add_argument("--config-base64", default="")
     parser.add_argument("--config-file", default="")
-    parser.add_argument("--fps", type=float, default=6.0)
+    parser.add_argument("--fps", type=float, default=10.0)
     parser.add_argument("--autostart", action="store_true")
     parser.add_argument("--command-protocol", choices=("legacy", "v1"), default="legacy")
     parser.add_argument("--runtime-ref", default="")

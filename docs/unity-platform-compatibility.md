@@ -1,5 +1,50 @@
 # Unity–平台兼容层
 
+## 当前算法仿真的实际构建路径（2026-10-14）
+
+`/?workspace=simulation` 使用独立的 `unity-virtual-fleet`，不是下面旧任务中心的
+`AlgorithmScenarioBridge.poseFrame`。实际链路为：
+
+`applyPoseBatch → VirtualFleetScenarioController → VirtualFleetManager → Unity 显示`。
+
+当前本机工程为 `F:/UVA_USV/UAV_USV_Unity_VirtualFleet`，编辑器为
+`F:/Software/Hub/2022.3.57f1/Editor/Unity.exe`。本轮修改前该工程已有未提交的
+岸边基础设施、标签和镜头修改，均已保留，不能用旧平台桥文件整目录覆盖。
+
+本轮受控显示层源文件快照位于 `unity-tools/virtual-fleet/Assets/`，对应实际工程的
+`Assets/` 路径。这是从上述工程当前工作树保留既有改动后生成的独立 overlay，
+并非从旧 `unity-tools/Assets/` 兼容桥推导的替代文件。同步前先比较目标工程差异，
+只合并对应文件；不要覆盖其他 Unity 业务、场景、地形或已有未提交改动。
+
+- `VirtualFleetScenarioController.cs` 将 `sampleTime` 交给显示层。
+- `VirtualFleetPosePlayback.cs` 采用 180 ms 时间戳缓冲和线性插值，不外推。
+  普通阶段变化不重置位置；只有显式生成/重置允许立即定位。断帧后从屏幕上
+  已有位置有限时地恢复，断流时保留最后位置，不外推运动。按界面要求，
+  不在 Unity 右上角绘制即时模式同步提示框；连接状态统一保留在网页顶部。
+- `VirtualFleetManager.cs` 保留最新权威期望位置，只将插值结果用于模型显示；
+  不修改 Python 的位置、速度、到位或任务完成判定。
+- `WebDeviceObserverCamera.cs` 保留 1.2 秒返回全景过渡及用户手动模式；全景
+  纳入当前运行的 UAV、USV、被护船/敌船，不加入停机坪、泊位或遗留场景船。
+  全景收缩需超过 6% 并持续 650 ms，扩张仍优先满足可见性。
+- `VirtualFleetPlaybackValidation.cs` 提供 10 个确定性显示回归用例，
+  `WebCameraTransitionValidation.cs` 保留既有 20 个镜头过渡用例。
+
+验证并构建（输出到暂存目录，成功后再部署 `Build/`，保留现有集成 `index.html`）：
+
+```powershell
+$env:UAV_USV_WEBGL_OUTPUT = 'F:/UAV_USV_Platform1/.local-tools/smooth-build/unity-virtual-fleet'
+& 'F:/Software/Hub/2022.3.57f1/Editor/Unity.exe' -batchmode -nographics -quit `
+  -projectPath 'F:/UVA_USV/UAV_USV_Unity_VirtualFleet' `
+  -executeMethod UavUsv.Editor.Tools.VirtualFleetPlaybackValidation.BuildValidated `
+  -logFile 'F:/UAV_USV_Platform1/.local-tools/smooth-build/validation-build.log'
+```
+
+`BuildValidated` 先执行位姿显示、镜头过渡和原有岸边基础设施回归，再调用
+`VueWebGlBuildTool.BuildVirtualFleet`。该构建只编译现有虚拟编队场景，不重建
+场景布局。若只验证，将方法改为 `VirtualFleetPlaybackValidation.Run`。
+
+以下章节描述旧系统总览/任务中心兼容桥，不能与上述独立仿真路径混用。
+
 当前平台 WebGL 基线对应 Unity 提交：
 
 - Unity commit：`f24959c32b072cc7f18ff815f6ab22a580fc531b`
@@ -64,3 +109,28 @@ Vue 只有收到完整就绪消息后才清空指令队列。Unity 画面加载�
 4. 六路视觉画面直接来自 Unity，无需等待 ROS 摄像头。
 5. 隐藏/显示轨迹必须收到 Unity 的 `trajectoryVisibilityChanged` 确认。
 6. 前端、后端和 Unity WebGL 构建全部通过后才可同步至正式项目。
+
+## 紧凑设备标签 B 方案（2026-10-15）
+
+`VirtualFleetDeviceLabelOverlay` 按设备编号、完整状态文字中较长一行的实际字体尺寸计算标签宽度；保留原有自适应字号，使用居中文字、1 像素细边框、轻量深色底。去掉类型/状态方块和连接线，选中设备保留金色边框。仅修改展示，不改变算法、设备位姿或相机逻辑。
+
+验证入口为 `UavUsv.Editor.Tools.VirtualFleetLabelValidation.BuildValidated`：先验证 72 组标签尺寸（含不同缩放、密集设备和长状态），再执行原有播放、相机及返航基础检查并构建 WebGL。使用 `UAV_USV_WEBGL_OUTPUT` 输出到隔离目录，成功后仅替换前端 `unity-virtual-fleet/Build` 资源，保留平台集成 `index.html`。本次已在独立六设备 WebGL 场景确认实际紧凑标签效果。
+
+## 出发阶段单设备接管（2026-10-15）
+
+岸边安全出发期间对单台设备下发“悬停/驻留/停止”，只接管指定设备，不再把它保留为全队集结屏障。其余设备继续完成安全起飞或离泊，完成后由剩余可用编组启动护航或协同围捕；被接管设备保持实际位置，收到“归队”后按限速路线加入当前实时编队。返航仍必须实际抵达对应停机坪或泊位后才算退出，不会因先前悬停而提前放行集结。
+
+运行帧通过 `deploymentDeferredCount` 和 `deploymentDeferredDeviceCodes` 区分“人工接管但可归队”与 `deploymentWithdrawnCount` 的“已返航退出”。前端会显示指定设备保持当前位置、其余设备继续任务。护航和协同围捕均覆盖 UAV 悬停、USV 驻留、继续出发和归队回归。
+
+## 原场景无人艇返航导航（2026-10-14）
+
+`scene-existing-v1` 的 USV 返航由算法服务统一执行，护航和协同围捕使用同一实现；不改变任务核心算法、原泊位或 Unity 地形。固定外海入口不再是必经点：从实际位置在安全水域图中按预计航行耗时选路，接入泊位通道的有效前向段。近泊位 32 米内最高 1.5 m/s，最后 8 米最高 0.6 m/s，均不超过用户设定速度；返航转向最高 60°/s，正常加速及航点减速使用 0.8 m/s²。
+
+- 数据：`algorithm-service/app/navigation/data/native_berth_water.json`，全球 ENU、2 米网格，范围 east `[-700,-40)`、north `[-600,100)`。每个安全格覆盖整个格内艇中心位置及 6 米船体净距；未知区域拒绝通行。`fleetOrigin` 只在导航接口转换一次。
+- 地图来自原 Catalina 地形三角面和原建筑水线边界，不是凭空设定的岸线。仅额外认可经过验证的原进港中心线，不把中心线的船体净距误当成横向通行宽度。
+- 动态船体阻挡会触发重规划；无安全路径时保持实际位置并输出 `WAITING_FOR_CLEAR_PATH`，不会直线穿岸、穿船或假报到港。暂停冻结返航；实际回到自己的泊位并对齐朝向后才输出 `RETURNED`。
+- 已在泊位不会驶离再绕回；驻留后重新返航从当时实际位置规划。新代码由新生成场景的 Python 进程加载，已有运行不热替换路线，也不需要重建 WebGL。
+
+变更地形、原基地几何或艇模型尺寸后，必须重新导出地图并回归，不能继续沿用旧安全认证。导出器为 `unity-tools/Assets/Editor/NativeBerthWaterExporter.cs`，Unity batch 入口 `UavUsv.Editor.Tools.NativeBerthWaterExporter.Run`，参数 `-nativeWaterOutput <JSON绝对路径>`；只在隔离验证场景计算，不保存场景或构建玩家。地图内记录地形依赖 hash 和安全判定口径。
+
+回归覆盖见 `test_usv_return_planner.py`、`test_native_return_navigation.py`、`test_return_infrastructure.py`：两种算法、原泊位幂等、近岸返航、驻留后重发、暂停、三艇同时返航、船体净距、限速和转向连续性。人工复测须先停止旧运行并重新生成场景，再分别录音“一号无人艇返航”“二号无人艇返航”；应向安全进港路径行驶，不应无条件先驶向旧外海入口。

@@ -61,6 +61,7 @@ export interface VoiceFrozenPlan {
 }
 
 export interface VoiceSequencePlanStep {
+  waitForPrevious?: boolean
   index: number
   action: VoiceAction | 'DEVICE_COMMAND' | 'WAIT'
   targetDeviceCode?: string

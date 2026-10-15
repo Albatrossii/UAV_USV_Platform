@@ -9,6 +9,8 @@ from typing import Dict
 
 from app.adapters.base import AlgorithmAdapter
 from app.adapters.return_infrastructure import ParkingSlot, validate_return_infrastructure
+from app.navigation.safety import SceneSafetyFilter
+from app.navigation.usv_return import NativeReturnPlanner, ReturnPathUnavailable
 from app.schemas import AgentFrame, RuntimeFrame
 
 
@@ -24,6 +26,10 @@ class _DeviceOverride:
     parking_slot: ParkingSlot | None = None
     route: list[tuple[str, tuple[float, float, float], float]] = field(default_factory=list)
     automatic_departure: bool = False
+    speed_mps: float = 0.0
+    return_replan_countdown: int = 0
+    return_path_blocked: bool = False
+    return_route_revision: int = 0
 
 
 class SingleDeviceControlAdapter(AlgorithmAdapter):
@@ -47,10 +53,17 @@ class SingleDeviceControlAdapter(AlgorithmAdapter):
         self._overrides: Dict[str, _DeviceOverride] = {}
         self._home: Dict[str, tuple[float, float, float, float]] = {}
         self._last_agents: Dict[str, AgentFrame] = {}
+        self._last_frame: RuntimeFrame | None = None
+        self._last_unavailable_codes: set[str] = set()
         self._return_infrastructure = validate_return_infrastructure(self.config)
         self._parking_slots = {
             slot.deviceCode: slot for slot in self._return_infrastructure.slots
         } if self._return_infrastructure else {}
+        self._native_return_planner = (
+            NativeReturnPlanner(self.config) if self._uses_existing_scene else None
+        )
+        self._return_safety = SceneSafetyFilter()
+        self._motion_frame: RuntimeFrame | None = None
         self._infrastructure_fleet_validated = False
         self._start_from_shore = self.config.get("startFromShore") is True
         self._safe_release_mode = (
@@ -59,11 +72,19 @@ class SingleDeviceControlAdapter(AlgorithmAdapter):
         self._deployment_frame: RuntimeFrame | None = None
         self._deployment_pending: set[str] = set()
         self._deployment_withdrawn: set[str] = set()
+        # A device held by the operator during shore release is temporarily
+        # unavailable, not an assembly barrier. The remaining fleet may enter
+        # the mission; RESUME later rejoins this device to the live formation.
+        self._deployment_deferred: set[str] = set()
         self._deployment_initial_distance: dict[str, float] = {}
         self._deployment_remaining_distance: dict[str, float] = {}
         self._simulation_elapsed_steps = 0
         self._deployment_elapsed_steps = 0
         self._deployment_complete = not self._start_from_shore
+        # Display-only high-water mark, owned by this run/adapter instance.
+        # It never gates the planner, device routes, or command execution.
+        self._lifecycle_progress = 0.0
+        self._lifecycle_started = False
         if self._start_from_shore:
             if not self._return_infrastructure:
                 raise ValueError("岸边出发需要配置停机坪和泊位")
@@ -123,6 +144,10 @@ class SingleDeviceControlAdapter(AlgorithmAdapter):
                 # Rejoining before deployment ends restores that obligation,
                 # including its safe departure route, before the planner runs.
                 self._deployment_pending.add(code)
+                self._deployment_withdrawn.discard(code)
+                self._deployment_deferred.discard(code)
+            elif self._start_from_shore:
+                self._deployment_deferred.discard(code)
                 self._deployment_withdrawn.discard(code)
             if override.mode == "REJOINING":
                 return override.mode
@@ -193,6 +218,12 @@ class SingleDeviceControlAdapter(AlgorithmAdapter):
             return override.mode
 
         if command in {"UAV_RETURN", "USV_RETURN"}:
+            if self._start_from_shore and not self._deployment_complete:
+                # Returning to a physical slot remains part of safe shore
+                # handling until arrival; a prior HOLD must not make it look
+                # settled prematurely.
+                self._deployment_deferred.discard(code)
+                self._deployment_pending.add(code)
             previous = self._overrides.get(code)
             if previous is not None and previous.mode in {"RETURNING", "RETURNED"}:
                 return previous.mode
@@ -223,21 +254,24 @@ class SingleDeviceControlAdapter(AlgorithmAdapter):
                 if abs(override.z - self._return_infrastructure.sea_level) > 1e-6 or (not self._uses_existing_scene and override.y <= self._return_infrastructure.shore.northMaxM):
                     raise ValueError("USV return requires a current pose in validated water at sea level")
                 if self._uses_existing_scene:
-                    override.route = [
-                        ("APPROACHING", (slot.approachEastM, slot.approachNorthM, slot.approachUpM), speed),
-                        ("APPROACHING", self._berth_slow_docking_point(slot), min(speed, 1.5)),
-                        ("DOCKING", slot.position, min(speed, 0.6)),
-                    ]
+                    # Plan from the executed position. The offshore anchor is
+                    # a verified corridor endpoint, not a compulsory detour.
+                    self._plan_native_return(code, override)
                 else:
                     override.route = [
                         ("APPROACHING", (slot.approachEastM, slot.approachNorthM, 0.0), speed),
                         ("CHANNEL", (slot.approachEastM, slot.northM, 0.0), min(speed, 1.5)),
                         ("DOCKING", slot.position, min(speed, 0.6)),
                     ]
-            override.return_stage = override.route[0][0]
+            if not override.return_path_blocked:
+                override.return_stage = override.route[0][0] if override.route else "ALIGNING_BERTH"
             if slot.kind == "BERTH" and not self._claim_berth_channel(code, slot):
                 override.return_stage = "WAITING_FOR_CHANNEL"
         elif mode in {"HOLDING", "STOPPED"}:
+            if (self._start_from_shore and not self._deployment_complete
+                    and code not in self._deployment_withdrawn):
+                self._deployment_deferred.add(code)
+                self._deployment_pending.discard(code)
             slot = self._parking_slots.get(code)
             if slot is not None and slot.kind == "BERTH":
                 queue = self._berth_channel_queues.get(self._berth_channel_key(slot), [])
@@ -251,6 +285,11 @@ class SingleDeviceControlAdapter(AlgorithmAdapter):
         return mode
 
     def step(self) -> RuntimeFrame:
+        if self._deployment_complete and set(self._overrides) != self._last_unavailable_codes:
+            self.base.reconcile_execution(
+                list(self._last_agents.values()), self._last_agents, tuple(self._overrides),
+            )
+            self._last_unavailable_codes = set(self._overrides)
         if self._start_from_shore and self.mission_active:
             # The planner is deliberately frozen until assembly. Its local
             # sequence cannot measure the takeoff and undocking simulation.
@@ -271,11 +310,14 @@ class SingleDeviceControlAdapter(AlgorithmAdapter):
                     )
             frame = deepcopy(self._deployment_frame)
         else:
-            frame = self.base.step()
+            frame = (deepcopy(self._last_frame)
+                     if self._start_from_shore and not self.mission_active and self._last_frame is not None
+                     else self.base.step())
         if self._start_from_shore:
             self.sequence += 1
             frame.sequence = self.sequence
             frame.timestamp = int(time.time() * 1000)
+        self._motion_frame = frame
         frame.algorithmCode = self.code
         agents = {agent.code.upper(): agent for agent in frame.agents}
         if self._return_infrastructure and not self._infrastructure_fleet_validated:
@@ -325,9 +367,12 @@ class SingleDeviceControlAdapter(AlgorithmAdapter):
                 if override.route:
                     if self._advance_route(code, override):
                         self._release_berth_channel(code)
+                        if self._safe_release_mode and code in self._deployment_pending:
+                            completed_rejoins.append(code)
                 else:
-                    target = (float(agent.x), float(agent.y), float(agent.z))
-                    if override.parking_slot:
+                    live_target = (None if code in self._deployment_pending else self.base.rejoin_target(code))
+                    target = live_target or (float(agent.x), float(agent.y), float(agent.z))
+                    if override.parking_slot or live_target is not None:
                         # Fixed-shore departures may be far from the fleet.
                         # Rejoin only on a speed-limited intercept of its live
                         # target, never by accelerating a fixed 20-frame blend.
@@ -369,6 +414,11 @@ class SingleDeviceControlAdapter(AlgorithmAdapter):
                 agent.assignedTargetCode = ""
 
         for code in completed_rejoins:
+            override = self._overrides[code]
+            # The release endpoint and its actual heading belong to execution,
+            # not the frozen planner's initial snapshot.
+            agents[code].x, agents[code].y, agents[code].z = override.x, override.y, override.z
+            agents[code].heading = override.heading
             self._overrides.pop(code, None)
             self._release_berth_channel(code)
             agents[code].status = "ACTIVE"
@@ -383,9 +433,13 @@ class SingleDeviceControlAdapter(AlgorithmAdapter):
             self._deployment_pending.difference_update(self._deployment_withdrawn)
             if not self._deployment_pending and self.mission_active:
                 self._deployment_complete = True
-                self.base.set_mission_active(True)
 
-        self._last_agents = {code: agent for code, agent in agents.items()}
+        if self._deployment_complete:
+            self.base.reconcile_execution(frame.agents, self._last_agents, tuple(self._overrides))
+            self._last_unavailable_codes = set(self._overrides)
+            self.base.set_mission_active(self.mission_active)
+
+        self._last_agents = {code: deepcopy(agent) for code, agent in agents.items()}
         states = {
             code: {
                 "controlAuthority": (
@@ -396,6 +450,11 @@ class SingleDeviceControlAdapter(AlgorithmAdapter):
                 **({"returnStage": override.return_stage,
                     "parkingSlot": override.parking_slot.deviceCode,
                     "parkingKind": override.parking_slot.kind} if override.parking_slot else {}),
+                **({"returnPathBlocked": override.return_path_blocked,
+                    "returnRouteRevision": override.return_route_revision,
+                    "returnSpeedMps": round(override.speed_mps, 3),
+                    "returnRemainingM": (None if override.return_path_blocked else round(self._return_remaining_distance(override), 2))}
+                   if override.mode == "RETURNING" and code.startswith("USV-") and self._uses_existing_scene else {}),
             }
             for code, override in sorted(self._overrides.items())
         }
@@ -444,7 +503,8 @@ class SingleDeviceControlAdapter(AlgorithmAdapter):
                 frame.metrics["completionBlocker"] = "INSUFFICIENT_ACTIVE_FORCE"
                 frame.metrics["missionDegradedReason"] = "INSUFFICIENT_ACTIVE_FORCE"
         if self._start_from_shore:
-            eligible = set(self._parking_slots) - self._deployment_withdrawn
+            eligible = (set(self._parking_slots) - self._deployment_withdrawn
+                        - self._deployment_deferred)
             fractions = []
             for code in eligible:
                 if code not in self._deployment_pending:
@@ -463,6 +523,8 @@ class SingleDeviceControlAdapter(AlgorithmAdapter):
             frame.metrics["deploymentReadyCount"] = len(eligible - self._deployment_pending)
             frame.metrics["deploymentTotalCount"] = len(self._parking_slots)
             frame.metrics["deploymentWithdrawnCount"] = len(self._deployment_withdrawn)
+            frame.metrics["deploymentDeferredCount"] = len(self._deployment_deferred)
+            frame.metrics["deploymentDeferredDeviceCodes"] = sorted(self._deployment_deferred)
             frame.metrics["deploymentState"] = "COMPLETE" if self._deployment_complete else "DEPLOYING" if self.mission_active else "PARKED"
             frame.metrics["deploymentMode"] = (
                 "SAFE_RELEASE" if self._safe_release_mode else "FULL_ASSEMBLY"
@@ -474,7 +536,83 @@ class SingleDeviceControlAdapter(AlgorithmAdapter):
                 frame.terminalStatus = None
                 frame.metrics["completionBlocker"] = "DEPLOYING" if self.mission_active else "PARKED"
                 frame.metrics["controlOverrideActive"] = any(not item.automatic_departure for item in self._overrides.values())
+            self._compose_lifecycle_progress(frame)
+        self._last_frame = deepcopy(frame)
+        self._motion_frame = None
         return frame
+
+    @staticmethod
+    def _progress_fraction(value: object) -> float | None:
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+            return None
+        return max(0.0, min(1.0, float(value)))
+
+    def _compose_lifecycle_progress(self, frame: RuntimeFrame) -> None:
+        """Compose measured lifecycle stages without changing runtime state.
+
+        A paused shore run reuses the last emitted deep-copy, which already
+        contains composed progress. Preserve the solver's normalized value in
+        taskProgress and read that on repeated snapshots instead of repeatedly
+        weighting missionProgress. Other adapters keep their legacy metrics.
+        """
+        if not self._start_from_shore or not self.code.startswith(("ESCORT_GUARD", "GB_SFLA_CS")):
+            return
+        metrics = frame.metrics
+        already_composed = metrics.get("progressCompositionVersion") == "shore-lifecycle-v1"
+        task = self._progress_fraction(metrics.get("taskProgress")) if already_composed else None
+        known = metrics.get("progressComponentsKnown")
+        if already_composed and isinstance(known, dict) and known.get("task") is False:
+            task = None
+        if not already_composed:
+            task = self._progress_fraction(metrics.get("missionProgress"))
+            if task is None:
+                task = self._progress_fraction(metrics.get("progress"))
+        deployment = self._progress_fraction(metrics.get("deploymentProgress"))
+        escort = self.code.startswith("ESCORT_GUARD")
+        assembly = self._progress_fraction(metrics.get("escortAssemblyProgress")) if escort else 0.0
+        if escort and assembly is None:
+            # Legacy frames can explicitly prove that no assembly obligation
+            # remains; task progress or elapsed time alone cannot prove it.
+            if metrics.get("escortAssemblyState") == "READY" or metrics.get("escortProtectionReady") is True:
+                assembly = 1.0
+        weights = {"deployment": 0.1, "escortAssembly": 0.2 if escort else 0.0, "task": 0.7 if escort else 0.9}
+        raw_components = {"deployment": deployment or 0.0, "escortAssembly": assembly or 0.0, "task": task or 0.0}
+        components = dict(raw_components)
+        if metrics.get("deploymentState") in {"PARKED", "DEPLOYING"}:
+            # FULL_ASSEMBLY has no additional near-guard phase and its frozen
+            # solver preview may already report assembly=1. That preview earns
+            # no near-guard/task credit until the actual shore release finishes.
+            components["escortAssembly"] = components["task"] = 0.0
+        measured = sum(weights[key] * value for key, value in components.items())
+        self._lifecycle_started = self._lifecycle_started or self.mission_active or self._simulation_elapsed_steps > 0
+        completed = frame.terminalStatus == "COMPLETED"
+        if completed:
+            displayed = 1.0
+        elif not self._lifecycle_started:
+            displayed = 0.0
+        elif not self.mission_active:
+            displayed = min(0.99, self._lifecycle_progress)
+        else:
+            # Replanning, a held member, and a withdrawn/rejoining craft may
+            # reduce individual measured fractions. Keep achieved lifecycle
+            # progress while exposing those current facts separately below.
+            displayed = min(0.99, max(self._lifecycle_progress, measured))
+        self._lifecycle_progress = displayed
+        # Replace the metrics dictionary so a base adapter retaining its
+        # dictionary cannot accidentally consume our display composition.
+        frame.metrics = {
+            **metrics,
+            "taskProgress": raw_components["task"],
+            "missionProgress": round(displayed, 6),
+            "progress": round(displayed, 6),
+            "progressCompositionVersion": "shore-lifecycle-v1",
+            "progressWeights": weights,
+            "progressComponents": components,
+            "progressRawComponents": raw_components,
+            "progressComponentsKnown": {"deployment": deployment is not None,
+                                        "escortAssembly": assembly is not None,
+                                        "task": task is not None},
+        }
 
     def _deployment_route_distance(self, code: str, override: _DeviceOverride) -> float:
         """Measure the remaining planned path, including takeoff and detours.
@@ -618,6 +756,30 @@ class SingleDeviceControlAdapter(AlgorithmAdapter):
             )
             return len(active_agents) < required
 
+        # Adaptive escort publishes its current structural quorum: a guard
+        # pair plus the still-required interception/containment members.
+        # Merely retaining one vehicle of each type is not sufficient there.
+        required_by_type = {}
+        for device_type, metric in (("UAV", "requiredActiveUavCount"), ("USV", "requiredActiveUsvCount")):
+            value = frame.metrics.get(metric)
+            if isinstance(value, (int, float)) and math.isfinite(value) and value >= 0:
+                required_by_type[device_type] = int(math.ceil(value))
+        if len(required_by_type) == 2:
+            counts = {
+                device_type: sum(agent.type.upper() == device_type for agent in active_agents)
+                for device_type in required_by_type
+            }
+            type_deficit = sum(max(0, required - counts[kind]) for kind, required in required_by_type.items())
+            required_total = frame.metrics.get("requiredActiveMissionDeviceCount", sum(required_by_type.values()))
+            if not isinstance(required_total, (int, float)) or not math.isfinite(required_total):
+                required_total = sum(required_by_type.values())
+            deficit = max(type_deficit, math.ceil(required_total) - len(active_agents), 0)
+            frame.metrics["requiredActiveDeviceTypes"] = [kind for kind, required in required_by_type.items() if required]
+            frame.metrics["missingActiveDeviceTypes"] = [kind for kind, required in required_by_type.items() if counts[kind] < required]
+            frame.metrics["activeMissionDeviceDeficit"] = deficit
+            frame.metrics["activeForceSufficient"] = deficit == 0
+            return deficit > 0
+
         active_types = {agent.type.upper() for agent in active_agents}
         frame.metrics["requiredActiveDeviceTypes"] = ["UAV", "USV"]
         missing = sorted({"UAV", "USV"} - active_types)
@@ -667,7 +829,131 @@ class SingleDeviceControlAdapter(AlgorithmAdapter):
             raise ValueError("return infrastructure requires a finite positive device speed")
         return min(15.0 if uav else 4.0, speed)
 
+    @staticmethod
+    def _return_remaining_distance(override: _DeviceOverride) -> float:
+        points = [(override.x, override.y, override.z), *(point for _, point, _ in override.route)]
+        return sum(math.dist(a, b) for a, b in zip(points, points[1:]))
+
+    def _return_obstacles(self, code: str, override: _DeviceOverride):
+        """Executed hulls, never the selected craft's stale algorithm target.
+
+        Cover this frame's swept neighbour displacement as well as its latest
+        pose. Other operator-controlled boats use their actual override poses.
+        A high aircraft does not create an imaginary surface obstruction.
+        """
+        frame = self._motion_frame or self._last_frame
+        if frame is None:
+            return []
+        result = []
+        old_targets = {item.code: item for item in self._last_frame.targets} if self._last_frame else {}
+        for item in [*frame.agents, *frame.targets]:
+            if item.code == code:
+                continue
+            other = self._overrides.get(item.code)
+            x, y, z = ((other.x, other.y, other.z) if other else (item.x, item.y, item.z))
+            separation = self._return_safety.required_separation("USV", item.type, override.z, z)
+            vertical = abs(z - override.z)
+            if vertical >= separation:
+                continue
+            radius = math.sqrt(max(0.0, separation * separation - vertical * vertical))
+            prior = self._last_agents.get(item.code) or old_targets.get(item.code)
+            swept = math.hypot(x - prior.x, y - prior.y) if prior else 0.0
+            result.append((x, y, radius + swept + 0.02))
+        return result
+
+    def _plan_native_return(self, code: str, override: _DeviceOverride) -> bool:
+        """A blocked/unknown water path means hold, never unsafe fallback."""
+        try:
+            route = self._native_return_planner.plan(
+                (override.x, override.y, override.z), override.parking_slot,
+                self._return_speed(code), self._return_obstacles(code, override),
+            )
+        except ReturnPathUnavailable:
+            override.route = []
+            override.return_path_blocked = True
+            override.return_stage = "WAITING_FOR_CLEAR_PATH"
+            override.speed_mps = 0.0
+            override.return_replan_countdown = 10
+            return False
+        override.route = route
+        override.return_path_blocked = False
+        override.return_route_revision += 1
+        override.return_replan_countdown = 10
+        return True
+
+    @staticmethod
+    def _turn_return_heading(override: _DeviceOverride, target: float) -> float:
+        # A differential-thrust boat may turn while stopped; no heading snaps.
+        error = (target - override.heading + 180.0) % 360.0 - 180.0
+        override.heading = (override.heading + max(-6.0, min(6.0, error))) % 360.0
+        return (target - override.heading + 180.0) % 360.0 - 180.0
+
+    def _advance_native_return(self, code: str, override: _DeviceOverride) -> bool:
+        override.return_replan_countdown = max(0, override.return_replan_countdown - 1)
+        if override.return_path_blocked:
+            if override.return_replan_countdown or not self._plan_native_return(code, override):
+                return False
+        slot = override.parking_slot
+        if not override.route:
+            # Empty planned route is only valid at the actual berth. Obstacle
+            # failures are kept separately and can never fake completion.
+            if math.dist((override.x, override.y, override.z), slot.position) > 0.05:
+                self._plan_native_return(code, override)
+                return False
+            override.speed_mps = 0.0
+            override.return_stage = "ALIGNING_BERTH"
+            return abs(self._turn_return_heading(override, slot.headingDeg)) < 1e-6
+
+        stage, target, limit = override.route[0]
+        position = (override.x, override.y, override.z)
+        obstacles = self._return_obstacles(code, override)
+        if not self._native_return_planner.route_clear(position, target, obstacles):
+            # Moving/held craft may cross a previously clear route. Replan at
+            # most once a second and hold the actual pose if no route exists.
+            override.speed_mps = 0.0
+            override.return_path_blocked = True
+            override.return_stage = "WAITING_FOR_CLEAR_PATH"
+            if override.return_replan_countdown == 0:
+                self._plan_native_return(code, override)
+            return False
+
+        override.return_stage = stage
+        distance = math.dist(position, target)
+        if distance <= min(1e-8, limit * 0.1):
+            override.x, override.y, override.z = target
+            override.speed_mps = 0.0
+            override.route.pop(0)
+            return False
+        heading = math.degrees(math.atan2(target[1] - override.y, target[0] - override.x)) % 360.0
+        error = self._turn_return_heading(override, heading)
+        if abs(error) > 6.0:
+            override.return_stage = "TURNING_TO_ROUTE"
+            override.speed_mps = 0.0
+            return False
+
+        # Brake for waypoints and docking before switching to the next leg.
+        # The discretised stopping-speed bound avoids hard corner snaps.
+        acceleration, dt = 0.8, 0.1
+        braking_speed = math.sqrt(2.0 * acceleration * distance + (acceleration * dt / 2) ** 2) - acceleration * dt / 2
+        desired = min(limit, braking_speed)
+        override.speed_mps += max(-acceleration * dt, min(acceleration * dt, desired - override.speed_mps))
+        travel = min(distance, override.speed_mps * dt)
+        candidate = tuple(a + (b - a) * travel / distance for a, b in zip(position, target))
+        if not self._native_return_planner.route_clear(position, candidate, obstacles):
+            override.speed_mps = 0.0
+            override.return_path_blocked = True
+            override.return_stage = "WAITING_FOR_CLEAR_PATH"
+            return False
+        override.x, override.y, override.z = candidate
+        if travel >= distance - 1e-9:
+            override.x, override.y, override.z = target
+            override.speed_mps = 0.0
+            override.route.pop(0)
+        return False
+
     def _advance_route(self, code: str, override: _DeviceOverride) -> bool:
+        if override.mode == "RETURNING" and code.startswith("USV-") and self._native_return_planner:
+            return self._advance_native_return(code, override)
         if not override.route:
             return True
         slot = override.parking_slot

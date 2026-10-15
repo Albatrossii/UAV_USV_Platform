@@ -274,6 +274,150 @@ class VoiceSequenceExecutorTests extends VoiceControlTests {
         assertEquals(2, count("voice_proposal"));
     }
 
+    private void prepareRunningSequence() {
+        prepareSequence();
+        heartbeat("RUNNING", 5, 2);
+        deviceFrame(2, "REJOINING", "ACTIVE");
+    }
+
+    private void deviceFrame(int sequence, String uav, String usv) {
+        var frame = j.object().put("sequence", sequence);
+        var agents = frame.putArray("agents");
+        agents.addObject().put("deviceCode", "UAV-001").put("status", uav);
+        agents.addObject().put("deviceCode", "USV-001").put("status", usv);
+        r.frame(ref(), gen(), frame);
+    }
+
+    private void addDevice(com.fasterxml.jackson.databind.node.ArrayNode steps, String target, String command) {
+        int index = steps.size();
+        steps.addObject().put("index", index).put("action", "DEVICE_COMMAND")
+                .put("targetDeviceCode", target).put("deviceCommandType", command);
+    }
+
+    private String childId(String id, int index) {
+        return app.execution(id).path("steps").path(index).path("executionId").asText("");
+    }
+
+    @Test
+    void differentDevicesOverlapWithoutReportingEarlyArrivalAndSurviveCoordinatorRestart() {
+        prepareRunningSequence();
+        var steps = j.mapper.createArrayNode();
+        addDevice(steps, "UAV-001", "UAV_RESUME");
+        addDevice(steps, "USV-001", "USV_HOLD");
+        String id = execution(confirm(sequenceProposal(steps))).path("executionId").asText();
+        sequences.tick(); sequences.tick();
+        assertTrue(childId(id, 1).isEmpty(), "Do not race an unacknowledged command");
+        markChildSucceeded(childId(id, 0));
+        sequences.tick();
+        assertFalse(childId(id, 1).isEmpty(), "Boat hold must not wait for UAV arrival");
+        assertEquals("EXECUTING", app.execution(id).path("steps").path(0).path("state").asText());
+        markChildSucceeded(childId(id, 1)); sequences.tick();
+        assertEquals("EXECUTING", app.execution(id).path("state").asText());
+        assertEquals("SUCCEEDED", app.execution(id).path("steps").path(1).path("state").asText());
+        sequences = new VoiceSequenceExecutor(s, t, r, app);
+        sequences.tick(); sequences.tick();
+        assertEquals(3, count("voice_execution"));
+        deviceFrame(3, "ACTIVE", "HOLDING"); sequences.tick();
+        assertEquals("SUCCEEDED", app.execution(id).path("state").asText());
+        j.validate("Execution", app.execution(id));
+    }
+
+    @Test
+    void sameDeviceWaitsButDoesNotBlockAnIndependentDevice() {
+        prepareRunningSequence();
+        var steps = j.mapper.createArrayNode();
+        addDevice(steps, "UAV-001", "UAV_RESUME");
+        addDevice(steps, "UAV-001", "UAV_HOVER");
+        addDevice(steps, "USV-001", "USV_HOLD");
+        String id = execution(confirm(sequenceProposal(steps))).path("executionId").asText();
+        sequences.tick(); markChildSucceeded(childId(id, 0)); sequences.tick();
+        assertTrue(childId(id, 1).isEmpty());
+        assertFalse(childId(id, 2).isEmpty());
+        markChildSucceeded(childId(id, 2)); sequences.tick();
+        deviceFrame(3, "ACTIVE", "HOLDING"); sequences.tick(); sequences.tick();
+        assertFalse(childId(id, 1).isEmpty());
+        markChildSucceeded(childId(id, 1)); sequences.tick();
+        assertEquals("SUCCEEDED", app.execution(id).path("state").asText());
+    }
+
+    @Test
+    void explicitWaitIsABarrierAndLastCommandCannotOvertakeIt() {
+        prepareRunningSequence();
+        var steps = j.mapper.createArrayNode();
+        addDevice(steps, "UAV-001", "UAV_RESUME");
+        steps.addObject().put("index", 1).put("action", "WAIT").put("waitSeconds", 3);
+        addDevice(steps, "USV-001", "USV_HOLD");
+        String id = execution(confirm(sequenceProposal(steps))).path("executionId").asText();
+        sequences.tick(); markChildSucceeded(childId(id, 0)); sequences.tick();
+        assertFalse(app.execution(id).path("steps").path(1).has("startedAt"));
+        assertTrue(childId(id, 2).isEmpty());
+        deviceFrame(3, "ACTIVE", "ACTIVE"); sequences.tick(); sequences.tick();
+        t.advance(2999); sequences.tick();
+        assertTrue(childId(id, 2).isEmpty());
+        t.advance(1); heartbeat("RUNNING", 5, 3); sequences.tick(); sequences.tick();
+        assertFalse(childId(id, 2).isEmpty());
+    }
+
+    @Test
+    void explicitlyOrderedDifferentDevicesStillWaitForPhysicalCompletion() {
+        prepareRunningSequence();
+        var steps = j.mapper.createArrayNode();
+        addDevice(steps, "UAV-001", "UAV_RESUME");
+        addDevice(steps, "USV-001", "USV_HOLD");
+        ((ObjectNode) steps.get(1)).put("waitForPrevious", true);
+        String id = execution(confirm(sequenceProposal(steps))).path("executionId").asText();
+        sequences.tick(); markChildSucceeded(childId(id, 0)); sequences.tick(); sequences.tick();
+        assertTrue(childId(id, 1).isEmpty());
+        deviceFrame(3, "ACTIVE", "ACTIVE"); sequences.tick(); sequences.tick();
+        assertFalse(childId(id, 1).isEmpty());
+        markChildSucceeded(childId(id, 1)); sequences.tick();
+        j.validate("Execution", app.execution(id));
+        assertEquals("SUCCEEDED", app.execution(id).path("state").asText());
+    }
+
+    @Test
+    void eachParallelMovementNeedsItsOwnNewFrameAndPauseWaitsForBoth() {
+        prepareRunningSequence();
+        var steps = j.mapper.createArrayNode();
+        addDevice(steps, "UAV-001", "UAV_RESUME");
+        addDevice(steps, "USV-001", "USV_RETURN");
+        steps.addObject().put("index", 2).put("action", "PAUSE");
+        String id = execution(confirm(sequenceProposal(steps))).path("executionId").asText();
+        sequences.tick(); markChildSucceeded(childId(id, 0));
+        deviceFrame(3, "REJOINING", "RETURNED"); sequences.tick();
+        markChildSucceeded(childId(id, 1)); sequences.tick();
+        assertEquals("EXECUTING", app.execution(id).path("steps").path(1).path("state").asText(), "Old arrival must not complete a newly dispatched return");
+        deviceFrame(4, "REJOINING", "RETURNED"); sequences.tick(); sequences.tick();
+        assertTrue(childId(id, 2).isEmpty());
+        assertEquals("SUCCEEDED", app.execution(id).path("steps").path(1).path("state").asText());
+        deviceFrame(5, "ACTIVE", "RETURNED"); sequences.tick(); sequences.tick();
+        assertFalse(childId(id, 2).isEmpty());
+    }
+
+    @Test
+    void parallelChildFailureStopsPendingWorkWithoutClaimingOtherMovementWasCancelled() {
+        prepareRunningSequence();
+        var steps = j.mapper.createArrayNode();
+        addDevice(steps, "UAV-001", "UAV_RESUME");
+        addDevice(steps, "USV-001", "USV_HOLD");
+        addDevice(steps, "UAV-001", "UAV_HOVER");
+        String id = execution(confirm(sequenceProposal(steps))).path("executionId").asText();
+        sequences.tick(); markChildSucceeded(childId(id, 0)); sequences.tick();
+        s.locked(() -> {
+            var child = s.get("voice_execution", childId(id, 1));
+            child.put("state", "FAILED").put("outcome", "FAILED").put("errorCode", "HOLD_FAILED");
+            s.save("voice_execution", child);
+            return null;
+        });
+        sequences.tick();
+        assertEquals("FAILED", app.execution(id).path("state").asText());
+        assertEquals("EXECUTING", app.execution(id).path("steps").path(0).path("state").asText());
+        assertTrue(childId(id, 2).isEmpty());
+        deviceFrame(3, "ACTIVE", "HOLDING"); sequences.tick();
+        assertTrue(childId(id, 2).isEmpty());
+        j.validate("Execution", app.execution(id));
+    }
+
     private void commandResult(
             ObjectNode child, String status, long eventSequence, String state, long stateVersion) {
         ObjectNode result = event("COMMAND_RESULT");

@@ -305,6 +305,161 @@ class IntentServiceTests {
     }
 
     @Test
+    void contextualHoldRepairsCommonAsrActionSyllablesOnlyForTheExactNumberedBoat() {
+        ObjectNode runtime = contextualBoatRuntime();
+        for (String noun : java.util.List.of("艇", "挺", "庭", "廷", "停", "听", "船")) {
+            for (String first : java.util.List.of("驻", "住", "注", "主")) {
+                for (String second : java.util.List.of("留", "流")) {
+                    String text = "二号无人" + noun + first + "。" + second + "。";
+                    String id = java.util.UUID.randomUUID().toString();
+                    ObjectNode original = request(id, text, hint());
+                    var data = (ObjectNode) service.interpret(7, id, original).body().get("data");
+                    assertEquals(text, original.path("text").asText(), "retain the original ASR text");
+                    assertEquals("CANDIDATE", data.path("status").asText(), text);
+                    assertEquals("二号无人艇驻留", data.path("normalizedText").asText(), text);
+                    assertEquals(new IntentService.TargetedCandidate("USV-002", "USV_HOLD"),
+                            service.requireTargetedCandidate(7, id, runtime), text);
+                }
+            }
+        }
+        for (String text : java.util.List.of("二号无人船主流。", "请让第2号无人听注．,流！", " 请 让 002 号 无人船 主 留。")) {
+            String id = java.util.UUID.randomUUID().toString();
+            service.interpret(7, id, request(id, text, hint()));
+            assertEquals(new IntentService.TargetedCandidate("USV-002", "USV_HOLD"),
+                    service.requireTargetedCandidate(7, id, runtime), text);
+        }
+    }
+
+    @Test
+    void ambiguousBoatNounsRequireAWholeNumberedUtteranceAndAnExactSupportedAction() {
+        ObjectNode runtime = contextualBoatRuntime();
+        Map<String, String> actions = Map.of(
+                "驻留", "USV_HOLD", "待命", "USV_HOLD", "保持", "USV_HOLD", "暂停", "USV_HOLD",
+                "归队", "USV_RESUME", "继续", "USV_RESUME", "返航", "USV_RETURN", "返回", "USV_RETURN",
+                "停止", "USV_STOP", "停船", "USV_STOP");
+        for (String noun : java.util.List.of("无人听", "无人船")) {
+            actions.forEach((action, expected) -> {
+                String text = "请让二号" + noun + action + "。";
+                String id = java.util.UUID.randomUUID().toString();
+                var data = (ObjectNode) service.interpret(7, id, request(id, text, hint())).body().get("data");
+                assertEquals("DEVICE_COMMAND", data.path("action").asText(), text);
+                assertEquals("请让二号无人艇" + action, data.path("normalizedText").asText(), text);
+                assertEquals(new IntentService.TargetedCandidate("USV-002", expected),
+                        service.requireTargetedCandidate(7, id, runtime), text);
+            });
+        }
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {
+            "二号无人船主流？", "二号无人听注留?", "二号无人艇主流？", "二号无人停驻留？",
+            "二号无人船暂停？", "二号无人听继续?", "二号无人艇驻留？", "暂停任务？", "开始任务?"
+    })
+    void originalQuestionsRemainNonActionableAfterRepeatedNormalization(String text) {
+        ObjectNode runtime = contextualBoatRuntime();
+        String id = java.util.UUID.randomUUID().toString();
+        var data = (ObjectNode) service.interpret(7, id, request(id, text, hint())).body().get("data");
+        assertEquals("NOT_ACTIONABLE", data.path("status").asText(), text);
+        assertEquals("QUESTION_ACTION", data.path("reason").asText(), text);
+        String normalized = data.path("normalizedText").asText();
+        assertTrue(normalized.contains("?") || normalized.contains("？"));
+        String repeatedId = java.util.UUID.randomUUID().toString();
+        var repeated = (ObjectNode) service.interpret(7, repeatedId, request(repeatedId, normalized, hint())).body().get("data");
+        assertEquals("NOT_ACTIONABLE", repeated.path("status").asText());
+        assertThrows(AsrFailure.class, () -> service.requireTargetedCandidate(7, id, runtime));
+        assertThrows(AsrFailure.class, () -> service.requireCandidate(7, id, "PAUSE", runtime));
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {
+            "主流", "无人船主流", "二号设备主流", "二号无人机主流", "二号无人船主流吗",
+            "不要二号无人船主流", "如果二号无人船主流", "报告二号无人船主流", "二号无人船主流或者返航",
+            "二号无人船主流返航", "二号无人船主流，然后一号无人艇驻留", "开始任务然后二号无人船主流",
+            "开始任务然后二号无人艇主流", "开始任务然后二号无人听驻留",
+            "报告二号无人船继续", "如果二号无人听暂停", "二号无人船继续吗", "无人听继续",
+            "一号和二号无人船驻留", "二号无人船暂停或者继续", "99号无人船主流", "0号无人听驻留",
+            "十二号无人船暂停", "1000号无人船暂停", "二号无人船悬停", "二号无人听降落"
+    })
+    void newAsrRepairsNeverEscapeTheirSingleAffirmativeDeviceBoundary(String text) {
+        ObjectNode runtime = contextualBoatRuntime();
+        String id = java.util.UUID.randomUUID().toString();
+        var data = (ObjectNode) service.interpret(7, id, request(id, text, hint())).body().get("data");
+        assertNotEquals("CANDIDATE", data.path("status").asText(), text);
+        assertThrows(AsrFailure.class, () -> service.requireTargetedCandidate(7, id, runtime), text);
+        assertThrows(AsrFailure.class, () -> service.requireSequenceCandidate(7, id, runtime), text);
+        for (String action : java.util.List.of("START", "PAUSE", "RESUME", "STOP"))
+            assertThrows(AsrFailure.class, () -> service.requireCandidate(7, id, action, runtime), text);
+    }
+
+    @Test
+    void negativeBoatCommandsKeepPrecedenceOverQuestionAndUnknownNounGates() {
+        contextualBoatRuntime();
+        for (String text : java.util.List.of("不要让二号无人船继续？", "二号无人听不归队", "二号无人停不驻留？")) {
+            String id = java.util.UUID.randomUUID().toString();
+            var data = (ObjectNode) service.interpret(7, id, request(id, text, hint())).body().get("data");
+            assertEquals("NOT_ACTIONABLE", data.path("status").asText(), text);
+            assertEquals("NEGATED_ACTION", data.path("reason").asText(), text);
+        }
+    }
+
+    private ObjectNode contextualBoatRuntime() {
+        ObjectNode runtime = runtime("START");
+        ((com.fasterxml.jackson.databind.node.ArrayNode) runtime.path("capabilities"))
+                .add("PAUSE").add("RESUME").add("STOP").add("DEVICE_COMMAND");
+        runtime.put("_algorithmCode", "ESCORT_GUARD");
+        runtime.putArray("_members").add("UAV-002").add("USV-001").add("USV-002");
+        when(runtimes.require(REF, 7)).thenReturn(runtime);
+        return runtime;
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {
+            "一号无人机返航，然后让二号无人船驻留",
+            "一号无人船返航，二号无人船驻留",
+            "开始任务然后二号无人船驻留", "开始任务后二号无人船驻留",
+            "开始任务让二号无人船驻留",
+            "先让一号无人机返航，再让二号无人船驻留",
+            "一号无人机返航，等待三秒，然后让二号无人船驻留",
+            "请让一号无人船驻留；让二号无人船返航。"
+    })
+    void boatAliasWorksInCompleteClausesWithoutDroppingOrderOrWait(String text) {
+        ObjectNode runtime = contextualBoatRuntime();
+        ((com.fasterxml.jackson.databind.node.ArrayNode) runtime.path("_members")).add("UAV-001");
+        String id = java.util.UUID.randomUUID().toString();
+        var data = (ObjectNode) service.interpret(7, id, request(id, text, hint())).body().get("data");
+        assertEquals("CANDIDATE", data.path("status").asText(), text);
+        assertEquals("SEQUENCE", data.path("action").asText(), text);
+        assertFalse(data.path("normalizedText").asText().contains("无人船"));
+        var steps = service.requireSequenceSteps(7, id, runtime);
+        assertEquals(text.contains("等待三秒") ? 3 : 2, steps.size());
+        assertEquals("USV-002", steps.get(steps.size() - 1).path("targetDeviceCode").asText());
+        assertEquals(text.startsWith("先"), steps.get(1).path("waitForPrevious").asBoolean());
+        if (text.contains("等待三秒")) {
+            assertEquals("WAIT", steps.get(1).path("action").asText());
+            assertEquals(3, steps.get(1).path("waitSeconds").asInt());
+        }
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {
+            "不要一号无人船返航，然后二号无人船驻留",
+            "一号无人船返航，然后二号无人船驻留吗？",
+            "如果一号无人船返航，然后二号无人船驻留",
+            "一号无人船返航，然后无人船驻留",
+            "一号无人船返航，然后99号无人船驻留",
+            "一号无人船返航，然后二号无人船悬停",
+            "一号无人船返航，然后二号无人船驻留或者返航",
+            "一号无人船返航，二号无人船驻留，等待三秒，二号无人船归队，暂停任务"
+    })
+    void multiClauseBoatRepairNeverDropsUnsafeOrUnsupportedParts(String text) {
+        ObjectNode runtime = contextualBoatRuntime();
+        String id = java.util.UUID.randomUUID().toString();
+        var data = (ObjectNode) service.interpret(7, id, request(id, text, hint())).body().get("data");
+        assertNotEquals("CANDIDATE", data.path("status").asText(), text);
+        assertThrows(AsrFailure.class, () -> service.requireSequenceSteps(7, id, runtime));
+    }
+
+    @Test
     void controlledTwoStepSequenceProducesFrozenCandidate() {
         ObjectNode runtime = runtime("START");
         ((com.fasterxml.jackson.databind.node.ArrayNode) runtime.path("capabilities"))
@@ -327,6 +482,7 @@ class IntentServiceTests {
             assertEquals("START", data.path("steps").path(0).path("action").asText());
             assertEquals("UAV-001", data.path("steps").path(1).path("targetDeviceCode").asText());
             assertEquals("UAV_HOVER", data.path("steps").path(1).path("deviceCommandType").asText());
+            assertEquals(text.startsWith("先"), data.path("steps").path(1).path("waitForPrevious").asBoolean());
             assertDoesNotThrow(() -> service.requireCandidate(7, id, "SEQUENCE", runtime));
             assertEquals(
                     new IntentService.TargetedCandidate("UAV-001", "UAV_HOVER"),

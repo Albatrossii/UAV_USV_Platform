@@ -64,6 +64,7 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
+        "waitForPrevious": { "type": "boolean" },
         "index": {
           "type": "integer",
           "minimum": 0,
@@ -145,6 +146,7 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
+        "waitForPrevious": { "type": "boolean" },
         "index": {
           "type": "integer",
           "minimum": 0,

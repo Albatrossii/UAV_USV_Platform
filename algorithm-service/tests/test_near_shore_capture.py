@@ -139,7 +139,10 @@ def test_near_shore_mission_progresses_and_completes_without_shortcutting_pursui
             break
     else:
         pytest.fail("near-shore deployment did not complete")
-    assert frame.metrics["progress"] == 0.0
+    # Shore departure earns lifecycle credit; the capture task itself must
+    # still be untouched when execution is handed over to the planner.
+    assert frame.metrics["taskProgress"] == 0.0
+    assert frame.metrics["progress"] == pytest.approx(0.1)
     assert frame.metrics["requiredPursuitDistanceM"] == 80.0
     for _ in range(5000):
         frame = adapter.step()

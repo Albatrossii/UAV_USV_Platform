@@ -336,4 +336,84 @@ describe('single device command camera director', () => {
     vi.advanceTimersByTime(1000)
     expect(overview).toHaveBeenCalledTimes(1)
   })
+
+  function fourSteps() {
+    const observation = sequence()
+    observation.proposal!.plan.explicitDeviceCodes = ['UAV-001', 'USV-001']
+    observation.proposal!.plan.steps!.push(
+      { index: 2, action: 'WAIT', waitSeconds: 40 },
+      { index: 3, action: 'DEVICE_COMMAND', targetDeviceCode: 'USV-001', deviceCommandType: 'USV_HOLD' },
+    )
+    observation.execution!.steps!.push(
+      { index: 2, action: 'WAIT', waitSeconds: 40, state: 'PENDING', executionId: null, errorCode: null },
+      { index: 3, action: 'DEVICE_COMMAND', targetDeviceCode: 'USV-001', deviceCommandType: 'USV_HOLD',
+        state: 'PENDING', executionId: null, errorCode: null },
+    )
+    Object.assign(observation.execution!.steps![1]!, {
+      state: 'DISPATCHED', executionId: 'hover-1', startedAt: new Date().toISOString(),
+    })
+    return observation
+  }
+
+  it('focuses each dispatched device in a multi-step plan once, including after a long wait', () => {
+    const { director, focus, overview } = rig()
+    const observation = fourSteps()
+    director.observe(observation)
+    director.observe(observation)
+    vi.advanceTimersByTime(2500)
+    observation.execution!.steps![1]!.state = 'SUCCEEDED'
+    observation.execution!.steps![2]!.state = 'EXECUTING'
+    director.observe(observation)
+    expect(focus.mock.calls).toEqual([['UAV-001']])
+    vi.advanceTimersByTime(40_000)
+    observation.execution!.steps![2]!.state = 'SUCCEEDED'
+    Object.assign(observation.execution!.steps![3]!, {
+      state: 'DISPATCHED', executionId: 'hold-1', startedAt: new Date().toISOString(),
+    })
+    director.observe(observation)
+    director.observe(observation)
+    vi.advanceTimersByTime(2500)
+    expect(focus.mock.calls).toEqual([['UAV-001'], ['USV-001']])
+    expect(overview).toHaveBeenCalledTimes(2)
+  })
+
+  it('does not replay old device steps when restoring a sequence', () => {
+    const { director, focus } = rig()
+    const observation = fourSteps()
+    vi.advanceTimersByTime(31_000)
+    director.observe(observation)
+    expect(focus).not.toHaveBeenCalled()
+  })
+
+  it('keeps manual navigation in control for the rest of the current sequence', () => {
+    const { director, focus, overview } = rig()
+    const observation = fourSteps()
+    director.observe(observation)
+    director.cancel()
+    observation.execution!.steps![1]!.state = 'SUCCEEDED'
+    observation.execution!.steps![2]!.state = 'SUCCEEDED'
+    Object.assign(observation.execution!.steps![3]!, {
+      state: 'DISPATCHED', executionId: 'hold-1', startedAt: new Date().toISOString(),
+    })
+    director.observe(observation)
+    vi.advanceTimersByTime(5000)
+    expect(focus.mock.calls).toEqual([['UAV-001']])
+    expect(overview).not.toHaveBeenCalled()
+  })
+
+  it('rejects a later device step until every preceding step has succeeded', () => {
+    const { director, focus } = rig()
+    const observation = fourSteps()
+    Object.assign(observation.execution!.steps![3]!, { state: 'DISPATCHED', executionId: 'hold-1' })
+    director.observe(observation)
+    expect(focus).not.toHaveBeenCalled()
+  })
+
+  it('rejects a multi-step receipt whose wait differs from the frozen plan', () => {
+    const { director, focus } = rig()
+    const observation = fourSteps()
+    observation.execution!.steps![2]!.waitSeconds = 1
+    director.observe(observation)
+    expect(focus).not.toHaveBeenCalled()
+  })
 })

@@ -4,7 +4,7 @@ import math
 from abc import ABC, abstractmethod
 from typing import Dict, Mapping, Sequence
 
-from app.schemas import RuntimeFrame
+from app.schemas import AgentFrame, RuntimeFrame
 
 
 class AlgorithmAdapter(ABC):
@@ -25,6 +25,23 @@ class AlgorithmAdapter(ABC):
         current poses while resetting only mission counters at START.
         """
         self.mission_active = bool(active)
+
+    def reconcile_execution(
+        self,
+        agents: Sequence[AgentFrame],
+        previous_agents: Mapping[str, AgentFrame],
+        unavailable_codes: Sequence[str] = (),
+    ) -> None:
+        """Receive authoritative local poses after deployment/operator control.
+
+        Planning adapters override this to keep their next decision grounded in
+        the emitted state. Unavailable devices must not supply capture or guard
+        evidence. This hook never starts a new mission or resets target motion.
+        """
+
+    def rejoin_target(self, device_code: str) -> tuple[float, float, float] | None:
+        """Return a live task waypoint for an operator-controlled rejoin."""
+        return None
 
     def stabilize_heading(
         self,

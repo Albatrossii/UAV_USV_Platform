@@ -6,11 +6,11 @@ import time
 from dataclasses import dataclass, field
 from functools import lru_cache
 from heapq import heappop, heappush
-from typing import Dict, Sequence
+from typing import Dict, Mapping, Sequence
 
 from app.adapters.base import AlgorithmAdapter
 from app.adapters.escort_defense import DEPARTURE_DISTANCE, EscortDefenseCoordinator, inner_slots
-from app.adapters.shore_target_layout import read_shore_target_layout
+from app.adapters.shore_target_layout import read_escort_berth_layout, read_shore_target_layout
 from app.capture import (
     FormationSlot,
     RingMember,
@@ -37,6 +37,7 @@ CONVOY_TARGET_SPACING_M = 42.0
 # Keep the square close to both protected hulls while preserving the rendered
 # USV/escort-target clearance (5.2 + 7.3 + 1.4 = 13.9 m).
 CONVOY_GUARD_MARGIN_M = 15.0
+CLOSE_PROTECTION_SLOT_TOLERANCE_M = 8.0
 SHORE_MARGIN_M = 28.0
 THREAT_DETECTION_M = 155.0
 THREAT_AWARENESS_M = 190.0
@@ -219,12 +220,16 @@ class AdaptiveEscortAdapter(AlgorithmAdapter):
             -half_height + SHORE_MARGIN_M, half_height - SHORE_MARGIN_M,
         )
         self.safety = SceneSafetyFilter({"bounds": list(self.safe_bounds), "obstacles": []})
+        self._berth_layout = read_escort_berth_layout(self.config)
         self.protected = self._create_protected()
         # Generate the original encounter first, then move both target classes
         # together exactly once. Generating threats around an already shifted
         # convoy would change their radius a second time near the water bounds.
         self.threats = self._create_threats()
-        self._place_targets_nearer_shore()
+        if self._berth_layout is not None:
+            self._place_escort_at_berth()
+        else:
+            self._place_targets_nearer_shore()
         protected_center_x = sum(item.x for item in self.protected) / len(self.protected)
         protected_center_y = sum(item.y for item in self.protected) / len(self.protected)
         self._protected_formation_offsets = {
@@ -251,6 +256,16 @@ class AdaptiveEscortAdapter(AlgorithmAdapter):
             item.code for item in initial_guards
         }
         self._separate_initial_response_craft()
+        self._unavailable_codes: set[str] = set()
+        self._withdrawn_vehicles: dict[str, _Vehicle] = {}
+        self._guard_replacement_pending = False
+        self._shore_assembly_required = self.config.get("shoreDeploymentMode") == "SAFE_RELEASE"
+        self._shore_assembly_pending = self._shore_assembly_required
+        self._escort_assembly_progress = 0.0 if self._shore_assembly_required else 1.0
+        self._escort_assembly_completed = not self._shore_assembly_required
+        self._escort_assembly_initial_errors: dict[tuple[str, int, int], float] = {}
+        if self._shore_assembly_required:
+            self._apply_release_poses()
         self.previous = {item.code: (item.x, item.y, item.z) for item in self.vehicles}
         self.avoidance_count = 0
         self.min_protected_threat_distance = math.inf
@@ -264,6 +279,8 @@ class AdaptiveEscortAdapter(AlgorithmAdapter):
         self._captured_rings_ready = False
         self._display_progress = 0.0
         self._display_escort_progress = 0.0
+        self._capture_slot_reference_errors: dict[tuple, float] = {}
+        self._capture_slot_progress: dict[str, float] = {}
         self._reported_mission_stage = "ESCORTING"
         self._final_containment_consolidated = False
         self._ring_slots: dict[int, dict[str, RingSlot]] = {}
@@ -322,6 +339,217 @@ class AdaptiveEscortAdapter(AlgorithmAdapter):
         self._tactical_events: list[dict[str, object]] = []
         self.defense = EscortDefenseCoordinator(self)
 
+    def _apply_release_poses(self) -> None:
+        """Begin at verified departure endpoints; assemble around the live hull."""
+        self._shore_encounter_radii = {
+            threat.code: self._distance_to_protected(threat) for threat in self.threats
+        }
+        poses = self.initial_pose_map()
+        for item in self.vehicles:
+            pose = poses.get(item.code)
+            if pose is None:
+                continue
+            item.x, item.y, item.z = self.initial_pose_to_local(pose)
+            heading = float(pose.get("headingDeg", 0.0)) % 360.0
+            speed = float(pose.get("speedMps", 0.0))
+            item.vx, item.vy = speed * math.cos(math.radians(heading)), speed * math.sin(math.radians(heading))
+            self._stable_headings[item.code] = heading
+        # Mission slots and target routes retain their original water bounds.
+        # Execution additionally needs the actual inlet from the shore; using
+        # the old scenario rectangle would project a released boat 100 m inland.
+        self.safety.bounds = (
+            min(self.safe_bounds[0], min(v.x for v in self.vehicles) - 10.0),
+            max(self.safe_bounds[1], max(v.x for v in self.vehicles) + 10.0),
+            min(self.safe_bounds[2], min(v.y for v in self.vehicles) - 10.0),
+            max(self.safe_bounds[3], max(v.y for v in self.vehicles) + 10.0),
+        )
+
+    def _protection_status(self) -> tuple[int, float]:
+        ready, remaining = 0, []
+        guards = [v for v in self.vehicles if v.role == "CLOSE_GUARD"]
+        for kind in ("UAV", "USV"):
+            candidates = [v for v in guards if v.kind == kind and v.code not in self._unavailable_codes]
+            errors = []
+            for item in candidates:
+                position = self._convoy_guard_slot_by_code.get(item.code, 0)
+                goal = self._convoy_guard_point(position, max(1, len(guards)))
+                errors.append(math.hypot(item.x - goal[0], item.y - goal[1]))
+            error = min(errors, default=math.inf)
+            remaining.append(error)
+            ready += int(error <= CLOSE_PROTECTION_SLOT_TOLERANCE_M)
+        return ready, max(remaining, default=0.0)
+
+    def _observe_escort_assembly(self, agents: Mapping[str, AgentFrame]) -> None:
+        """Measure initial close-protection approach from executed poses only.
+
+        The preview contains planned release poses, not observations. Establish
+        each guard's baseline only on reconciliation, and leave frame generation
+        read-only. Progress records real distance closed to the same 8 m gate
+        used by protection readiness; elapsed time never contributes.
+        """
+        if self._escort_assembly_completed:
+            return
+        guards = [v for v in self.vehicles if v.role == "CLOSE_GUARD"]
+        credit = {"UAV": 0.0, "USV": 0.0}
+        # Computing a live slot can populate the tactical sector cache. A
+        # presentation observation must not select or advance that sector.
+        prior_sector = self._guard_sector_angle, self._guard_sector_sequence
+        try:
+            for item in guards:
+                agent = agents.get(item.code)
+                if (agent is None or item.code in self._unavailable_codes
+                        or agent.status != "ACTIVE"
+                        or agent.role in {"DEPLOYMENT", "OPERATOR_CONTROLLED", "RETURNED"}
+                        or not all(math.isfinite(value) for value in (agent.x, agent.y, agent.z))):
+                    continue
+                position = self._convoy_guard_slot_by_code.get(item.code, 0)
+                goal = self._convoy_guard_point(position, max(1, len(guards)))
+                error = math.hypot(agent.x - goal[0], agent.y - goal[1])
+                if not math.isfinite(error):
+                    continue
+                key = item.code, position, len(guards)
+                initial = self._escort_assembly_initial_errors.setdefault(key, error)
+                if not self.mission_active:
+                    continue
+                tolerance = CLOSE_PROTECTION_SLOT_TOLERANCE_M
+                contribution = (1.0 if error <= tolerance else max(
+                    0.0, min(0.999999, (initial - error) / max(1e-6, initial - tolerance)),
+                ))
+                credit[item.kind] = max(credit[item.kind], contribution)
+        finally:
+            self._guard_sector_angle, self._guard_sector_sequence = prior_sector
+        if self.mission_active:
+            self._escort_assembly_progress = max(
+                self._escort_assembly_progress, (credit["UAV"] + credit["USV"]) / 2.0,
+            )
+            self._escort_assembly_completed = credit["UAV"] == credit["USV"] == 1.0
+
+    def reconcile_execution(
+        self,
+        agents: Sequence[AgentFrame],
+        previous_agents: Mapping[str, AgentFrame],
+        unavailable_codes: Sequence[str] = (),
+    ) -> None:
+        prior_unavailable = self._unavailable_codes
+        self._unavailable_codes = set(unavailable_codes)
+        by_code = {agent.code: agent for agent in agents}
+        all_vehicles = [*self.vehicles, *self._withdrawn_vehicles.values()]
+        for item in all_vehicles:
+            agent = by_code.get(item.code)
+            if agent is None:
+                continue
+            prior = previous_agents.get(item.code)
+            if prior is not None and prior is not agent:
+                item.vx, item.vy = (agent.x - prior.x) / DT, (agent.y - prior.y) / DT
+            item.x, item.y, item.z = float(agent.x), float(agent.y), float(agent.z)
+            self.previous[item.code] = (item.x, item.y, item.z)
+            self._stable_headings[item.code] = float(agent.heading) % 360.0
+        withdrawn = {code for code, agent in by_code.items()
+                     if code in self._unavailable_codes and agent.status == "RETURNED"}
+        changed_membership = withdrawn != set(self._withdrawn_vehicles)
+        affected_threats: set[int] = set()
+        if changed_membership:
+            for item in all_vehicles:
+                if item.code in withdrawn:
+                    if item.assigned_threat is not None:
+                        affected_threats.add(item.assigned_threat)
+                    self._convoy_guard_slot_by_code.pop(item.code, None)
+                    item.assigned_threat = None
+                    item.role, item.group_id = "WITHDRAWN", "RETURNED"
+                    item.final_slot_angle = None
+                    self._withdrawn_vehicles[item.code] = item
+                elif item.code in self._withdrawn_vehicles:
+                    self._withdrawn_vehicles.pop(item.code)
+                    item.role, item.group_id = "RECON", f"RECON-{item.protected_index + 1:03d}"
+            # Withdrawn craft remain in every emitted frame, but no planner,
+            # guard allocator or geometric completion test can enrol them.
+            self.vehicles = sorted((v for v in all_vehicles if v.code not in withdrawn), key=lambda v: v.code)
+            affected_threats.update(self._replace_withdrawn_guards())
+            self._post_mission_formation_initialized = False
+            self._post_mission_final_replan_done = False
+            self._convoy_support_ready_frames = 0
+        if changed_membership or prior_unavailable - self._unavailable_codes:
+            active = [t for t in self.threats if t.forced and t.state not in {"CAPTURED", "SECURED", "ESCAPED"}]
+            if active:
+                self._rebalance_capture_groups(active)
+                affected_threats.update(self.threats.index(t) for t in active)
+            for index in affected_threats:
+                threat = self.threats[index]
+                threat.capture_hold = 0
+                threat.containment_stage_latched = False
+                if threat.state in {"CAPTURED", "SECURED", "CAPTURE_HOLD"}:
+                    threat.state = "ENCIRCLING"
+                    threat.captured_frame = None
+                self._freeze_even_slot_angles(index)
+            self._stable_containment_ready_frame = None
+            self._safe_gate_transit_started_frame = None
+        blocking = self._unavailable_codes - set(self._withdrawn_vehicles)
+        if blocking:
+            for index, threat in enumerate(self.threats):
+                if any(v.assigned_threat == index and v.code in self._unavailable_codes for v in self.vehicles):
+                    threat.capture_hold = 0
+        if (blocking or changed_membership) and self._terminal_status == "COMPLETED":
+            self._terminal_status = None
+            self._terminal_reason = ""
+        self._observe_escort_assembly(by_code)
+
+    def _replace_withdrawn_guards(self) -> set[int]:
+        """Reserve a real mixed replacement; the convoy waits for its arrival."""
+        affected: set[int] = set()
+        for kind in ("UAV", "USV"):
+            if any(v.kind == kind and v.role == "CLOSE_GUARD" for v in self.vehicles):
+                continue
+            candidates = [v for v in self.vehicles if v.kind == kind and v.code not in self._unavailable_codes]
+            self._guard_replacement_pending = True
+            if not candidates:
+                continue
+            item = min(candidates, key=lambda v: (
+                v.assigned_threat is not None,
+                math.hypot(v.x - self.protected[v.protected_index].x, v.y - self.protected[v.protected_index].y),
+                v.code,
+            ))
+            if item.assigned_threat is not None:
+                affected.add(item.assigned_threat)
+            item.assigned_threat = None
+            item.final_slot_angle = None
+            item.role, item.group_id = "CLOSE_GUARD", f"GUARD-{item.protected_index + 1:03d}"
+            self._initial_convoy_guard_codes.add(item.code)
+            for screen in self.defense.screens.values():
+                if item.code in screen.codes:
+                    screen.codes.remove(item.code)
+                    screen.slots.pop(item.code, None)
+                    screen.origins.pop(item.code, None)
+        guards = sorted((v for v in self.vehicles if v.role == "CLOSE_GUARD"), key=lambda v: v.code)
+        self._convoy_guard_slot_by_code = {v.code: i for i, v in enumerate(guards)}
+        return affected
+
+    def _active_force_requirements(self) -> tuple[int, int, int]:
+        # A mixed close-protection pair remains reserved. Each unresolved or
+        # contained incident needs at least a three-member mixed geometric ring.
+        incidents = [t for t in self.threats if t.state != "ESCAPED"]
+        rings = len(incidents)
+        uavs = rings + 1
+        usvs = rings + 1
+        total = 3 * rings + 2
+        screening = sum(not t.cover_verified and not t.forced for t in incidents)
+        if screening:
+            # Preserve the original TWO-USV screen and its 40-frame reverse
+            # evidence; lack of force is not fixed by lowering that contract.
+            usvs = max(usvs, 2 * screening + 1)
+            total = max(total, uavs + usvs)
+        return uavs, usvs, total
+
+    def _active_force_sufficient(self) -> bool:
+        uavs, usvs, total = self._active_force_requirements()
+        available = [v for v in self.vehicles if v.code not in self._unavailable_codes]
+        return (sum(v.kind == "UAV" for v in available) >= uavs
+                and sum(v.kind == "USV" for v in available) >= usvs
+                and len(available) >= total)
+
+    def rejoin_target(self, device_code: str) -> tuple[float, float, float] | None:
+        item = next((v for v in self.vehicles if v.code == device_code), self._withdrawn_vehicles.get(device_code))
+        return None if item is None else self._desired_position(item)
+
     def _place_targets_nearer_shore(self) -> None:
         layout = read_shore_target_layout(self.config)
         if layout is None or layout.ratio == 1.0:
@@ -342,6 +570,117 @@ class AdaptiveEscortAdapter(AlgorithmAdapter):
                     raise ValueError(f"targetShoreDistanceRatio leaves insufficient target separation: {item.code}/{other.code}")
         for item, _, (x, y) in candidates:
             item.x, item.y = x, y
+
+    def _place_escort_at_berth(self) -> None:
+        """Initialize one outward route in the verified berth-side water."""
+        layout = self._berth_layout
+        assert layout is not None
+        ux, uy = layout.direction
+        old_x = sum(item.x for item in self.protected) / len(self.protected)
+        old_y = sum(item.y for item in self.protected) / len(self.protected)
+        offsets = [(item.x - old_x, item.y - old_y) for item in self.protected]
+        extent = max((math.hypot(*offset) for offset in offsets), default=0.0)
+        start_x, start_y = layout.east + ux * (45.0 + extent), layout.north + uy * (45.0 + extent)
+        shore_left, shore_right, shore_bottom, shore_top = layout.shore_bounds
+        def corridor_distance(x: float, y: float, start: tuple[float, float], end: tuple[float, float]) -> float:
+            dx, dy = end[0] - start[0], end[1] - start[1]
+            fraction = max(0.0, min(1.0, ((x - start[0]) * dx + (y - start[1]) * dy) / max(1e-6, dx * dx + dy * dy)))
+            return math.hypot(x - start[0] - dx * fraction, y - start[1] - dy * fraction)
+        for lateral in (0.0, 18.0, -18.0, 36.0, -36.0, 54.0, -54.0, 72.0, -72.0, 90.0, -90.0):
+            candidate_x, candidate_y = start_x - uy * lateral, start_y + ux * lateral
+            points = [(candidate_x + dx + gx, candidate_y + dy + gy)
+                      for dx, dy in offsets
+                      for gx, gy in ((0.0, 0.0), (15.0, -15.0), (-15.0, 15.0), (15.0, 15.0), (-15.0, -15.0))]
+            shore_clearance = min(
+                (shore_left - x if ux < 0 else x - shore_right)
+                if abs(ux) >= abs(uy) else (shore_bottom - y if uy < 0 else y - shore_top)
+                for x, y in points
+            )
+            if shore_clearance < 20.0:
+                continue
+            if all(corridor_distance(x, y, berth, approach) >= 14.0
+                   for x, y in points
+                   for berth, approach in zip(layout.berth_positions, layout.approach_positions)):
+                start_x, start_y = candidate_x, candidate_y
+                break
+        else:
+            raise ValueError("escort berth start has no clear position beside the departure corridors")
+        destination_x, destination_y = start_x + ux * 220.0, start_y + uy * 220.0
+        left = min(self.safe_bounds[0], start_x - 90.0 - extent, destination_x - 90.0 - extent)
+        right = max(self.safe_bounds[1], start_x + 90.0 + extent, destination_x + 90.0 + extent)
+        bottom = min(self.safe_bounds[2], start_y - 90.0 - extent, destination_y - 90.0 - extent)
+        top = max(self.safe_bounds[3], start_y + 90.0 + extent, destination_y + 90.0 + extent)
+        # The mission rectangle stays on the seaward side of the island.
+        # _apply_release_poses separately admits the real pad/berth inlet for
+        # fleet execution; it must not turn that inlet into target water.
+        if abs(ux) >= abs(uy):
+            if ux < 0:
+                right = min(right, shore_left - 14.0)
+            else:
+                left = max(left, shore_right + 14.0)
+        elif uy < 0:
+            top = min(top, shore_bottom - 14.0)
+        else:
+            bottom = max(bottom, shore_top + 14.0)
+        if left >= right or bottom >= top:
+            raise ValueError("escort berth route has no navigable seaward rectangle")
+        self.safe_bounds = left, right, bottom, top
+        self.safety.bounds = self.safe_bounds
+        heading = math.degrees(math.atan2(uy, ux)) % 360.0
+        for item, (dx, dy) in zip(self.protected, offsets):
+            item.x, item.y = start_x + dx, start_y + dy
+            item.destination_x, item.destination_y = destination_x + dx, destination_y + dy
+            item.heading = heading
+            if (self._project_to_safe_water(item.x, item.y, CONVOY_GUARD_MARGIN_M + 6.0) != (item.x, item.y)
+                    or self._project_to_safe_water(item.destination_x, item.destination_y, 20.0) != (item.destination_x, item.destination_y)):
+                raise ValueError("escort berth start and destination require clear guard water")
+            if any(math.hypot(item.x - x, item.y - y) < TARGET_SEPARATION_M for x, y in layout.berth_positions):
+                raise ValueError("escort berth start overlaps a configured berth")
+        for index, threat in enumerate(self.threats):
+            # Keep encounter distance independently of the older 2/3 target
+            # layout. Threats are in open water ahead, never beside the pads.
+            lateral = ((index % 3) - (min(3, len(self.threats)) - 1) / 2.0) * 54.0
+            forward = 120.0 + (index // 3) * 40.0
+            threat.x, threat.y = self._project_to_safe_water(
+                start_x + ux * forward - uy * lateral,
+                start_y + uy * forward + ux * lateral,
+                38.0,
+            )
+            toward_x, toward_y = _unit(start_x - threat.x, start_y - threat.y)
+            threat.vx, threat.vy = toward_x * threat.cruise_speed, toward_y * threat.cruise_speed
+            threat.heading = math.degrees(math.atan2(toward_y, toward_x)) % 360.0
+            if any(math.hypot(threat.x - item.x, threat.y - item.y) < TARGET_SEPARATION_M for item in self.protected):
+                raise ValueError("escort berth encounter overlaps the protected formation")
+            if any(math.hypot(threat.x - other.x, threat.y - other.y) < TARGET_SEPARATION_M for other in self.threats[:index]):
+                raise ValueError("escort berth encounter has insufficient threat separation")
+
+    def _escort_route_axis(self) -> tuple[float, float]:
+        return (1.0, 0.0) if self._berth_layout is None else self._berth_layout.direction
+
+    def _escort_route_station(self, item: _Protected, fraction: float) -> tuple[float, float]:
+        if self._berth_layout is None:
+            start_x = self.protected_start_x[item.code]
+            return start_x + (item.destination_x - PROTECTED_SAFE_GATE_OFFSET_M - start_x) * fraction, item.destination_y
+        start_x, start_y = self._protected_start_positions[item.code]
+        ux, uy = self._escort_route_axis()
+        length = math.hypot(item.destination_x - start_x, item.destination_y - start_y) - PROTECTED_SAFE_GATE_OFFSET_M
+        return start_x + ux * length * fraction, start_y + uy * length * fraction
+
+    def _limit_escort_approach(self, item: _Protected, x: float, y: float) -> tuple[float, float]:
+        """Keep the existing 96% pre-containment gate along the real route."""
+        if self._berth_layout is None:
+            limit_x, _ = self._escort_route_station(item, 0.96)
+            if x > limit_x:
+                x, item.vx = limit_x, min(0.0, item.vx)
+            return x, y
+        ux, uy = self._escort_route_axis()
+        limit_x, limit_y = self._escort_route_station(item, 0.96)
+        excess = (x - limit_x) * ux + (y - limit_y) * uy
+        if excess > 0.0:
+            x, y = x - ux * excess, y - uy * excess
+            forward_velocity = max(0.0, item.vx * ux + item.vy * uy)
+            item.vx, item.vy = item.vx - ux * forward_velocity, item.vy - uy * forward_velocity
+        return x, y
 
     def _create_protected(self) -> list[_Protected]:
         usable_width = self.safe_bounds[1] - self.safe_bounds[0]
@@ -2094,6 +2433,7 @@ class AdaptiveEscortAdapter(AlgorithmAdapter):
             available = [
                 item for item in self.vehicles
                 if item.kind == kind
+                and item.code not in self._unavailable_codes
                 and item.role not in {"CLOSE_GUARD", "BLOCKER", "CONFRONT"}
                 and item.assigned_threat is None
             ]
@@ -2414,10 +2754,10 @@ class AdaptiveEscortAdapter(AlgorithmAdapter):
             # still-live incident keep advancing through the gate while gently
             # returning to its lane; otherwise the convoy oscillates around
             # destination_x and can remain inside a forming ring forever.
-            goal_x, goal_y = _unit(
-                1.0,
-                max(-0.65, min(0.65, (destination_y - center_y) / 36.0)),
-            )
+            ux, uy = self._escort_route_axis()
+            lane_error = -(destination_x - center_x) * uy + (destination_y - center_y) * ux
+            correction = max(-0.65, min(0.65, lane_error / 36.0))
+            goal_x, goal_y = _unit(ux - uy * correction, uy + ux * correction)
         else:
             goal_x, goal_y = _unit(destination_x - center_x, destination_y - center_y)
         horizon = 7.0
@@ -2733,6 +3073,13 @@ class AdaptiveEscortAdapter(AlgorithmAdapter):
             target.state = state
 
     def _advance_protected(self) -> None:
+        guards_unavailable = any(v.role == "CLOSE_GUARD" and v.code in self._unavailable_codes for v in self.vehicles)
+        if (self._shore_assembly_pending or self._guard_replacement_pending
+                or guards_unavailable or not self._active_force_sufficient()):
+            for target in self.protected:
+                target.vx = target.vy = 0.0
+                target.state = "ASSEMBLING_ESCORT" if self._shore_assembly_pending else "WAITING_FOR_GUARD"
+            return
         if self.defense.advance_convoy():
             return
         maximum_speed = 2.25
@@ -2883,15 +3230,9 @@ class AdaptiveEscortAdapter(AlgorithmAdapter):
             # cross the final safety gate before the threat rings are stable.
             # Decelerate into a visible gate-approach hold at 90% so the later
             # SAFE_GATE_TRANSIT stage always represents real forward motion.
-            hold_x = sum(
-                self.protected_start_x[item.code]
-                + (
-                    item.destination_x - PROTECTED_SAFE_GATE_OFFSET_M
-                    - self.protected_start_x[item.code]
-                ) * 0.90
-                for item in self.protected
-            ) / len(self.protected)
-            hold_y = destination_y
+            hold_points = [self._escort_route_station(item, 0.90) for item in self.protected]
+            hold_x = sum(point[0] for point in hold_points) / len(hold_points)
+            hold_y = sum(point[1] for point in hold_points) / len(hold_points)
             hold_distance = _length(hold_x - center_x, hold_y - center_y)
             if live_attackers and nearest_distance < CONTAINMENT_STANDOFF_M + 4.0:
                 # The holding line is subordinate to safety.  Move within the
@@ -2920,11 +3261,14 @@ class AdaptiveEscortAdapter(AlgorithmAdapter):
                 # Evasive motion at the gate is lateral/backward within the
                 # approach box.  Do not let a threat arriving from astern push
                 # the protected target through the gate before containment.
-                forward_limit = -0.15 if center_x >= hold_x else 0.25
+                route_x, route_y = self._escort_route_axis()
+                forward_limit = -0.15 if (center_x - hold_x) * route_x + (center_y - hold_y) * route_y >= 0.0 else 0.25
+                forward = min(forward_limit, common_x * route_x + common_y * route_y)
+                lateral = -common_x * route_y + common_y * route_x
                 common_x, common_y = _unit(
-                    min(forward_limit, common_x),
-                    common_y,
-                    (-0.15, 1.0),
+                    route_x * forward - route_y * lateral,
+                    route_y * forward + route_x * lateral,
+                    (-0.15 * route_x - route_y, -0.15 * route_y + route_x),
                 )
                 common_speed = min(common_speed, 1.45)
                 common_state = "SAFE_GATE_EVASIVE_HOLD"
@@ -2967,13 +3311,7 @@ class AdaptiveEscortAdapter(AlgorithmAdapter):
             )
             if not mission_resolved:
                 for target in self.protected:
-                    gate_x = target.destination_x - PROTECTED_SAFE_GATE_OFFSET_M
-                    approach_limit_x = self.protected_start_x[target.code] + (
-                        gate_x - self.protected_start_x[target.code]
-                    ) * 0.96
-                    if target.x > approach_limit_x:
-                        target.x = approach_limit_x
-                        target.vx = min(0.0, target.vx)
+                    target.x, target.y = self._limit_escort_approach(target, target.x, target.y)
             return
 
         for index, target in enumerate(self.protected):
@@ -3180,13 +3518,7 @@ class AdaptiveEscortAdapter(AlgorithmAdapter):
                 # A safety displacement may pass the staging line without
                 # declaring mission arrival. Clipping it back into a closed
                 # ring's clearance zone deadlocks both capture and escort.
-                gate_x = target.destination_x - PROTECTED_SAFE_GATE_OFFSET_M
-                approach_limit_x = self.protected_start_x[target.code] + (
-                    gate_x - self.protected_start_x[target.code]
-                ) * 0.96
-                if nx > approach_limit_x:
-                    nx = approach_limit_x
-                    target.vx = min(0.0, target.vx)
+                nx, ny = self._limit_escort_approach(target, nx, ny)
             target.x, target.y = nx, ny
 
     def _release_surplus_containment(self) -> None:
@@ -3429,7 +3761,8 @@ class AdaptiveEscortAdapter(AlgorithmAdapter):
                 threat.closest_attack_distance = min(threat.closest_attack_distance, distance)
                 blockers = [
                     item for item in self.vehicles
-                    if item.role == "BLOCKER" and item.group_id == f"BLOCK-{index + 1:03d}"
+                    if item.code not in self._unavailable_codes
+                    and item.role == "BLOCKER" and item.group_id == f"BLOCK-{index + 1:03d}"
                 ]
                 intercepted = False
                 risk, tti, closing = self._threat_risk(threat)
@@ -3697,6 +4030,7 @@ class AdaptiveEscortAdapter(AlgorithmAdapter):
             surface_defenders = [
                 item for item in self.vehicles
                 if item.kind == "USV"
+                and item.code not in self._unavailable_codes
                 and (
                     item.role in {
                         "CLOSE_GUARD", "BLOCKER", "GAP_BLOCKER",
@@ -3720,6 +4054,8 @@ class AdaptiveEscortAdapter(AlgorithmAdapter):
             if coordinating_attack:
                 threat.state = "ATTACKING" if threat.detected_frame is not None else "APPROACHING"
                 threat.intent = "ATTACK_INTENT" if threat.detected_frame is not None else "APPROACHING"
+                if self._shore_assembly_pending and threat.detected_frame is None:
+                    threat.state = threat.intent = "PATROLLING"
             if coordinating_attack and nearest_defender is not None:
                 # An occupied approach lane causes physical braking. Do not
                 # switch to random flanking while the initial screen aligns.
@@ -4174,7 +4510,8 @@ class AdaptiveEscortAdapter(AlgorithmAdapter):
         )
         return {
             "members": members,
-            "ready": bool(contract.ready and canonical.ready),
+            "ready": bool(contract.ready and canonical.ready
+                          and not any(item.code in self._unavailable_codes for item in members)),
             "arrivalRatio": canonical.arrival_ratio,
             "maxGapDeg": canonical.maximum_gap_deg,
             "radialErrorM": canonical.maximum_slot_error_m,
@@ -4443,11 +4780,11 @@ class AdaptiveEscortAdapter(AlgorithmAdapter):
 
     @staticmethod
     def _move_towards(current: Sequence[float], desired: Sequence[float], step: float) -> tuple[float, float, float]:
-        dx, dy = float(desired[0]) - float(current[0]), float(desired[1]) - float(current[1])
-        distance = _length(dx, dy)
+        delta = tuple(float(desired[i]) - float(current[i]) for i in range(3))
+        distance = math.sqrt(sum(value * value for value in delta))
         if distance <= step or distance < 1e-9:
             return float(desired[0]), float(desired[1]), float(desired[2])
-        return float(current[0]) + dx * step / distance, float(current[1]) + dy * step / distance, float(desired[2])
+        return tuple(float(current[i]) + delta[i] * step / distance for i in range(3))
 
     def _advance_vehicles(self) -> list[AgentFrame]:
         proposals: dict[str, tuple[str, tuple[float, float, float]]] = {}
@@ -4466,6 +4803,8 @@ class AdaptiveEscortAdapter(AlgorithmAdapter):
             if item.assigned_threat in locked_threat_indices
         }
         for item in self.vehicles:
+            if item.code in self._unavailable_codes:
+                continue
             desired = self._desired_position(item)
             if item.code in locked_ring_codes:
                 continue
@@ -4536,6 +4875,8 @@ class AdaptiveEscortAdapter(AlgorithmAdapter):
                     guard_cap,
                     max(speed, protected_speed + min(0.8, 0.18 + distance * 0.035)),
                 )
+                if self._shore_assembly_pending:
+                    speed = min(guard_cap, max(speed, distance * 0.6))
             if item.assigned_threat is not None:
                 threat = self.threats[item.assigned_threat]
                 target_speed = _length(threat.vx, threat.vy)
@@ -4578,8 +4919,20 @@ class AdaptiveEscortAdapter(AlgorithmAdapter):
                 or item.role == "LOCAL_OVERWATCH"
                 else self.usv_cruise + 0.049
             )
-            step_limits[item.code] = physical_cap * DT
+            if self._berth_layout is not None and item.kind == "USV":
+                # The berth-side scene advertises a hard 4 m/s surface limit.
+                # Legacy separation slack must not exceed it at the top speed.
+                physical_cap = min(4.0, physical_cap)
+            # The scene solver constrains horizontal travel. Reserve the
+            # altitude component before handing it that budget so a departing
+            # UAV cannot exceed its 3-D speed while descending into a ring.
+            vertical_step = proposals[item.code][1][2] - item.z
+            step_limits[item.code] = math.sqrt(max(0.0, (physical_cap * DT) ** 2 - vertical_step ** 2))
         fixed = {item.code: ("ESCORT_TARGET", (item.x, item.y, 0.0)) for item in self.protected}
+        fixed.update({item.code: (item.kind, (item.x, item.y, item.z))
+                      for item in self.vehicles if item.code in self._unavailable_codes})
+        fixed.update({item.code: (item.kind, (item.x, item.y, item.z))
+                      for item in self._withdrawn_vehicles.values()})
         fixed.update({
             item.code: ("THREAT_TARGET", (item.x, item.y, 0.0))
             for item in self.threats
@@ -4692,6 +5045,9 @@ class AdaptiveEscortAdapter(AlgorithmAdapter):
             if not threat.forced or threat.state in {"WAITING", "CAPTURED", "SECURED", "ESCAPED"}:
                 continue
             members = self._capture_members(index)
+            if any(item.code in self._unavailable_codes for item in members):
+                threat.capture_hold = 0
+                continue
             if len(members) < 3:
                 continue
             slots = self._capture_slots(members, threat)
@@ -4777,7 +5133,17 @@ class AdaptiveEscortAdapter(AlgorithmAdapter):
                 threat.capture_hold = 0
                 threat.mission_stage = "ENCIRCLEMENT"
                 continue
-            stage_two_gap = min(95.0, maximum_capture_gap_deg(len(members)) + 14.0)
+            # The transition is an approach gate, not the final containment
+            # contract. Three surviving responders cannot have a largest gap
+            # below 120 degrees; the legacy 95-degree gate stranded a valid
+            # mixed triangle forever after a settled withdrawal. Preserve the
+            # original gate for four or more while allowing that triangle to
+            # enter precise slot convergence (the strict canonical gap, inward
+            # headings and consecutive hold are still checked below).
+            stage_two_gap = max(
+                min(95.0, maximum_capture_gap_deg(len(members)) + 14.0),
+                360.0 / len(members) + 5.0,
+            )
             if threat.capture_stage == 1 and arrival_ratio >= 0.88 and max_gap_deg <= stage_two_gap + 1e-6:
                 threat.capture_stage = 2
                 threat.capture_hold = 0
@@ -4881,6 +5247,57 @@ class AdaptiveEscortAdapter(AlgorithmAdapter):
                     threat.state = "ENCIRCLING"
                     threat.mission_stage = "ENCIRCLEMENT"
 
+    def _slot_convergence_progress(
+        self, threat: _Threat, members: Sequence[_Vehicle], arrival_ratio: float = 0.0,
+    ) -> float:
+        """Describe measured slot approach without granting capture evidence.
+
+        The integer arrival ratio cannot show the fourth craft closing a 70 m
+        error while the other three track their stations. Each unarrived craft
+        earns bounded partial credit from distance it has actually closed, using
+        its largest observed error for this target/stage/slot as the reference.
+        There is no time-based increment or extrapolated pose in this metric.
+        """
+        if not self.mission_active:
+            return self._capture_slot_progress.get(threat.code, 0.0)
+        if not members or not all(math.isfinite(value) for value in (threat.x, threat.y)):
+            return 0.0
+        if threat.capture_stage < 1:
+            progress = (max(0.0, min(1.0, arrival_ratio))
+                        if math.isfinite(arrival_ratio)
+                        and all(v.code not in self._unavailable_codes
+                                and all(math.isfinite(value) for value in (v.x, v.y, v.z))
+                                for v in members)
+                        else 0.0)
+            self._capture_slot_progress[threat.code] = progress
+            return progress
+        tolerance = 7.0 if threat.capture_stage == 1 else 3.5
+        slots = self._capture_slots(members, threat)
+        credit = 0.0
+        all_available = True
+        for member, slot in zip(members, slots):
+            valid = (member.code not in self._unavailable_codes
+                     and all(math.isfinite(value) for value in (member.x, member.y, member.z)))
+            if not valid:
+                all_available = False
+                continue
+            goal = slot.point((threat.x, threat.y, 0.0))
+            error = math.hypot(member.x - goal[0], member.y - goal[1])
+            key = (threat.code, threat.capture_started_frame, threat.capture_stage,
+                   member.code, slot.angle, slot.radius)
+            reference = max(error, self._capture_slot_reference_errors.get(key, error))
+            self._capture_slot_reference_errors[key] = reference
+            credit += (1.0 if error <= tolerance else min(
+                0.95, max(0.0, (reference - error) / max(1e-6, reference - tolerance)),
+            ))
+        progress = credit / len(members)
+        if all_available and math.isfinite(arrival_ratio):
+            # Keep this frame's observed arrival evidence as a floor.
+            # Held/invalid craft cannot inherit its pre-override stale count.
+            progress = max(progress, max(0.0, min(1.0, arrival_ratio)))
+        self._capture_slot_progress[threat.code] = progress
+        return progress
+
     def _escort_route_progress(self, item: _Protected) -> float:
         """Return progress from the real convoy start to its terminal gate.
 
@@ -4890,10 +5307,17 @@ class AdaptiveEscortAdapter(AlgorithmAdapter):
         single frame. The same terminal gate now defines both the displayed
         route and the completion contract.
         """
-        start_x = self.protected_start_x[item.code]
-        gate_x = item.destination_x - PROTECTED_SAFE_GATE_OFFSET_M
-        route_length = max(1.0, gate_x - start_x)
-        return max(0.0, min(1.0, (item.x - start_x) / route_length))
+        if self._berth_layout is None:
+            start_x = self.protected_start_x[item.code]
+            gate_x = item.destination_x - PROTECTED_SAFE_GATE_OFFSET_M
+            route_length = max(1.0, gate_x - start_x)
+            return max(0.0, min(1.0, (item.x - start_x) / route_length))
+        start_x, start_y = self._protected_start_positions[item.code]
+        ux, uy = self._escort_route_axis()
+        gate_x, gate_y = self._escort_route_station(item, 1.0)
+        route_length = max(1.0, (gate_x - start_x) * ux + (gate_y - start_y) * uy)
+        travelled = (item.x - start_x) * ux + (item.y - start_y) * uy
+        return max(0.0, min(1.0, travelled / route_length))
 
     def _protected_reached_safe_gate(self, item: _Protected) -> bool:
         protected_index = self.protected.index(item)
@@ -4929,11 +5353,13 @@ class AdaptiveEscortAdapter(AlgorithmAdapter):
             return False
         if relevant and not safe_from_containment:
             return False
-        if abs(item.y - item.destination_y) <= 24.0:
+        ux, uy = self._escort_route_axis()
+        lateral_error = abs(-(item.x - item.destination_x) * uy + (item.y - item.destination_y) * ux)
+        if lateral_error <= 24.0:
             return True
         return (
             safe_from_containment
-            and abs(item.y - item.destination_y) <= 64.0
+            and lateral_error <= 64.0
         )
 
     def _update_metrics_and_terminal(self) -> None:
@@ -4956,8 +5382,10 @@ class AdaptiveEscortAdapter(AlgorithmAdapter):
                     + (left.z - right.z) ** 2
                 )
                 self.min_agent_distance = min(self.min_agent_distance, separation)
-        for x, y in [(item.x, item.y) for item in [*self.protected, *self.threats, *self.vehicles]]:
-            self.min_shore_distance = min(self.min_shore_distance, x - self.safe_bounds[0], self.safe_bounds[1] - x, y - self.safe_bounds[2], self.safe_bounds[3] - y)
+        navigable_bounds = self.safety.bounds
+        for x, y in [(item.x, item.y) for item in [*self.protected, *self.threats, *self.vehicles]
+                     if item.code not in self._unavailable_codes]:
+            self.min_shore_distance = min(self.min_shore_distance, x - navigable_bounds[0], navigable_bounds[1] - x, y - navigable_bounds[2], navigable_bounds[3] - y)
         resolved = all(item.state in {"CAPTURED", "SECURED", "ESCAPED"} for item in self.threats)
         if resolved:
             self._release_surplus_containment()
@@ -5042,11 +5470,16 @@ class AdaptiveEscortAdapter(AlgorithmAdapter):
             and self.sequence - self._safe_gate_transit_started_frame
             >= SAFE_GATE_TRANSIT_MIN_FRAMES
             and self._convoy_support_ready_frames >= POST_MISSION_STABLE_FRAMES
+            and not (self._unavailable_codes - set(self._withdrawn_vehicles))
+            and not self._guard_replacement_pending
+            and self._active_force_sufficient()
         ):
             self._terminal_status, self._terminal_reason = "COMPLETED", "all protected targets reached safety and all threats were resolved"
             self._terminal_blocker = "NONE"
 
     def _phase(self) -> str:
+        if self._shore_assembly_pending:
+            return "ASSEMBLING_ESCORT"
         active = [item for item in self.threats if item.state not in {"WAITING", "CAPTURED", "SECURED", "ESCAPED"}]
         if self._terminal_status:
             return self._terminal_status
@@ -5107,6 +5540,10 @@ class AdaptiveEscortAdapter(AlgorithmAdapter):
     def step(self) -> RuntimeFrame:
         self.sequence += 1
         initial, self._initial_frame_pending = self._initial_frame_pending, False
+        if self._shore_assembly_pending and self._protection_status()[0] == 2:
+            self._shore_assembly_pending = False
+        if self._guard_replacement_pending and self._protection_status()[0] == 2:
+            self._guard_replacement_pending = False
         if not initial and self._terminal_status is None:
             self._advance_protected()
             self._retarget_attackers()
@@ -5168,6 +5605,9 @@ class AdaptiveEscortAdapter(AlgorithmAdapter):
             snapshot = containment.get(index)
             members = self._capture_members(index) if snapshot is None else snapshot["members"]
             visual_ready = index in visually_captured
+            slot_convergence = self._slot_convergence_progress(
+                threat, members, float(snapshot["arrivalRatio"]) if snapshot is not None else 0.0,
+            ) if threat.forced else 0.0
             if visual_ready:
                 value = 1.0
             elif threat.forced:
@@ -5175,7 +5615,7 @@ class AdaptiveEscortAdapter(AlgorithmAdapter):
                 value = min(
                     0.98,
                     0.05 + pursuit_progress * 0.18 + threat.capture_stage * 0.22
-                    + threat.capture_arrival_ratio * 0.22
+                    + slot_convergence * 0.22
                     + min(1.0, threat.capture_hold / CAPTURE_HOLD_FRAMES) * 0.16,
                 )
             else:
@@ -5195,6 +5635,7 @@ class AdaptiveEscortAdapter(AlgorithmAdapter):
                     "uavCount": sum(item.kind == "UAV" for item in members),
                     "usvCount": sum(item.kind == "USV" for item in members),
                     "arrivalRatio": 0.0,
+                    "slotConvergenceProgress": 0.0,
                     "maxAngularGapDeg": 360.0,
                     "radialErrorM": None,
                     "holdFrames": 0,
@@ -5240,6 +5681,7 @@ class AdaptiveEscortAdapter(AlgorithmAdapter):
                     "uavCount": sum(item.kind == "UAV" for item in members),
                     "usvCount": sum(item.kind == "USV" for item in members),
                     "arrivalRatio": round(arrival_ratio, 3),
+                    "slotConvergenceProgress": round(slot_convergence, 4),
                     "maxAngularGapDeg": round(max_gap_deg, 2),
                     "radialErrorM": None if math.isinf(radial_error) else round(radial_error, 2),
                     "holdFrames": threat.capture_hold,
@@ -5341,7 +5783,7 @@ class AdaptiveEscortAdapter(AlgorithmAdapter):
         # not by making the completion percentage move backward.
         self._display_progress = max(
             getattr(self, "_display_progress", 0.0),
-            min(0.999, overall_progress) if self._terminal_status != "COMPLETED" else 1.0,
+            min(0.99, overall_progress) if self._terminal_status != "COMPLETED" else 1.0,
         )
         capture_elapsed = 0 if self.capture_started_frame is None else max(0, self.sequence - self.capture_started_frame)
         current_threat_distances = [
@@ -5370,7 +5812,24 @@ class AdaptiveEscortAdapter(AlgorithmAdapter):
         formation_guard_count = sum(item.role == "FORMATION_GUARD" for item in self.vehicles)
         capture_assigned_count = sum(item.assigned_threat is not None for item in self.vehicles)
         mobile_support_count = len(self.vehicles) - close_guard_count - capture_assigned_count
+        protection_ready_count, assembly_distance = self._protection_status()
+        required_uavs, required_usvs, required_total = self._active_force_requirements()
+        force_sufficient = self._active_force_sufficient()
         metrics = {
+            "requiredActiveUavCount": required_uavs,
+            "requiredActiveUsvCount": required_usvs,
+            "requiredActiveMissionDeviceCount": required_total,
+            "activeForceSufficient": force_sufficient,
+            "missionDegradedReason": "" if force_sufficient else "INSUFFICIENT_ACTIVE_FORCE",
+            "withdrawnDeviceCodes": sorted(self._withdrawn_vehicles),
+            "guardReplacementPending": self._guard_replacement_pending,
+            "escortAssemblyState": "ASSEMBLING" if self._shore_assembly_pending else "READY",
+            "escortAssemblyProgress": round(self._escort_assembly_progress, 6),
+            "escortProtectionReady": protection_ready_count == 2,
+            "escortProtectionReadyCount": protection_ready_count,
+            "escortProtectionRequiredCount": 2,
+            "escortAssemblyDistanceM": (round(assembly_distance, 3)
+                                         if math.isfinite(assembly_distance) else None),
             "scenarioPlan": self.plan.to_dict(), "protectedCount": self.plan.protected_count,
             "threatCount": self.plan.threat_count, "visibleThreatCount": len(visible),
             "capturedThreatCount": len(visually_captured),
@@ -5462,6 +5921,10 @@ class AdaptiveEscortAdapter(AlgorithmAdapter):
             "terminalReason": self._terminal_reason,
             "worldBounds": list(self.safe_bounds),
         }
+        agents.extend(AgentFrame(v.code, v.kind, v.x, v.y, v.z,
+                                self._stable_headings.get(v.code, 0.0), "WITHDRAWN", "RETURNED", "RETURNED", "")
+                      for v in self._withdrawn_vehicles.values())
+        agents.sort(key=lambda v: v.code)
         return RuntimeFrame(
             self.run_id, self.code, self.sequence, int(time.time() * 1000), self._phase(),
             agents, targets, metrics, route=[], obstacles=[], terminalStatus=self._terminal_status,

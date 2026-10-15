@@ -138,10 +138,20 @@ namespace UavUsv.Editor.Tools
                 Camera camera = cameraRoot.AddComponent<Camera>();
                 camera.enabled = false;
                 camera.aspect = 16f / 9f;
+                var legacyShip = new GameObject("legacy-unregistered-enemy-ship");
+                legacyShip.transform.SetParent(root.transform, false);
+                legacyShip.transform.position = new Vector3(10000f, 0f, 10000f);
+                var staticBase = new GameObject("island_uav_base-framing-decoy");
+                staticBase.transform.SetParent(root.transform, false);
+                staticBase.transform.position = new Vector3(-10000f, 0f, -10000f);
+                var chase = cameraRoot.AddComponent<UavUsv.ChaseCamera>();
+                chase.enabled = false;
+                chase.groupTargets = new[] { legacyShip.transform, staticBase.transform };
                 var observer = cameraRoot.AddComponent<WebDeviceObserverCamera>();
                 observer.enabled = false;
                 typeof(WebDeviceObserverCamera).GetField("observedCamera", Private).SetValue(observer, camera);
                 typeof(WebDeviceObserverCamera).GetField("fleetManager", Private).SetValue(observer, fleet);
+                typeof(WebDeviceObserverCamera).GetField("chaseCamera", Private).SetValue(observer, chase);
                 typeof(WebDeviceObserverCamera).GetMethod("RefreshSceneTargets", Private).Invoke(observer, new object[] { true });
                 object[] outputs = { Vector3.zero, Vector3.zero };
                 typeof(WebDeviceObserverCamera).GetMethod("CalculateOverview", Private).Invoke(observer, outputs);
@@ -149,11 +159,18 @@ namespace UavUsv.Editor.Tools
                 cameraRoot.transform.SetPositionAndRotation(cameraPosition, Quaternion.LookRotation(focus - cameraPosition));
                 camera.fieldOfView = 52f;
                 var report = observer.GetFramingReport();
-                Check(report.deviceCount == 2 && report.outsideCount == 0 && focus.magnitude < 15f,
-                    "overview fits UAV/USV only, ignoring far targets and static bases", ref passed);
+                Check(report.deviceCount == 3 && report.outsideCount == 0
+                    && focus.magnitude > 300f && focus.magnitude < 1000f,
+                    "overview fits UAV/USV and current-run mission target, excluding distant legacy vessels and static bases", ref passed);
+                var framedSubjects = (System.Collections.IList)typeof(WebDeviceObserverCamera)
+                    .GetField("sceneTargets", Private).GetValue(observer);
+                Check(framedSubjects.Contains(fleet.GetTargetTransforms()[0])
+                    && !framedSubjects.Contains(legacyShip.transform)
+                    && !framedSubjects.Contains(staticBase.transform),
+                    "registered mission vessels are framed but unregistered ships and base structures are not", ref passed);
                 fleet.TryApplyPoseImmediate("UAV-001", fleet.GetUavTransforms()[0].position, Quaternion.identity, "RETURNED");
                 typeof(WebDeviceObserverCamera).GetMethod("RefreshSceneTargets", Private).Invoke(observer, new object[] { true });
-                Check(observer.GetFramingReport().deviceCount == 2, "returned aircraft remain part of the fleet overview", ref passed);
+                Check(observer.GetFramingReport().deviceCount == 3, "returned aircraft remain part of the fleet and mission-target overview", ref passed);
 
                 ValidateApproaches(root.transform, definition, originals);
                 Check(true, "natural-shore boat approaches avoid land and original base foundations", ref passed);

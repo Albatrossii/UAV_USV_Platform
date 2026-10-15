@@ -1,13 +1,10 @@
 import { fileURLToPath, URL } from 'node:url'
 
 import vue from '@vitejs/plugin-vue'
-import { defineConfig, type Plugin } from 'vite'
+import { defineConfig, loadEnv, type Plugin } from 'vite'
 import AutoImport from 'unplugin-auto-import/vite'
 import Components from 'unplugin-vue-components/vite'
 import { ElementPlusResolver } from 'unplugin-vue-components/resolvers'
-
-const devPort = Number(process.env.VITE_DEV_PORT ?? 5174)
-const backendTarget = process.env.VITE_BACKEND_TARGET ?? 'http://127.0.0.1:8081'
 
 function unityWebglHeaders(): Plugin {
   const unityAssetPattern = /^\/unity\/.*\.(?:wasm|data|js|symbols\.json)$/i
@@ -42,53 +39,60 @@ function unityWebglHeaders(): Plugin {
   }
 }
 
-export default defineConfig(({ command }) => ({
-  plugins: [
-    vue(),
-    unityWebglHeaders(),
-    AutoImport({
-      resolvers: [ElementPlusResolver()],
-      dts: command === 'serve' ? 'src/auto-imports.d.ts' : false,
-    }),
-    Components({
-      resolvers: [ElementPlusResolver()],
-      dts: command === 'serve' ? 'src/components.d.ts' : false,
-    }),
-  ],
-  resolve: {
-    alias: {
-      '@': fileURLToPath(new URL('./src', import.meta.url)),
+export default defineConfig(({ command, mode }) => {
+  const env = loadEnv(mode, process.cwd(), '')
+  const devPort = Number(process.env.VITE_DEV_PORT ?? env.VITE_DEV_PORT ?? 5174)
+  const backendTarget =
+    process.env.VITE_BACKEND_TARGET ?? env.VITE_BACKEND_TARGET ?? 'http://127.0.0.1:8081'
+
+  return {
+    plugins: [
+      vue(),
+      unityWebglHeaders(),
+      AutoImport({
+        resolvers: [ElementPlusResolver()],
+        dts: command === 'serve' ? 'src/auto-imports.d.ts' : false,
+      }),
+      Components({
+        resolvers: [ElementPlusResolver()],
+        dts: command === 'serve' ? 'src/components.d.ts' : false,
+      }),
+    ],
+    resolve: {
+      alias: {
+        '@': fileURLToPath(new URL('./src', import.meta.url)),
+      },
     },
-  },
-  server: {
-    host: '127.0.0.1',
-    port: Number.isFinite(devPort) ? devPort : 5174,
-    strictPort: true,
-    proxy: {
-      '/api': {
-        target: backendTarget,
-        changeOrigin: true,
-        ws: true,
-        configure(proxy) {
-          proxy.on('proxyReq', (proxyReq, req) => {
-            if (req.url?.startsWith('/api/runtime-control/commands')) {
-              console.log(
-                `[vite-proxy] -> ${req.method} ${req.url} target=${backendTarget} host=${proxyReq.getHeader('host') ?? ''}`,
-              )
-            }
-          })
-          proxy.on('proxyRes', (proxyRes, req) => {
-            if (req.url?.startsWith('/api/runtime-control/commands')) {
-              console.log(`[vite-proxy] <- ${req.method} ${req.url} status=${proxyRes.statusCode}`)
-            }
-          })
-          proxy.on('error', (error, req) => {
-            if (req.url?.startsWith('/api/runtime-control/commands')) {
-              console.error(`[vite-proxy] !! ${req.method} ${req.url} ${error.message}`)
-            }
-          })
+    server: {
+      host: '127.0.0.1',
+      port: Number.isFinite(devPort) ? devPort : 5174,
+      strictPort: true,
+      proxy: {
+        '/api': {
+          target: backendTarget,
+          changeOrigin: true,
+          ws: true,
+          configure(proxy) {
+            proxy.on('proxyReq', (proxyReq, req) => {
+              if (req.url?.startsWith('/api/runtime-control/commands')) {
+                console.log(
+                  `[vite-proxy] -> ${req.method} ${req.url} target=${backendTarget} host=${proxyReq.getHeader('host') ?? ''}`,
+                )
+              }
+            })
+            proxy.on('proxyRes', (proxyRes, req) => {
+              if (req.url?.startsWith('/api/runtime-control/commands')) {
+                console.log(`[vite-proxy] <- ${req.method} ${req.url} status=${proxyRes.statusCode}`)
+              }
+            })
+            proxy.on('error', (error, req) => {
+              if (req.url?.startsWith('/api/runtime-control/commands')) {
+                console.error(`[vite-proxy] !! ${req.method} ${req.url} ${error.message}`)
+              }
+            })
+          },
         },
       },
     },
-  },
-}))
+  }
+})

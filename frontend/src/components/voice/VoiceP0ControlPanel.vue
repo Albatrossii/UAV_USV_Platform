@@ -1207,7 +1207,7 @@ onBeforeUnmount(() => {
           <p v-if="refinedHighRisk && !autoExecuteSimulationVoice" class="refined-notice" role="alert">高风险确认：包含返航、降落或停止动作。整条计划尚未下发，请核对设备类型、编号和全部步骤。</p>
           <p v-if="refinedProposalStale" class="refined-notice">文字或场景已变化，请重新预览。旧指令不会执行。</p>
           <p v-else-if="secondsLeft === 0" class="refined-notice">指令已过期，请重新预览。</p>
-          <p v-else class="refined-plan-note">{{ proposal.plan.action === 'SEQUENCE' ? '前一步成功，才继续下一步。' : '请核对目标设备与动作。' }}<span>{{ secondsLeft }} 秒内有效</span></p>
+          <p v-else class="refined-plan-note">{{ proposal.plan.action === 'SEQUENCE' ? '不同设备可并行；明确先后、等待、同设备冲突和任务级动作按顺序执行。' : '请核对目标设备与动作。' }}<span>{{ secondsLeft }} 秒内有效</span></p>
           <button v-if="refinedProposalReady" class="refined-confirm" type="button" :disabled="!!refinedConfirmReason" :title="refinedConfirmReason" @click="confirm"><Check :size="16" />确认执行</button>
           <p v-if="refinedProposalReady && refinedConfirmReason" class="refined-notice" role="status">{{ refinedConfirmReason }}</p>
           <button v-if="secondsLeft > 0" class="refined-cancel" type="button" :disabled="refinedSubmissionDisabled" @click="cancel">取消此指令</button>

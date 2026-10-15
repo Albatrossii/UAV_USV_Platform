@@ -30,6 +30,18 @@ import { ApiClientError } from '@/api/http'
 const requestId = '11111111-1111-4111-8111-111111111111'
 
 describe('voice intelligence backend API adapter', () => {
+  it('accepts a question refusal and preserves the question mark instead of treating it as a malformed response', async () => {
+    mocks.post.mockResolvedValue({ data: { data: {
+      status: 'NOT_ACTIONABLE', requestId, reason: 'QUESTION_ACTION',
+      message: '检测到疑问表达，请重新明确要执行的指令。',
+      normalizedText: '二号无人船主流？', provider: 'local-rules', model: 'rules-v1',
+    } } })
+    await expect(interpretVoiceText({
+      requestId, text: '二号无人船主流？', locale: 'zh-CN', allowedActions: ['START', 'PAUSE', 'RESUME', 'STOP'],
+      availableDeviceCodes: ['USV-002'], runtimeContext: null,
+    })).resolves.toMatchObject({ status: 'NOT_ACTIONABLE', reason: 'QUESTION_ACTION', normalizedText: '二号无人船主流？' })
+  })
+
   it('D1 uses the existing Java endpoint with 140 seconds and no interpretation call', async () => {
     mocks.post.mockResolvedValue({ data: { code: 'SUCCESS', data: {
       requestId, text: '停止任务', locale: 'zh-CN', durationMs: 5784, provider: 'local-asr', model: 'small-r1',
@@ -127,12 +139,12 @@ describe('voice intelligence backend API adapter', () => {
     }, expect.objectContaining({ timeout: VOICE_PARSE_TIMEOUT_MS }))
   })
 
-  it('accepts a controlled two-step sequence candidate', async () => {
+  it.each([false, true])('accepts a controlled sequence including explicit order (%s)', async ordered => {
     mocks.post.mockResolvedValue({ data: { data: {
       status: 'CANDIDATE', requestId, intent: 'COMMAND_SEQUENCE', action: 'SEQUENCE',
       steps: [
         { index: 0, action: 'START' },
-        { index: 1, action: 'DEVICE_COMMAND', targetDeviceCode: 'UAV-001', deviceCommandType: 'UAV_HOVER' },
+        { index: 1, action: 'DEVICE_COMMAND', targetDeviceCode: 'UAV-001', deviceCommandType: 'UAV_HOVER', ...(ordered ? { waitForPrevious: true } : {}) },
       ],
       normalizedText: '开始任务后一号无人机悬停', confidence: null,
       provider: 'local-rules', model: 'rules-sequence-v1',

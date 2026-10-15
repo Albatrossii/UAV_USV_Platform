@@ -84,7 +84,20 @@ public class IntentService {
     // Keep exactly aligned with repairContextualUsvHold in the frontend.
     // Only a complete affirmative HOLD utterance may repair this ASR confusion.
     private static final Pattern CONTEXTUAL_USV_HOLD = Pattern.compile(
-            "^((?:请)?(?:让)?第?(?:[一二三四五六七八九十]|[0-9]{1,3})号)无人[艇挺庭廷停][驻住][。．.,，]{0,2}留([。！!，,]*)$");
+            "^((?:请)?(?:让)?第?(?:[一二三四五六七八九十]|[0-9]{1,3})号)无人[艇挺庭廷停听船][驻住注主][。．.,，]{0,2}[留流]([。！!，,]*)$");
+    // These ambiguous ASR nouns are not global synonyms. Only a whole numbered
+    // device command with an already-supported exact action can repair them.
+    private static final Pattern CONTEXTUAL_USV_NOUN = Pattern.compile(
+            "^((?:请)?(?:让)?第?(?:[一二三四五六七八九十]|[0-9]{1,3})号)无人[听船](驻留|待命|保持|暂停|归队|继续|返航|返回|停止|停船)([。！!，,]*)$");
+    private static final Pattern UNRESOLVED_USV_NOUN = Pattern.compile("无人[听船]");
+    // Boat is an alias only inside a complete numbered, exact-action clause.
+    // Preserve separators so waits, explicit ordering and rejected clauses survive.
+    // Keep aligned with CONTEXTUAL_BOAT_CLAUSE in the browser.
+    private static final Pattern CONTEXTUAL_BOAT_CLAUSE = Pattern.compile(
+            "(^|[，,。；;]|然后|接着|之后|以后|再|(?:开始(?:执行|当前)?任务|启动(?:当前)?任务|执行任务)后?)"
+            + "((?:请)?(?:先)?(?:让)?第?(?:[一二三四五六七八九十]|[0-9]{1,3})号)无人船"
+            + "(驻留|待命|保持|暂停|归队|继续|返航|返回|停止|停船)"
+            + "(?=$|[。！!，,；;]|然后|接着|之后|以后|再)");
     private static final Map<String, String> DEVICE_TERM_CORRECTIONS =
             Map.ofEntries(
                     Map.entry("艇无人", "无人艇"),
@@ -200,9 +213,11 @@ public class IntentService {
         }
 
         ObjectNode runtime = requireContext(user, body.path("runtimeContext"));
-        String text = normalize(body.path("text").asText());
+        String originalText = body.path("text").asText();
+        String text = normalize(originalText);
         boolean exactCommand = EXACT_COMMANDS.containsKey(text);
-        IntentClassification parsed = parse(text, body.path("allowedActions"), runtime);
+        IntentClassification parsed = parse(text, body.path("allowedActions"), runtime,
+                originalText.contains("?") || originalText.contains("？"));
         boolean localLlm = "local-llm".equals(settings.getIntentProvider())
                 && !exactCommand
                 && parsed.action() != null
@@ -340,13 +355,19 @@ public class IntentService {
         return current;
     }
 
-    private IntentClassification parse(String text, JsonNode allowed, ObjectNode runtime) {
+    private IntentClassification parse(String text, JsonNode allowed, ObjectNode runtime, boolean originalQuestion) {
         if (NEGATED.matcher(text).find())
             return new IntentClassification(
                     "NOT_ACTIONABLE",
                     "NEGATED_ACTION",
                     "检测到否定表达，为避免误执行，请重新明确指令。",
                     null);
+        if (originalQuestion)
+            return new IntentClassification(
+                    "NOT_ACTIONABLE", "QUESTION_ACTION", "检测到疑问表达，请重新明确要执行的指令。", null);
+        if (UNRESOLVED_USV_NOUN.matcher(text).find())
+            return new IntentClassification(
+                    "NEEDS_CLARIFICATION", "AMBIGUOUS_TARGET", "请明确一个无人艇编号和单一设备动作。", null);
         IntentClassification sequence = parseSequence(text, allowed, runtime);
         if (sequence != null) return sequence;
         if (TARGETED.matcher(text).find()
@@ -412,6 +433,7 @@ public class IntentService {
     }
 
     private IntentClassification parseSequence(String text, JsonNode allowed, ObjectNode runtime) {
+        boolean explicitlyOrdered = text.matches("^(?:请)?先.*");
         String separated = text;
         Matcher compact = CONTROLLED_SEQUENCE.matcher(text);
         if (compact.matches()) separated = compact.group(1) + "，" + compact.group(2);
@@ -426,6 +448,7 @@ public class IntentService {
             String clause = raw.replaceFirst("^(?:请)?(?:先)?(?:让)?", "");
             String action = EXACT_COMMANDS.get(clause);
             var step = steps.addObject().put("index", steps.size() - 1);
+            if (explicitlyOrdered && steps.size() > 1) step.put("waitForPrevious", true);
             if (action != null) {
                 boolean capable = false;
                 for (JsonNode a : allowed) capable |= action.equals(a.asText());
@@ -598,9 +621,13 @@ public class IntentService {
 
     private static String normalize(String text) {
         String normalized = text.trim().replaceAll("\\s+", "");
+        normalized = CONTEXTUAL_BOAT_CLAUSE.matcher(normalized).replaceAll("$1$2无人艇$3");
         // Match before trimming final punctuation, so questions cannot become commands.
         normalized = CONTEXTUAL_USV_HOLD.matcher(normalized).replaceFirst("$1无人艇驻留$2");
-        normalized = normalized.replaceAll("[。！？!?，,]+$", "");
+        normalized = CONTEXTUAL_USV_NOUN.matcher(normalized).replaceFirst("$1无人艇$2$3");
+        // Retain question marks in normalizedText as well as the original-text
+        // safety gate: a downstream normalization pass must not repair a question.
+        normalized = normalized.replaceAll("[。！!，,]+$", "");
         for (Map.Entry<String, String> correction : DEVICE_TERM_CORRECTIONS.entrySet())
             normalized = normalized.replace(correction.getKey(), correction.getValue());
         normalized = normalized.replaceAll("(第?[一二三四五六七八九十\\d]+)(?:号|架)(?:飞机|机)(?!无人)", "$1号无人机")

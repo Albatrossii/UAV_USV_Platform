@@ -161,7 +161,7 @@ def test_automatic_departure_publishes_physical_stage_instead_of_rejoining():
 
 @pytest.mark.parametrize("algorithm", ["ESCORT_GUARD", "GB_SFLA_CS"])
 @pytest.mark.parametrize("seed", [1, 42, 20260814])
-def test_real_planner_waits_for_full_assembly_and_handoff_is_continuous(algorithm, seed):
+def test_real_planner_waits_for_safe_departure_and_handoff_is_continuous(algorithm, seed):
     adapter = build_adapter(algorithm, 92, shore_config(seed=seed))
     minimum = {"UAV": math.inf, "USV": math.inf}
     closest = {}
@@ -180,7 +180,10 @@ def test_real_planner_waits_for_full_assembly_and_handoff_is_continuous(algorith
         if frame.metrics["deploymentState"] != "COMPLETE":
             assert not adapter.base.mission_active
             assert frame.phase == "DEPLOYING" and frame.terminalStatus is None
-            assert frame.metrics["progress"] == 0
+            # The solver remains frozen, but lifecycle progress now includes
+            # the actual shore departure instead of reporting a fixed zero.
+            assert frame.metrics["taskProgress"] == 0
+            assert frame.metrics["progress"] == pytest.approx(.1 * frame.metrics["deploymentProgress"], abs=1e-6)
             assert 0 < frame.metrics["deploymentProgress"] <= 1
         for first, second in combinations(frame.agents, 2):
             if first.type == second.type:
@@ -206,43 +209,55 @@ def test_real_planner_waits_for_full_assembly_and_handoff_is_continuous(algorith
     assert min(minimum.values()) >= 8, f"unsafe departure path: {minimum}"
 
 
-@pytest.mark.parametrize("code,command,interruption_step", [
-    ("UAV-001", "UAV_HOVER", 10),
-    ("UAV-001", "UAV_HOVER", 250),
-    ("USV-001", "USV_HOLD", 10),
+@pytest.mark.parametrize("algorithm", ["ESCORT_GUARD", "GB_SFLA_CS"])
+@pytest.mark.parametrize("code,command", [
+    ("UAV-001", "UAV_HOVER"),
+    ("USV-001", "USV_HOLD"),
 ])
-def test_operator_hold_blocks_assembly_until_resume_without_teleporting(code, command, interruption_step):
-    adapter = subject()
+def test_operator_hold_defers_only_selected_device_while_remaining_fleet_starts(
+    algorithm, code, command,
+):
+    adapter = build_adapter(algorithm, 95, shore_config())
     adapter.step()
     adapter.set_mission_active(True)
-    for _ in range(interruption_step):
+    for _ in range(10):
         adapter.step()
     adapter.control_device(code, command)
     held = adapter.step()
-    for _ in range(2400):
+    other_code = "UAV-002" if code.startswith("UAV") else "USV-002"
+    other_at_hold = xyz(pose(held, other_code))
+    for _ in range(1200):
         frame = adapter.step()
         assert xyz(pose(frame, code)) == xyz(pose(held, code))
-        assert frame.metrics["deploymentState"] == "DEPLOYING"
-        assert not adapter.base.mission_active
-    assert frame.metrics["deployingDeviceCodes"] == [code]
-    held_progress = frame.metrics["deploymentProgress"]
+        if frame.metrics["deploymentState"] == "COMPLETE":
+            break
+    else:
+        pytest.fail("selected hold prevented the remaining fleet from starting")
+    assert xyz(pose(frame, other_code)) != other_at_hold
+    assert adapter.base.mission_active
+    assert frame.metrics["deployingDeviceCodes"] == []
+    assert frame.metrics["deploymentDeferredDeviceCodes"] == [code]
+    assert frame.metrics["deploymentDeferredCount"] == 1
+    assert frame.metrics["deploymentReadyCount"] == 5
+    assert frame.metrics["deploymentProgress"] == 1
     for _ in range(20):
-        frame = adapter.step()
-        assert frame.metrics["deploymentProgress"] == held_progress
-        assert frame.metrics["deploymentReadyCount"] == 5
+        following = adapter.step()
+        assert xyz(pose(following, code)) == xyz(pose(held, code))
+    assert xyz(pose(following, other_code)) != xyz(pose(frame, other_code))
+
     adapter.control_device(code, f"{code[:3]}_RESUME")
-    previous = frame
+    assert code not in adapter._deployment_deferred
+    previous = following
     for _ in range(3000):
         frame = adapter.step()
-        check_speed(previous, frame)
-        agent = pose(frame, code)
-        if code.startswith("UAV") and agent.z < pose(previous, code).z - 1e-7:
-            assert pose(previous, code).x <= 120 + 1e-7
-        if frame.metrics["deploymentState"] == "COMPLETE":
+        maximum = .5 if code.startswith("UAV") else .3
+        assert math.dist(xyz(pose(frame, code)), xyz(pose(previous, code))) <= maximum + 1e-7
+        if code not in frame.metrics["deviceControlStates"]:
             break
         previous = frame
     else:
-        pytest.fail("operator resume did not finish interrupted deployment")
+        pytest.fail("deferred device did not rejoin the live formation")
+    assert pose(frame, code).status == "ACTIVE"
 
 
 @pytest.mark.parametrize("code", ["UAV-001", "USV-001"])
@@ -281,61 +296,6 @@ def test_return_during_deployment_withdraws_device_only_after_arrival(code):
     assert frame.metrics["deploymentProgress"] == 1
 
 
-@pytest.mark.parametrize("code", ["UAV-001", "USV-001"])
-def test_returned_device_rejoining_before_last_arrival_restores_assembly_requirement(code):
-    adapter = subject()
-    adapter.step()
-    adapter.set_mission_active(True)
-    for _ in range(10):
-        adapter.step()
-    # Keep one departing aircraft on hold while the selected member withdraws
-    # to its assigned slot and all other members reach their assembly points.
-    adapter.control_device("UAV-002", "UAV_HOVER")
-    adapter.control_device(code, f"{code[:3]}_RETURN")
-    for _ in range(4000):
-        frame = adapter.step()
-        if pose(frame, code).status == "RETURNED" and frame.metrics["deployingDeviceCodes"] == ["UAV-002"]:
-            break
-    else:
-        pytest.fail("withdrawal and other member arrivals did not settle")
-    adapter.control_device("UAV-002", "UAV_RESUME")
-    assembly = pose(adapter._deployment_frame, "UAV-002")
-    for _ in range(2000):
-        frame = adapter.step()
-        if math.dist(xyz(pose(frame, "UAV-002")), xyz(assembly)) < 2:
-            break
-    else:
-        pytest.fail("last outstanding aircraft never approached assembly")
-
-    # A late decision to rejoin must restore pending membership immediately;
-    # otherwise the other aircraft's arrival starts the planner during takeoff.
-    adapter.control_device(code, f"{code[:3]}_RESUME")
-    assert code in adapter._deployment_pending
-    seen_stages = set()
-    saw_only_selected_pending = False
-    previous = frame
-    for _ in range(4000):
-        frame = adapter.step()
-        check_speed(previous, frame)
-        agent = pose(frame, code)
-        stage = frame.metrics["deviceControlStates"].get(code, {}).get("returnStage")
-        seen_stages.add(stage)
-        if frame.metrics["deploymentState"] == "COMPLETE":
-            assert agent.status == "ACTIVE" and adapter.base.mission_active
-            break
-        assert code in frame.metrics["deployingDeviceCodes"]
-        assert not adapter.base.mission_active
-        saw_only_selected_pending |= frame.metrics["deployingDeviceCodes"] == [code]
-        if code.startswith("UAV") and agent.z < pose(previous, code).z - 1e-7:
-            assert pose(previous, code).x <= 120 + 1e-7
-        previous = frame
-    else:
-        pytest.fail("late rejoin did not complete assembly")
-    assert saw_only_selected_pending
-    required = {"TAKING_OFF", "DEPARTING"} if code.startswith("UAV") else {"UNDOCKING", "EXITING"}
-    assert required.issubset(seen_stages)
-
-
 def test_pause_during_departure_freezes_every_pose_then_resumes_same_route():
     adapter = subject()
     adapter.step()
@@ -367,28 +327,30 @@ def test_hold_on_withdrawn_member_does_not_report_it_as_arrived(code, command):
     adapter.set_mission_active(True)
     for _ in range(10):
         adapter.step()
-    adapter.control_device("UAV-002", "UAV_HOVER")
     adapter.control_device(code, f"{code[:3]}_RETURN")
     for _ in range(4000):
         frame = adapter.step()
-        if pose(frame, code).status == "RETURNED" and frame.metrics["deployingDeviceCodes"] == ["UAV-002"]:
+        if (pose(frame, code).status == "RETURNED"
+                and frame.metrics["deploymentState"] == "COMPLETE"):
             break
     else:
         pytest.fail("withdrawal and other member arrivals did not settle")
-    assert frame.metrics["deploymentReadyCount"] == 4
+    assert frame.metrics["deploymentReadyCount"] == 5
     assert frame.metrics["deploymentWithdrawnCount"] == 1
+    assert frame.metrics["deploymentDeferredCount"] == 0
     before = frame
     adapter.control_device(code, command)
     frame = adapter.step()
     assert xyz(pose(frame, code)) == xyz(pose(before, code))
-    assert frame.metrics["deploymentReadyCount"] == 4
+    assert frame.metrics["deploymentReadyCount"] == 5
     assert frame.metrics["deploymentWithdrawnCount"] == 1
+    assert frame.metrics["deploymentDeferredCount"] == 0
     assert frame.metrics["deploymentProgress"] == before.metrics["deploymentProgress"]
     adapter.control_device(code, f"{code[:3]}_RESUME")
     frame = adapter.step()
-    assert code in frame.metrics["deployingDeviceCodes"]
+    assert frame.metrics["deployingDeviceCodes"] == []
     assert frame.metrics["deploymentWithdrawnCount"] == 0
-    assert frame.metrics["deploymentReadyCount"] == 4
+    assert frame.metrics["deploymentDeferredCount"] == 0
 
 
 @pytest.mark.parametrize("count_key", ["uavCount", "usvCount"])
@@ -428,12 +390,6 @@ def test_runner_keeps_target_poses_but_does_not_use_parked_poses_as_assembly(alg
     assert config == original
     planner_poses = adapter.base.config["initialPoses"]
     assert planner_poses[-1] == target
-    if algorithm == "ESCORT_GUARD":
-        assert planner_poses == [target]
-        assert "shoreDeploymentMode" not in adapter.base.config
-        frame = adapter.step()
-        assert all(xyz(agent) == slot_xyz(slots(config)[agent.code]) for agent in frame.agents)
-        return
     assert adapter.base.config["shoreDeploymentMode"] == "SAFE_RELEASE"
     launch_by_code = {
         item["deviceCode"]: item for item in planner_poses[:-1]

@@ -24,7 +24,7 @@ const intents = new Set(['MISSION_START', 'MISSION_PAUSE', 'MISSION_RESUME', 'MI
 const deviceCommands = new Set(['UAV_HOVER', 'UAV_RESUME', 'UAV_RETURN', 'UAV_LAND', 'USV_HOLD', 'USV_RESUME', 'USV_RETURN', 'USV_STOP'])
 const statuses = new Set(['NEEDS_CLARIFICATION', 'UNSUPPORTED', 'NOT_ACTIONABLE'])
 const reasons = new Set([
-  'AMBIGUOUS_ACTION', 'NEGATED_ACTION', 'NO_SUPPORTED_ACTION',
+  'AMBIGUOUS_ACTION', 'NEGATED_ACTION', 'QUESTION_ACTION', 'NO_SUPPORTED_ACTION',
   'UNSUPPORTED_CAPABILITY', 'UNSUPPORTED_TARGETING', 'AMBIGUOUS_TARGET',
 ])
 const intentForAction: Record<string, string> = {
@@ -33,7 +33,7 @@ const intentForAction: Record<string, string> = {
 const reasonsForStatus: Record<string, Set<string>> = {
   NEEDS_CLARIFICATION: new Set(['AMBIGUOUS_ACTION', 'NO_SUPPORTED_ACTION']),
   UNSUPPORTED: new Set(['UNSUPPORTED_CAPABILITY', 'UNSUPPORTED_TARGETING']),
-  NOT_ACTIONABLE: new Set(['NEGATED_ACTION']),
+  NOT_ACTIONABLE: new Set(['NEGATED_ACTION', 'QUESTION_ACTION']),
 }
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 
@@ -107,10 +107,12 @@ function isCandidate(value: unknown): value is VoiceIntentCandidate {
         || sequence.confidence !== null || !Array.isArray(sequence.steps) || sequence.steps.length < 2 || sequence.steps.length > 4) return false
       return (sequence.steps as Array<Record<string, unknown>>).every((step, index) => {
         if (!step || step.index !== index) return false
-        if (step.action === 'WAIT') return index > 0 && hasOnlyKeys(step, ['index', 'action', 'waitSeconds'])
+        if ('waitForPrevious' in step && (index === 0 || step.waitForPrevious !== true)) return false
+        const orderKeys = 'waitForPrevious' in step ? ['waitForPrevious'] : []
+        if (step.action === 'WAIT') return index > 0 && hasOnlyKeys(step, ['index', 'action', 'waitSeconds', ...orderKeys])
           && Number.isInteger(step.waitSeconds) && Number(step.waitSeconds) >= 1 && Number(step.waitSeconds) <= 60
-        if (typeof step.action === 'string' && actions.has(step.action)) return hasOnlyKeys(step, ['index', 'action'])
-        return step.action === 'DEVICE_COMMAND' && hasOnlyKeys(step, ['index', 'action', 'targetDeviceCode', 'deviceCommandType'])
+        if (typeof step.action === 'string' && actions.has(step.action)) return hasOnlyKeys(step, ['index', 'action', ...orderKeys])
+        return step.action === 'DEVICE_COMMAND' && hasOnlyKeys(step, ['index', 'action', 'targetDeviceCode', 'deviceCommandType', ...orderKeys])
           && boundedString(step.targetDeviceCode, 1, 96) && typeof step.deviceCommandType === 'string'
           && deviceCommands.has(step.deviceCommandType) && step.targetDeviceCode.startsWith(`${step.deviceCommandType.slice(0, 3)}-`)
       })

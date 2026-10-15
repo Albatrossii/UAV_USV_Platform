@@ -51,31 +51,41 @@ function executionMatchesPlan(input: SingleDeviceCameraObservation) {
     && execution.runtimeGeneration === context.runtimeGeneration)
 }
 
-function dispatchedTarget(input: SingleDeviceCameraObservation): string | null {
+function dispatchedDevice(input: SingleDeviceCameraObservation): { target: string; key: string; startedAt: string } | null {
   const { proposal, execution } = input
   if (!proposal || !execution || !dispatchedStates.has(execution.state)) return null
   let target: string | undefined
+  let key = executionKey(execution)
+  let startedAt = execution.createdAt
   if (execution.action === 'DEVICE_COMMAND') {
     target = proposal.plan.targetDeviceCode
     if (!proposal.plan.deviceCommandType) return null
   } else if (execution.action === 'SEQUENCE') {
-    // The currently supported sequence is a frozen START -> device command pair.
     const planSteps = proposal.plan.steps
     const steps = execution.steps
-    if (planSteps?.length !== 2 || steps?.length !== 2) return null
-    const [startPlan, devicePlan] = planSteps
-    const [start, device] = steps
-    if (!startPlan || !devicePlan || !start || !device
-      || startPlan.index !== 0 || startPlan.action !== 'START'
-      || devicePlan.index !== 1 || devicePlan.action !== 'DEVICE_COMMAND'
-      || start.index !== 0 || start.action !== 'START' || start.state !== 'SUCCEEDED'
-      || device.index !== 1 || device.action !== 'DEVICE_COMMAND'
-      || !device.executionId || device.state === 'PENDING' || !dispatchedStates.has(device.state)
-      || !devicePlan.deviceCommandType || device.deviceCommandType !== devicePlan.deviceCommandType
-      || device.targetDeviceCode !== devicePlan.targetDeviceCode) return null
-    target = devicePlan.targetDeviceCode
+    if (!planSteps?.length || steps?.length !== planSteps.length) return null
+    if (steps.some((step, index) => {
+      const plan = planSteps[index]
+      return !plan || step.index !== index || plan.index !== index
+        || step.action !== plan.action || step.targetDeviceCode !== plan.targetDeviceCode
+        || step.deviceCommandType !== plan.deviceCommandType || step.waitSeconds !== plan.waitSeconds
+        || Boolean(step.waitForPrevious) !== Boolean(plan.waitForPrevious)
+    })) return null
+    // Each dispatched device step has its own camera identity. A later WAIT
+    // must not replay an earlier focus, and a long sequence can focus a fresh
+    // step even after its parent command is older than thirty seconds.
+    let index = steps.length - 1
+    while (index >= 0 && (steps[index]!.state === 'PENDING' || steps[index]!.state === 'QUEUED')) index--
+    const device = steps[index]
+    if (!device || device.action !== 'DEVICE_COMMAND' || !device.executionId
+      || !device.deviceCommandType || device.state === 'PENDING' || !dispatchedStates.has(device.state)
+      || steps.slice(0, index).some(step => step.state !== 'SUCCEEDED')) return null
+    target = device.targetDeviceCode
+    key = JSON.stringify([key, index, device.executionId])
+    startedAt = device.startedAt ?? execution.createdAt
   }
-  return target && input.deviceCodes.includes(target) && proposal.plan.explicitDeviceCodes.includes(target) ? target : null
+  return target && input.deviceCodes.includes(target) && proposal.plan.explicitDeviceCodes.includes(target)
+    ? { target, key, startedAt } : null
 }
 
 /** Briefly identify a dispatched device, then return to the fleet overview.
@@ -135,22 +145,25 @@ export function createSingleDeviceCameraDirector(options: SingleDeviceCameraDire
       return
     }
     const execution = input.execution
-    const createdAt = Date.parse(execution.createdAt)
-    const age = Date.now() - createdAt
-    // Polling or restoring an old command must not replay its camera animation.
-    if (!Number.isFinite(createdAt) || age < -5_000 || age > maxExecutionAgeMs
-      || rejectedStates.has(execution.state)
+    if (rejectedStates.has(execution.state)
       || execution.steps?.some(step => step.state !== 'PENDING' && rejectedStates.has(step.state))) {
       remember(key)
       return
     }
-    const target = dispatchedTarget(input)
-    if (!target) return
-    remember(key)
+    const device = dispatchedDevice(input)
+    if (!device || remembered.has(device.key)) return
+    const createdAt = Date.parse(device.startedAt)
+    const age = Date.now() - createdAt
+    // Polling or restoring an old receipt must not replay its animation.
+    if (!Number.isFinite(createdAt) || age < -5_000 || age > maxExecutionAgeMs) {
+      remember(device.key)
+      return
+    }
+    remember(device.key)
     stopFocus()
-    active = { executionKey: key, deviceCode: target }
+    active = { executionKey: device.key, deviceCode: device.target }
     options.onFocusChange?.(true)
-    options.focus(target)
+    options.focus(device.target)
     timer = setTimeout(() => {
       timer = null
       if (!active || disposed) return
