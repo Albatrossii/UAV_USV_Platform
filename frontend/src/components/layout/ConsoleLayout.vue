@@ -23,11 +23,13 @@ const props = withDefaults(defineProps<{
   eyebrow: string
   showRefresh?: boolean
   immersive?: boolean
+  hideSidebar?: boolean
   collapsibleSidebar?: boolean
   defaultSidebarCollapsed?: boolean
 }>(), {
   showRefresh: true,
   immersive: false,
+  hideSidebar: false,
   collapsibleSidebar: true,
   defaultSidebarCollapsed: false,
 })
@@ -79,8 +81,8 @@ async function logout() {
 </script>
 
 <template>
-  <div class="app-shell console-shell" :class="{ 'sidebar-collapsed': sidebarCollapsed }">
-    <aside class="sidebar console-sidebar" :aria-label="sidebarCollapsed ? '折叠导航' : '展开导航'">
+  <div class="app-shell console-shell" :class="{ 'sidebar-collapsed': sidebarCollapsed, 'sidebar-hidden': hideSidebar }">
+    <aside v-if="!hideSidebar" class="sidebar console-sidebar" :aria-label="sidebarCollapsed ? '折叠导航' : '展开导航'">
       <div class="brand console-brand">
         <div class="brand-mark console-brand-mark"><Plane :size="22" /></div>
         <div class="console-brand-copy">
@@ -185,6 +187,10 @@ async function logout() {
 
 .console-shell.sidebar-collapsed {
   --console-sidebar-width: 76px;
+}
+
+.console-shell.sidebar-hidden {
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .console-sidebar {

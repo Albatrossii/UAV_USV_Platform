@@ -713,6 +713,10 @@ describe('VoiceIntelligenceInput refined mode', () => {
 
   it('only renders the refined controls and never claims an unverified Aliyun connection', async () => {
     const wrapper = mountRefined()
+    expect(wrapper.props('compact')).toBe(false)
+    expect(wrapper.classes()).not.toContain('is-compact')
+    expect(wrapper.get('.refined-capture-title').text()).toBe('点击录音')
+    expect(wrapper.text()).not.toContain('一句话，调度海空设备')
     expect(wrapper.text()).toContain('平台语音识别')
     expect(wrapper.text()).toContain('录音后确认来源')
     expect(wrapper.text()).not.toContain('阿里云')
@@ -726,6 +730,58 @@ describe('VoiceIntelligenceInput refined mode', () => {
     await wrapper.setProps({ proposalReady: true })
     expect(wrapper.find('.refined-preview').exists()).toBe(false)
     wrapper.unmount()
+  })
+
+  it('keeps examples, editable text, preview and safety scope in compact mode', async () => {
+    const wrapper = mountRefined()
+    try {
+      await wrapper.setProps({ compact: true })
+      expect(wrapper.classes()).toContain('is-compact')
+      expect(wrapper.get('.refined-capture-title').text()).toBe('点击录音')
+      expect(wrapper.get('.refined-capture-note').text()).toContain('支持返航、降落、停止；文字编辑后需确认')
+      expect(wrapper.get('textarea').attributes('placeholder')).toBe('如：一号无人机悬停')
+      expect(wrapper.findAll('.refined-examples button')).toHaveLength(3)
+      await wrapper.findAll('.refined-examples button')[0]!.trigger('click')
+      expect((wrapper.get('textarea').element as HTMLTextAreaElement).value).toBe('开始任务，然后让一号无人机悬停。')
+      expect(wrapper.get('.refined-capture-title').text()).toBe('文字已就绪')
+      await wrapper.get('textarea').setValue('一号无人机悬停')
+      await wrapper.get('.refined-preview').trigger('click')
+      await flushPromises()
+      expect(wrapper.emitted('candidate')).toEqual([['SINGLE_DEVICE_CONTROL', expect.any(String)]])
+      expect(wrapper.emitted('voiceCandidate')).toBeUndefined()
+      expect(wrapper.get('.frozen-plan').text()).toBe('冻结的指令预览')
+      expect(wrapper.get('.refined-status').text()).toContain('确认后执行')
+    } finally { wrapper.unmount() }
+  })
+
+  it('shows recording, recognition and ready states without losing automatic speech execution in compact mode', async () => {
+    installMicrophone()
+    const adapter = speechAdapter('一号无人机悬停')
+    let finishRecognition!: () => void
+    const transcribe = vi.fn<VoiceIntelligenceAdapter['transcribe']>(input => new Promise(resolve => {
+      finishRecognition = async () => resolve(await adapter.transcribe(input))
+    }))
+    const wrapper = mountRefined({ ...adapter, transcribe })
+    try {
+      await wrapper.setProps({ compact: true })
+      await wrapper.get('button[aria-label="开始录音"]').trigger('click')
+      await flushPromises()
+      expect(wrapper.get('.refined-capture-title').text()).toBe('正在聆听你的指令')
+      expect(wrapper.get('.refined-capture-note').text()).toContain('停顿不会截断')
+      expect(wrapper.find('.refined-wave').exists()).toBe(true)
+      await wrapper.get('button[aria-label="停止录音"]').trigger('click')
+      await flushPromises()
+      expect(wrapper.get('.refined-capture-title').text()).toBe('正在转换为文字')
+      expect(wrapper.get('.refined-capture-note').text()).toContain('无需重复录音')
+      finishRecognition()
+      await flushPromises()
+      expect(wrapper.get('.refined-capture-title').text()).toBe('文字已就绪')
+      expect(wrapper.emitted('voiceCandidate')).toEqual([['SINGLE_DEVICE_CONTROL', expect.any(String), expect.any(Object)]])
+      expect(wrapper.find('.refined-preview').exists()).toBe(false)
+      await wrapper.get('textarea').setValue('一号无人机安全归队')
+      expect(wrapper.find('.refined-preview').exists()).toBe(true)
+      expect(wrapper.emitted('voiceCandidate')).toHaveLength(1)
+    } finally { wrapper.unmount() }
   })
 
   it.each([

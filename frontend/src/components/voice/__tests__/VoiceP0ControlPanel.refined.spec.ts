@@ -417,8 +417,31 @@ describe('VoiceP0ControlPanel refined controls', () => {
     expect(wrapper.text()).not.toContain('VOICE / LLM · P0')
   })
 
-  it('creates the backend frozen plan without executing until the operator confirms', async () => {
+  it('embeds compact controls without a repeated heading and keeps permission and recovery notices visible', async () => {
     const { wrapper, store, input } = await panel()
+    expect(wrapper.props('compact')).toBe(false)
+    expect(wrapper.find('.refined-head').exists()).toBe(true)
+    await wrapper.setProps({ compact: true })
+    expect(wrapper.get('.voice-p0').classes()).toContain('voice-compact')
+    expect(input.props('compact')).toBe(true)
+    expect(wrapper.find('.refined-head').exists()).toBe(false)
+    expect(wrapper.find('h2').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('一句话，调度海空设备')
+    expect(wrapper.get('.refined-capture-title').text()).toBe('点击录音')
+    expect(wrapper.text()).toContain('支持返航、降落、停止；文字编辑后需确认')
+    useAuthStore().user = { username: 'viewer', role: 'VIEWER' }
+    store.responseUnknown = true
+    await nextTick()
+    expect(wrapper.text()).toContain('当前账号没有控制权限')
+    expect(wrapper.text()).toContain('上次请求结果尚未确认')
+    expect(wrapper.get('button[aria-label="开始录音"]').attributes('disabled')).toBeDefined()
+    expect(wrapper.findAll('button').some(button => button.text() === '核对上次请求')).toBe(true)
+    expect(store.confirm).not.toHaveBeenCalled()
+  })
+
+  it.each([false, true])('creates the backend frozen plan without executing until the operator confirms (compact=%s)', async compact => {
+    const { wrapper, store, input } = await panel()
+    await wrapper.setProps({ compact })
     await preview(input)
     expect(store.propose).toHaveBeenCalledExactlyOnceWith('SINGLE_DEVICE_CONTROL', interpretationId)
     expect(store.confirm).not.toHaveBeenCalled()
@@ -432,8 +455,9 @@ describe('VoiceP0ControlPanel refined controls', () => {
     expect(wrapper.get('.refined-result').text()).toContain('算法执行成功')
   })
 
-  it('automatically submits a newly recognized device command through the frozen proposal', async () => {
+  it.each([false, true])('automatically submits a newly recognized device command through the frozen proposal (compact=%s)', async compact => {
     const { wrapper, store, input } = await panel()
+    await wrapper.setProps({ compact })
     const calls: string[] = []
     store.propose = vi.fn().mockImplementation(async (_intent, id) => {
       calls.push('propose')

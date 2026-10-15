@@ -8,6 +8,7 @@ import { useAuthStore } from '@/stores/auth'
 import type { AlgorithmRuntimeFrame } from '@/types/mission'
 
 vi.mock('@/components/layout/ConsoleLayout.vue', () => ({ default: { template: '<main><slot /></main>' } }))
+vi.mock('@/components/layout/ConsoleNavigationRail.vue', () => ({ default: { template: '<nav />' } }))
 vi.mock('@/components/voice/VoiceP0ControlPanel.vue', () => ({
   default: { template: '<aside />', methods: { handleUnityMessage: vi.fn() } },
 }))
@@ -32,7 +33,7 @@ async function createView(algorithm = 'GB_SFLA_CS') {
     beginViewportTransition: vi.fn(), endViewportTransition: vi.fn(), syncViewport: vi.fn(), reload: vi.fn(),
   } as unknown as NonNullable<typeof simulationRuntime.panel.value>
   const wrapper = mount(VirtualFleetConfigView, {
-    global: { stubs: { RouterLink: { template: '<a><slot /></a>' } } },
+    global: { stubs: { RouterLink: { template: '<a><slot /></a>' }, NodeCommunicationPanel: true } },
   })
   wrappers.push(wrapper)
   await flushPromises()

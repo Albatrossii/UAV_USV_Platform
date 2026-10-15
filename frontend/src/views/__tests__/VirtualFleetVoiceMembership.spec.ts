@@ -10,6 +10,7 @@ import type { VoiceMockRuntimeHint } from '@/types/voiceControl'
 import { buildVirtualFleetGridLayout, type GridScenarioPose } from '@/utils/virtualFleetGridLayout'
 
 vi.mock('@/components/layout/ConsoleLayout.vue', () => ({ default: { template: '<main><slot /></main>' } }))
+vi.mock('@/components/layout/ConsoleNavigationRail.vue', () => ({ default: { template: '<nav />' } }))
 vi.mock('@/components/voice/VoiceP0ControlPanel.vue', () => ({
   default: {
     props: ['runtimeHint'],
@@ -40,7 +41,7 @@ async function createView() {
     beginViewportTransition: vi.fn(), endViewportTransition: vi.fn(), syncViewport: vi.fn(), reload: vi.fn(),
   } as unknown as NonNullable<typeof simulationRuntime.panel.value>
   const wrapper = mount(VirtualFleetConfigView, {
-    global: { stubs: { RouterLink: { template: '<a><slot /></a>' } } },
+    global: { stubs: { RouterLink: { template: '<a><slot /></a>' }, NodeCommunicationPanel: true } },
   })
   wrappers.push(wrapper)
   await flushPromises()

@@ -16,6 +16,7 @@ import { ApiClientError } from '@/api/http'
 import type { VoiceRuntimeContext } from '@/types/voiceControl'
 
 vi.mock('@/components/layout/ConsoleLayout.vue', () => ({ default: { template: '<main><slot /></main>' } }))
+vi.mock('@/components/layout/ConsoleNavigationRail.vue', () => ({ default: { template: '<nav />' } }))
 vi.mock('@/components/voice/VoiceP0ControlPanel.vue', () => ({
   default: { template: '<aside />', methods: { handleUnityMessage: vi.fn() } },
 }))
@@ -50,7 +51,7 @@ async function createView() {
     reload: vi.fn(),
   } as unknown as NonNullable<typeof simulationRuntime.panel.value>
   const wrapper = mount(VirtualFleetConfigView, {
-    global: { stubs: { RouterLink: { template: '<a><slot /></a>' } } },
+    global: { stubs: { RouterLink: { template: '<a><slot /></a>' }, NodeCommunicationPanel: true } },
   })
   wrappers.push(wrapper)
   await flushPromises()

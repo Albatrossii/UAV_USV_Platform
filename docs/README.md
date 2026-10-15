@@ -4,6 +4,7 @@
 
 ## 文档列表
 
+- [方案 A 统一控制台与节点监测版本备注](releases/20261015-layout-a-node-monitor.md)：2026-10-15 的界面与监测变更、验证结果、备份范围和恢复方法。
 - [architecture.md](architecture.md)：对齐 PPT 的五层软件架构，说明当前项目在 Spring Boot、Vue、ROS2/Gazebo、Unity3D 和算法服务中的定位。
 - [frontend-backend-roadmap.md](frontend-backend-roadmap.md)：梳理前后端已有模块、下一阶段模块和接口开发顺序。
 - [mission-management-design.md](mission-management-design.md)：任务管理 / 任务配置模块的数据库、后端、前端和接口设计草案。

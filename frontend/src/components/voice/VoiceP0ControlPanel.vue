@@ -38,8 +38,9 @@ const props = withDefaults(defineProps<{
   runtimeHint: VoiceMockRuntimeHint
   unitySession: UnityPresentationSession
   refined?: boolean
+  compact?: boolean
   frame?: AlgorithmRuntimeFrame | null
-}>(), { refined: false })
+}>(), { refined: false, compact: false })
 const emit = defineEmits<{ presentationMessage: [message: UnityPresentationOutgoing] }>()
 const store = useVoiceControlStore()
 const authStore = useAuthStore()
@@ -1156,6 +1157,7 @@ onBeforeUnmount(() => {
   <section
     v-if="refined"
     class="voice-p0 voice-refined"
+    :class="{ 'voice-compact': compact }"
     aria-label="语音控制"
     :data-scene-ready="context?.sceneReady ? 'true' : 'false'"
     :data-context="context ? 'ready' : 'missing'"
@@ -1167,7 +1169,7 @@ onBeforeUnmount(() => {
     :data-recovery-available="recoveryAvailable ? 'true' : 'false'"
     :data-response-unknown="responseUnknown ? 'true' : 'false'"
   >
-    <header class="refined-head"><h2>语音控制</h2><AudioLines :size="20" aria-hidden="true" /></header>
+    <header v-if="!compact" class="refined-head"><h2>语音控制</h2><AudioLines :size="20" aria-hidden="true" /></header>
     <div class="refined-content">
       <p v-if="voiceP0MockEnabled" class="refined-notice">当前为本地演示模式，不连接真实设备。</p>
       <p v-if="authStore.user?.role !== 'ADMIN'" class="refined-notice" role="alert">当前账号没有控制权限，请使用管理员账号。</p>
@@ -1183,6 +1185,7 @@ onBeforeUnmount(() => {
       <VoiceIntelligenceInput
         v-else-if="voiceP1PreparationEnabled"
         refined
+        :compact="compact"
         :proposal-ready="refinedProposalReady"
         :review-status="refinedReviewStatus"
         :allowed-actions="allowedIntelligenceActions"
@@ -1277,6 +1280,7 @@ onBeforeUnmount(() => {
     <LocalAsrInput v-if="asrOnly" :operator-scope="operatorScope" :disabled="authStore.user?.role !== 'ADMIN' || authStore.loading" />
     <VoiceIntelligenceInput
       v-else-if="voiceP1PreparationEnabled"
+      :compact="compact"
       :allowed-actions="allowedIntelligenceActions"
       :device-codes="runtimeHint.deviceCodes"
       :runtime-context="intelligenceRuntimeContext"
@@ -1459,4 +1463,26 @@ onBeforeUnmount(() => {
 .voice-refined button:focus-visible { outline:2px solid #73e2cd; outline-offset:3px; }
 @media (max-height:850px) and (min-width:801px) { .voice-refined .refined-head { min-height:53px; padding-block:14px; } .refined-content { padding:16px 18px; gap:12px; } }
 @media (max-width:500px) { .refined-content { padding:18px; } }
+.voice-p0.voice-refined.voice-compact { min-height:0; min-width:0; background:transparent; }
+.voice-compact .refined-content { flex:initial; gap:9px; padding:0; }
+.voice-compact .refined-plan { margin-top:0; padding-top:10px; }
+.voice-compact .refined-section-title { flex-wrap:wrap; gap:4px 8px; margin-bottom:8px; }
+.voice-compact .refined-plan ol { gap:7px; }
+.voice-compact .refined-plan li { align-items:flex-start; gap:7px; font-size:11px; line-height:1.55; }
+.voice-compact .refined-plan li b { width:21px; height:21px; }
+.voice-compact .refined-plan li > span { min-width:0; }
+.voice-compact .refined-plan-note { margin:8px 0; }
+.voice-compact .refined-confirm { min-height:36px; margin-top:9px; font-size:12px; }
+.voice-compact .refined-notice { font-size:10px; line-height:1.6; }
+.voice-compact .refined-plan > .refined-notice { margin-top:8px; }
+.voice-compact .refined-execution-phase { margin:0; padding:7px 9px; font-size:11px; line-height:1.6; overflow-wrap:anywhere; }
+.voice-compact .refined-result { min-width:0; padding:9px; border-radius:7px; overflow-wrap:anywhere; }
+.voice-compact .refined-result-head { align-items:flex-start; gap:6px; }
+.voice-compact .refined-result-head svg { flex-shrink:0; }
+.voice-compact .refined-result-head strong { min-width:0; font-size:11px; line-height:1.5; }
+.voice-compact .refined-execution-steps { gap:6px; }
+.voice-compact .refined-execution-steps li > * { min-width:0; max-width:100%; overflow-wrap:anywhere; }
+.voice-compact .refined-recovery-actions { display:flex; flex-wrap:wrap; gap:4px 9px; }
+.voice-compact .refined-recovery { max-width:100%; text-align:left; overflow-wrap:anywhere; }
+.voice-compact .refined-footer { margin-top:9px; padding:8px 0 0; background:transparent; line-height:1.6; text-align:left; overflow-wrap:anywhere; }
 </style>

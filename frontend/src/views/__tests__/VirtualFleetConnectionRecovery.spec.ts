@@ -6,6 +6,7 @@ import { controlAlgorithmRun, fetchAlgorithmFrames, prepareAlgorithmRun } from '
 import { useUnityBridgeStore } from '@/stores/unityBridge'
 import { simulationRuntime } from '@/composables/simulationRuntime'
 vi.mock('@/components/layout/ConsoleLayout.vue', () => ({ default: { template: '<main><slot /></main>' } }))
+vi.mock('@/components/layout/ConsoleNavigationRail.vue', () => ({ default: { template: '<nav />' } }))
 vi.mock('@/components/voice/VoiceP0ControlPanel.vue', () => ({ default: { template: '<aside />' } }))
 vi.mock('@/api/algorithm', () => ({
   prepareAlgorithmRun: vi.fn().mockResolvedValue({}), controlAlgorithmRun: vi.fn(),
@@ -15,7 +16,7 @@ vi.mock('@/api/algorithm', () => ({
 beforeEach(() => { vi.useFakeTimers(); setActivePinia(createPinia()); sessionStorage.clear(); simulationRuntime.recovering.value = false })
 afterEach(() => { vi.useRealTimers(); vi.clearAllMocks(); simulationRuntime.panel.value = null; simulationRuntime.events = null })
 it('backs off failed reads, preserves run identity and recovers without dispatching an action', async () => {
-  const wrapper = mount(View, { global: { stubs: { RouterLink: true, ExperimentArchive: true } } })
+  const wrapper = mount(View, { global: { stubs: { RouterLink: true, ExperimentArchive: true, NodeCommunicationPanel: true } } })
   await flushPromises()
   const setup = wrapper.vm.$.setupState as unknown as {
     state: { mission: string; runId: number; sequence: number }

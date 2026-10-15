@@ -13,6 +13,7 @@ declare module 'vue' {
   export interface GlobalComponents {
     AlgorithmManagerDialog: typeof import('./components/mission/AlgorithmManagerDialog.vue')['default']
     ConsoleLayout: typeof import('./components/layout/ConsoleLayout.vue')['default']
+    ConsoleNavigationRail: typeof import('./components/layout/ConsoleNavigationRail.vue')['default']
     CooperativeSituationHud: typeof import('./components/mission/CooperativeSituationHud.vue')['default']
     ElAlert: typeof import('element-plus/es')['ElAlert']
     ElButton: typeof import('element-plus/es')['ElButton']
@@ -38,6 +39,7 @@ declare module 'vue' {
     MissionListPanel: typeof import('./components/mission/MissionListPanel.vue')['default']
     MissionStartCheckDialog: typeof import('./components/mission/MissionStartCheckDialog.vue')['default']
     MissionTrajectoryMap: typeof import('./components/mission/MissionTrajectoryMap.vue')['default']
+    NodeCommunicationPanel: typeof import('./components/monitoring/NodeCommunicationPanel.vue')['default']
     OverviewUnityWebglPanel: typeof import('./components/unity/OverviewUnityWebglPanel.vue')['default']
     PointCloudCanvas: typeof import('./components/sensor/PointCloudCanvas.vue')['default']
     PointCloudOverviewPanel: typeof import('./components/sensor/PointCloudOverviewPanel.vue')['default']

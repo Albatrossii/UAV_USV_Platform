@@ -1,11 +1,13 @@
 <script setup lang="ts">
-import { computed, onActivated, onBeforeUnmount, onDeactivated, reactive, ref, watch } from 'vue'
+import { computed, onActivated, onBeforeUnmount, onDeactivated, onMounted, reactive, ref, watch } from 'vue'
 import {
+  AudioLines,
   ChevronLeft,
   ChevronRight,
   CircleStop,
   Eye,
   Globe2,
+  LayoutGrid,
   Maximize2,
   Minimize2,
   Pause,
@@ -14,7 +16,8 @@ import {
 } from '@lucide/vue'
 
 import ConsoleLayout from '@/components/layout/ConsoleLayout.vue'
-import WebSocketQualityCard from '@/components/monitoring/WebSocketQualityCard.vue'
+import ConsoleNavigationRail from '@/components/layout/ConsoleNavigationRail.vue'
+import NodeCommunicationPanel from '@/components/monitoring/NodeCommunicationPanel.vue'
 import { ApiClientError } from '@/api/http'
 import VoiceP0ControlPanel from '@/components/voice/VoiceP0ControlPanel.vue'
 import {
@@ -171,8 +174,10 @@ const algorithmPreparing = ref(false)
 const missionActionMessage = ref('')
 const webglExpanded = ref(false)
 const leftPanelCollapsed = ref(false)
-const rightPanelCollapsed = ref(false)
 const panelTransitioning = ref(false)
+let panelTransitionTimer: number | undefined
+const controlDrawer = ref<HTMLElement | null>(null)
+let controlDrawerObserver: ResizeObserver | null = null
 const logEntries = ref<string[]>([])
 const voiceControlPanel = ref<InstanceType<typeof VoiceP0ControlPanel> | null>(null)
 const voiceControlStore = useVoiceControlStore()
@@ -330,27 +335,32 @@ const pendingTerminalSequence = ref<number | null>(null)
 const pendingTerminalStatus = ref<string | null>(null)
 
 function setLeftPanelCollapsed(collapsed: boolean) {
+  if (collapsed === leftPanelCollapsed.value) return
+  window.clearTimeout(panelTransitionTimer)
   panelTransitioning.value = true
   unityPanel.value?.beginViewportTransition()
   leftPanelCollapsed.value = collapsed
+  window.dispatchEvent(new CustomEvent('unity-runtime-track'))
+  // Stacked/mobile and reduced-motion layouts may not emit a grid transition.
+  panelTransitionTimer = window.setTimeout(finishPanelTransition, 280)
 }
 
-function setRightPanelCollapsed(collapsed: boolean) {
-  panelTransitioning.value = true
-  unityPanel.value?.beginViewportTransition()
-  rightPanelCollapsed.value = collapsed
+function finishPanelTransition() {
+  window.clearTimeout(panelTransitionTimer)
+  panelTransitionTimer = undefined
+  if (!panelTransitioning.value) return
+  panelTransitioning.value = false
+  unityPanel.value?.endViewportTransition()
 }
 
 function handleWorkbenchTransitionEnd(event: TransitionEvent) {
   if (event.propertyName !== 'grid-template-columns') return
-  panelTransitioning.value = false
-  unityPanel.value?.endViewportTransition()
+  finishPanelTransition()
 }
 
 function handleWorkbenchTransitionCancel(event: TransitionEvent) {
   if (event.propertyName !== 'grid-template-columns') return
-  panelTransitioning.value = false
-  unityPanel.value?.endViewportTransition()
+  finishPanelTransition()
 }
 const singleDeviceRuntimeNotice = computed(() => {
   if (!isSingleDeviceAlgorithm.value) return ''
@@ -1542,6 +1552,35 @@ const cameraDeviceCodes = computed(() => [...new Set(
     .filter(pose => pose.valid !== false && /^(UAV|USV)-\d+$/i.test(pose.deviceCode))
     .map(pose => pose.deviceCode),
 )])
+const sceneDeviceCodes = computed(() => {
+  // Keep the generated scene membership while the next configuration is edited.
+  // Targets are scene objects, but never communication nodes.
+  if (initialScenarioPoses.value.length || plannedScenarioPoses.value.length) {
+    return [...new Set((initialScenarioPoses.value.length ? initialScenarioPoses.value : plannedScenarioPoses.value)
+      .filter(pose => pose.valid !== false
+        && (!pose.deviceType || pose.deviceType === 'UAV' || pose.deviceType === 'USV')
+        && /^(UAV|USV)-\d+$/i.test(pose.deviceCode))
+      .map(pose => pose.deviceCode))]
+  }
+  if (currentAlgorithmFrame.value) {
+    return [...new Set(currentAlgorithmFrame.value.agents
+      .filter(agent => agent.type === 'UAV' || agent.type === 'USV')
+      .map(agent => agent.code))]
+  }
+  const previewCodes = (type: 'UAV' | 'USV', count: number) => Array.from(
+    { length: Number.isFinite(count) ? Math.max(0, Math.min(3, Math.trunc(count))) : 0 },
+    (_, index) => `${type}-${String(index + 1).padStart(3, '0')}`,
+  )
+  return [...previewCodes('UAV', state.uavCount), ...previewCodes('USV', state.usvCount)]
+})
+const simulationTargets = computed(() => (currentAlgorithmFrame.value?.targets ?? []).map(target => ({
+  id: target.code,
+  label: target.type === 'ESCORT_TARGET' ? '护航目标' : '敌船',
+  state: target.state || '未上报',
+})))
+function selectMonitoringDevice(deviceCode: string) {
+  if (sceneDeviceCodes.value.includes(deviceCode)) selectedDevice.value = deviceCode
+}
 const cameraTargetDevice = computed(() => cameraDeviceCodes.value.includes(selectedDevice.value)
   ? selectedDevice.value : cameraDeviceCodes.value[0] ?? '')
 const cameraControlsReady = computed(() => unityReady.value && !scenarioLoading.value
@@ -1690,8 +1729,20 @@ watch(
 )
 window.addEventListener('pagehide', persistRuntimeRecovery)
 
+onMounted(() => {
+  if (!controlDrawer.value || typeof ResizeObserver === 'undefined') return
+  // In the stacked layout, controls can move the stage without resizing it.
+  // Observe the whole console so folded cards and new voice receipts both align the persistent renderer.
+  controlDrawerObserver = new ResizeObserver(() => {
+    if (cameraViewActive.value) window.dispatchEvent(new CustomEvent('unity-runtime-track'))
+  })
+  controlDrawerObserver.observe(controlDrawer.value)
+})
+
 onBeforeUnmount(() => {
   window.removeEventListener('pagehide', persistRuntimeRecovery)
+  window.clearTimeout(panelTransitionTimer)
+  controlDrawerObserver?.disconnect()
   persistRuntimeRecovery()
   commandCameraDirector.dispose()
   clearTimeout(initialCameraTimer)
@@ -1714,6 +1765,7 @@ onBeforeUnmount(() => {
     eyebrow="VIRTUAL FLEET / UNITY BRIDGE V3"
     :show-refresh="false"
     :default-sidebar-collapsed="true"
+    hide-sidebar
     immersive
   >
     <div class="virtual-fleet-page">
@@ -1737,78 +1789,104 @@ onBeforeUnmount(() => {
       </p>
 
       <div
-        class="vf-workbench"
+        class="vf-workbench vf-unified-workbench"
         :class="{
           'left-collapsed': leftPanelCollapsed,
-          'right-collapsed': rightPanelCollapsed,
           'panel-transitioning': panelTransitioning,
         }"
         @transitionend="handleWorkbenchTransitionEnd"
         @transitioncancel="handleWorkbenchTransitionCancel"
       >
-        <aside class="vf-config-drawer" :class="{ collapsed: leftPanelCollapsed }">
-          <button
-            class="vf-drawer-reopen"
-            type="button"
-            title="展开场景配置"
-            :tabindex="leftPanelCollapsed ? 0 : -1"
-            @click="setLeftPanelCollapsed(false)"
-          >
-            <ChevronRight :size="18" />
-            <span>场景配置</span>
-          </button>
-          <section class="vf-panel vf-config-panel">
+        <aside ref="controlDrawer" class="vf-config-drawer" :class="{ collapsed: leftPanelCollapsed }">
+          <ConsoleNavigationRail
+            :collapsed="leftPanelCollapsed"
+            @toggle="setLeftPanelCollapsed(!leftPanelCollapsed)"
+          />
+          <section class="vf-config-panel" aria-label="任务控制台" :inert="leftPanelCollapsed ? true : undefined">
             <div class="vf-panel-head">
-              <div><h3>场景配置</h3><span>V3 PROTOCOL</span></div>
-              <button type="button" title="收起场景配置" @click="setLeftPanelCollapsed(true)">
+              <div><h3>任务控制台</h3><span>V3 PROTOCOL</span></div>
+              <button type="button" title="收起总控" aria-label="收起总控" @click="setLeftPanelCollapsed(true)">
                 <ChevronLeft :size="17" />
               </button>
             </div>
-            <label>算法
-              <select v-model="algorithmSelection" :disabled="sceneLocked">
-                <option value="ESCORT_GUARD" title="智能粒球仿真护航算法">智能粒球仿真护航</option>
-                <option value="GB_SFLA_CS">GB-SFLA-CS 协同围捕</option>
-              </select>
-            </label>
-            <p class="vf-description">{{ algorithmDescription }}</p>
-            <div class="vf-plan-summary">
-              <strong v-if="isEscortAlgorithm">{{ scenarioPlan.protectedCount }} 护航目标 · {{ scenarioPlan.threatCount }} 敌船</strong>
-              <strong v-else>{{ scenarioPlan.threatCount }} 艘围捕目标敌船</strong>
-              <span>{{ state.uavCount }} UAV · {{ state.usvCount }} USV · 世界 {{ scenarioPlan.worldWidth }}×{{ scenarioPlan.worldHeight }} m</span>
-              <small v-if="isEscortAlgorithm">规划预览 · 同时来袭 {{ scenarioPlan.simultaneousThreats }} 艘 · {{ scenarioPlan.realtimeTier === 'PHASE_TWO_REALTIME' ? '实时仿真' : '容量模式' }}</small>
-              <small v-else>规划预览 · 自动拆分协同围捕编组 · {{ scenarioPlan.realtimeTier === 'PHASE_TWO_REALTIME' ? '实时仿真' : '容量模式' }}</small>
-              <small>岸边出发 · 无人机从停机坪起飞 · 无人艇从泊位离港</small>
-            </div>
-            <div class="vf-two-col">
-              <label>UAV 数量
-                <input v-model.number="state.uavCount" type="number" min="1" max="3" :disabled="sceneLocked">
-              </label>
-              <label>USV 数量
-                <input v-model.number="state.usvCount" type="number" min="1" max="3" :disabled="sceneLocked">
-              </label>
-              <label>UAV 巡航速度 m/s
-                <input v-model.number="state.uavSpeed" type="number" min="0" max="15" step="0.1" :disabled="sceneLocked">
-                <small>上限 15 m/s</small>
-              </label>
-              <label>USV 巡航速度 m/s
-                <input v-model.number="state.usvSpeed" type="number" min="0" max="4" step="0.1" :disabled="sceneLocked">
-                <small>上限 4 m/s</small>
-              </label>
-            </div>
-            <p v-if="state.uavCount > 3 || state.usvCount > 3" class="vf-note" role="status">
-              原场景只有 3 个停机坪和 3 个岸边泊位，请将两类设备数量分别设为 1–3 台后生成场景。
-            </p>
-            <div class="vf-actions">
-              <button class="vf-button primary" type="button" :disabled="sceneLocked || !unityReady || scenarioLoading" @click="generateScenario">
-                <RefreshCw :size="15" /> 生成场景
-              </button>
-              <button class="vf-button" type="button" :disabled="!unityReady" @click="resetMission">
-                <CircleStop :size="15" /> 重置
-              </button>
-            </div>
-            <p v-if="!speedValid" class="vf-error">速度超过协议上限，请修正后再开始任务。</p>
-            <p v-if="missionActionMessage" class="vf-action-message">{{ missionActionMessage }}</p>
-            <WebSocketQualityCard />
+            <details class="vf-voice-config vf-scenario-config" open>
+              <summary class="vf-scenario-summary">
+                <span class="vf-scenario-title"><AudioLines :size="16" />语音控制</span>
+                <span class="vf-scenario-summary-right">语音 / 文本<ChevronRight class="vf-scenario-arrow" :size="12" /></span>
+              </summary>
+              <VoiceP0ControlPanel
+                ref="voiceControlPanel"
+                refined
+                compact
+                :runtime-hint="voiceRuntimeHint"
+                :frame="currentAlgorithmFrame"
+                :unity-session="voiceUnitySession"
+                @presentation-message="sendPresentationMessage"
+              />
+            </details>
+            <details class="vf-scenario-config" open>
+              <summary class="vf-scenario-summary">
+                <span class="vf-scenario-title"><LayoutGrid :size="16" />场景配置</span>
+                <span class="vf-scenario-summary-right">
+                  <span>{{ state.uavCount }} UAV · {{ state.usvCount }} USV</span>
+                  <ChevronRight class="vf-scenario-arrow" :size="12" />
+                </span>
+              </summary>
+              <div class="vf-scenario-body">
+                <label>算法
+                  <select v-model="algorithmSelection" :disabled="sceneLocked">
+                    <option value="ESCORT_GUARD" title="智能粒球仿真护航算法">智能粒球仿真护航</option>
+                    <option value="GB_SFLA_CS">GB-SFLA-CS 协同围捕</option>
+                  </select>
+                </label>
+                <p class="vf-description">{{ algorithmDescription }}</p>
+                <div class="vf-plan-summary">
+                  <strong v-if="isEscortAlgorithm">{{ scenarioPlan.protectedCount }} 护航目标 · {{ scenarioPlan.threatCount }} 敌船</strong>
+                  <strong v-else>{{ scenarioPlan.threatCount }} 艘围捕目标敌船</strong>
+                  <span>{{ state.uavCount }} UAV · {{ state.usvCount }} USV · 世界 {{ scenarioPlan.worldWidth }}×{{ scenarioPlan.worldHeight }} m</span>
+                  <small v-if="isEscortAlgorithm">规划预览 · 同时来袭 {{ scenarioPlan.simultaneousThreats }} 艘 · {{ scenarioPlan.realtimeTier === 'PHASE_TWO_REALTIME' ? '实时仿真' : '容量模式' }}</small>
+                  <small v-else>规划预览 · 自动拆分协同围捕编组 · {{ scenarioPlan.realtimeTier === 'PHASE_TWO_REALTIME' ? '实时仿真' : '容量模式' }}</small>
+                  <small>岸边出发 · 无人机从停机坪起飞 · 无人艇从泊位离港</small>
+                </div>
+                <div class="vf-two-col">
+                  <label>UAV 数量
+                    <input v-model.number="state.uavCount" type="number" min="1" max="3" :disabled="sceneLocked">
+                  </label>
+                  <label>USV 数量
+                    <input v-model.number="state.usvCount" type="number" min="1" max="3" :disabled="sceneLocked">
+                  </label>
+                  <label>UAV 巡航速度 m/s
+                    <input v-model.number="state.uavSpeed" type="number" min="0" max="15" step="0.1" :disabled="sceneLocked">
+                    <small>上限 15 m/s</small>
+                  </label>
+                  <label>USV 巡航速度 m/s
+                    <input v-model.number="state.usvSpeed" type="number" min="0" max="4" step="0.1" :disabled="sceneLocked">
+                    <small>上限 4 m/s</small>
+                  </label>
+                </div>
+                <p v-if="state.uavCount > 3 || state.usvCount > 3" class="vf-note" role="status">
+                  原场景只有 3 个停机坪和 3 个岸边泊位，请将两类设备数量分别设为 1–3 台后生成场景。
+                </p>
+                <div class="vf-actions">
+                  <button class="vf-button primary" type="button" :disabled="sceneLocked || !unityReady || scenarioLoading" @click="generateScenario">
+                    <RefreshCw :size="15" /> 生成场景
+                  </button>
+                  <button class="vf-button" type="button" :disabled="!unityReady" @click="resetMission">
+                    <CircleStop :size="15" /> 重置
+                  </button>
+                </div>
+                <p v-if="!speedValid" class="vf-error">速度超过协议上限，请修正后再开始任务。</p>
+                <p v-if="missionActionMessage" class="vf-action-message">{{ missionActionMessage }}</p>
+              </div>
+            </details>
+            <NodeCommunicationPanel
+              :default-open="false"
+              :device-codes="sceneDeviceCodes"
+              :selected-device="selectedDevice"
+              :targets="simulationTargets"
+              target-source="算法仿真 · 当前场景"
+              @select="selectMonitoringDevice"
+            />
           </section>
         </aside>
 
@@ -1885,35 +1963,6 @@ onBeforeUnmount(() => {
           </div>
         </section>
 
-        <aside class="vf-inspector-drawer" :class="{ collapsed: rightPanelCollapsed }">
-          <button
-            class="vf-drawer-reopen right"
-            type="button"
-            title="展开语音控制"
-            :tabindex="rightPanelCollapsed ? 0 : -1"
-            @click="setRightPanelCollapsed(false)"
-          >
-            <ChevronLeft :size="18" />
-            <span>语音控制</span>
-          </button>
-          <section class="vf-panel vf-inspector-panel" aria-label="语音控制">
-            <button
-              class="vf-voice-collapse"
-              type="button"
-              title="收起语音控制"
-              aria-label="收起语音控制"
-              @click="setRightPanelCollapsed(true)"
-            ><ChevronRight :size="17" /></button>
-            <VoiceP0ControlPanel
-              ref="voiceControlPanel"
-              :refined="true"
-              :runtime-hint="voiceRuntimeHint"
-              :frame="currentAlgorithmFrame"
-              :unity-session="voiceUnitySession"
-              @presentation-message="sendPresentationMessage"
-            />
-          </section>
-        </aside>
       </div>
     </div>
   </ConsoleLayout>
@@ -1946,7 +1995,22 @@ onBeforeUnmount(() => {
 .vf-config-drawer.collapsed .vf-drawer-reopen, .vf-inspector-drawer.collapsed .vf-drawer-reopen { opacity: 1; visibility: visible; transform: translateX(0); pointer-events: auto; transition-delay: 90ms; }
 .vf-panel, .vf-stage-panel { min-width: 0; color: #dff8f4; background: rgba(8, 25, 30, .94); border: 1px solid rgba(108, 228, 213, .18); border-radius: 8px; }
 .vf-config-panel, .vf-inspector-panel { width: 100%; height: 100%; overflow: auto; }
-.vf-config-panel { padding: 15px; }
+.vf-config-panel { display: flex; flex-direction: column; gap: 10px; padding: 0 2px 2px 0; scrollbar-width: thin; scrollbar-color: #365451 transparent; }
+.vf-config-panel > * { flex-shrink: 0; }
+.vf-config-panel > .vf-panel-head { margin: 0; padding: 0 2px; }
+.vf-scenario-config { min-width: 0; border: 1px solid #31575c; border-radius: 7px; overflow: hidden; background: #0c2227; }
+.vf-scenario-summary { display: flex; min-height: 49px; padding: 11px 10px; align-items: center; justify-content: space-between; gap: 8px; color: #e4f5f3; background: #10282d; cursor: pointer; list-style: none; }
+.vf-scenario-summary::-webkit-details-marker { display: none; }
+.vf-scenario-summary:hover { background: #153138; }
+.vf-scenario-summary:focus-visible { outline: 2px solid #a6fff2; outline-offset: -3px; }
+.vf-scenario-title { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; white-space: nowrap; }
+.vf-scenario-title svg { color: #70dfcf; }
+.vf-scenario-summary-right { display: inline-flex; align-items: center; gap: 6px; color: #9cbcc0; font-size: 10px; white-space: nowrap; }
+.vf-scenario-arrow { color: #80bbb7; transition: transform 150ms ease; }
+.vf-scenario-config[open] > .vf-scenario-summary { border-bottom: 1px solid #2b4c51; }
+.vf-scenario-config[open] > .vf-scenario-summary .vf-scenario-arrow { transform: rotate(90deg); }
+.vf-scenario-body { padding: 10px; }
+.vf-scenario-body > label:first-child { margin-top: 0; }
 .vf-panel-head, .vf-stage-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .vf-panel-head { margin-bottom: 13px; }
 .vf-panel-head > div { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 9px; min-width: 0; }
@@ -1959,10 +2023,10 @@ onBeforeUnmount(() => {
 .vf-drawer-reopen { display: flex; width: 100%; height: 100%; padding: 12px 0; align-items: center; gap: 12px; flex-direction: column; color: #91b8b4; cursor: pointer; background: rgba(8,25,30,.94); border: 1px solid rgba(108,228,213,.18); border-radius: 8px; }
 .vf-drawer-reopen span { font-size: 11px; letter-spacing: .15em; writing-mode: vertical-rl; }
 .vf-drawer-reopen:hover { color: #6ce4d5; border-color: rgba(108,228,213,.4); }
-.vf-panel label { display: grid; gap: 6px; margin-top: 11px; color: #9cc1bd; font-size: 11px; letter-spacing: 0; text-transform: none; }
-.vf-panel input, .vf-panel select { min-height: 36px; padding: 0 9px; color: #eafffb; background: #07171c; border: 1px solid #28515a; border-radius: 4px; }
-.vf-panel input:disabled, .vf-panel select:disabled { opacity: .55; }
-.vf-panel small { color: #6f9697; font-size: 10px; }
+.vf-scenario-body label { display: grid; gap: 6px; margin-top: 11px; color: #9cc1bd; font-size: 11px; letter-spacing: 0; text-transform: none; }
+.vf-scenario-body input, .vf-scenario-body select { min-height: 36px; padding: 0 9px; color: #eafffb; background: #07171c; border: 1px solid #28515a; border-radius: 4px; }
+.vf-scenario-body input:disabled, .vf-scenario-body select:disabled { opacity: .55; }
+.vf-scenario-body small { color: #6f9697; font-size: 10px; }
 .vf-two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; }
 .vf-description, .vf-note { margin-top: 10px; color: #8fb4b2; font-size: 11px; line-height: 1.6; }
 .vf-plan-summary { display: grid; gap: 5px; margin-top: 10px; padding: 10px; border: 1px solid rgba(99,217,231,.24); border-radius: 5px; background: rgba(99,217,231,.05); }
@@ -2085,10 +2149,10 @@ onBeforeUnmount(() => {
   .virtual-fleet-page { height: calc(100dvh - 70px); min-height: 0; gap: 8px; }
   .vf-app-header { min-height: 46px; }
   .vf-workbench { gap: 8px; }
-  .vf-config-panel { padding: 12px; }
+  .vf-scenario-body { padding: 10px; }
   .vf-panel-head { margin-bottom: 8px; }
-  .vf-panel label { gap: 4px; margin-top: 7px; }
-  .vf-panel input, .vf-panel select { min-height: 31px; }
+  .vf-scenario-body label { gap: 4px; margin-top: 7px; }
+  .vf-scenario-body input, .vf-scenario-body select { min-height: 31px; }
   .vf-description { margin: 7px 0 0; line-height: 1.4; }
   .vf-plan-summary { margin-top: 7px; padding: 7px; }
   .vf-actions { margin-top: 9px; }
@@ -2100,7 +2164,7 @@ onBeforeUnmount(() => {
 @media (min-width: 2200px) {
   .vf-workbench { --vf-left-width: 310px; --vf-right-width: 320px; gap: 16px; }
   .vf-app-header { min-height: 64px; padding-right: 22px; padding-left: 22px; }
-  .vf-config-panel { padding: 18px; }
+  .vf-scenario-body { padding: 14px; }
   .vf-stage-head { padding: 16px 18px; }
   .vf-command-bar { min-height: 72px; padding-right: 16px; padding-left: 16px; }
   .vf-camera-actions button { min-height: 36px; padding: 0 12px; font-size: 11px; }
@@ -2142,18 +2206,17 @@ onBeforeUnmount(() => {
 .vf-app-header { min-height: 46px; padding: 0 12px; }
 .vf-app-title strong { font-size: 16px; }
 .vf-workspace-switch a, .vf-workspace-switch span { padding: 6px 12px; font-size: 11px; }
-.vf-workbench { --vf-left-width: clamp(190px, 14vw, 240px); --vf-right-width: clamp(350px, 26vw, 390px); gap: 12px; }
-.vf-config-panel { padding: 10px; }
+.vf-workbench { --vf-left-width: clamp(240px, 18vw, 280px); --vf-right-width: clamp(350px, 26vw, 390px); gap: 12px; }
 .vf-panel-head { margin-bottom: 8px; }
 .vf-panel-head h3, .vf-stage-head h3 { font-size: 13px; }
-.vf-panel label { margin-top: 7px; gap: 4px; font-size: 10px; }
-.vf-panel input, .vf-panel select { min-height: 30px; font-size: 11px; }
+.vf-scenario-body label { margin-top: 7px; gap: 4px; font-size: 10px; }
+.vf-scenario-body input, .vf-scenario-body select { min-height: 30px; font-size: 11px; }
 .vf-description, .vf-note { margin-top: 6px; font-size: 10px; line-height: 1.4; }
 .vf-plan-summary { padding: 7px; margin-top: 7px; gap: 3px; }
 .vf-stage-head { padding: 8px 10px; }
 .vf-live-strip { min-height: 28px; }
 .vf-command-bar { min-height: 68px; padding: 6px 9px; gap: 5px 9px; }
-.vf-panel select, .vf-panel input { box-sizing: border-box; width: 100%; min-width: 0; }
+.vf-scenario-body select, .vf-scenario-body input { box-sizing: border-box; width: 100%; min-width: 0; }
 .vf-two-col { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 @container workspace (min-width: 1100px) {
   .virtual-fleet-page { height: calc(100dvh - 40px); min-height: 0; overflow: hidden; }
@@ -2161,7 +2224,7 @@ onBeforeUnmount(() => {
   .vf-instance-status { grid-column: auto; justify-self: end; }
   .vf-workspace-switch { display: none; }
   .vf-workbench, .vf-workbench.left-collapsed, .vf-workbench.right-collapsed, .vf-workbench.left-collapsed.right-collapsed {
-    --vf-left-width: clamp(160px, 14vw, 240px); --vf-right-width: clamp(350px, 26vw, 390px);
+    --vf-left-width: clamp(240px, 18vw, 280px); --vf-right-width: clamp(350px, 26vw, 390px);
     overflow: hidden; grid-template-columns: var(--vf-current-left) minmax(0, 1fr) var(--vf-current-right); grid-template-rows: minmax(0, 1fr);
   }
   .vf-inspector-drawer { grid-column: auto; min-height: 0; }
@@ -2177,4 +2240,81 @@ onBeforeUnmount(() => {
   .vf-workspace-switch { display: flex; }
 }
 @media (min-width: 1201px) { .vf-unity-stage, .vf-unity-stage :deep(.unity-webgl-panel) { min-height: 0; } }
+
+/* Layout A: navigation and all controls share one console; the stage keeps the remaining space. */
+.virtual-fleet-page { height: calc(100dvh - 36px); min-height: 0; overflow: hidden; }
+.vf-workbench.vf-unified-workbench {
+  --vf-left-width: clamp(340px, 25vw, 380px);
+  --vf-current-left: var(--vf-left-width);
+  grid-template-columns: var(--vf-current-left) minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+  overflow: hidden;
+  gap: 12px;
+}
+.vf-workbench.vf-unified-workbench.left-collapsed { --vf-current-left: 48px; }
+.vf-unified-workbench .vf-config-drawer {
+  display: grid;
+  grid-template-columns: 48px minmax(0, 1fr);
+  grid-column: auto;
+  border: 1px solid rgba(108, 228, 213, .18);
+  border-radius: 8px;
+  background: #091c21;
+}
+.vf-unified-workbench .vf-config-panel {
+  position: absolute;
+  inset: 0 0 0 48px;
+  width: auto;
+  height: 100%;
+  max-height: none;
+  padding: 0 10px 12px;
+  gap: 10px;
+  overscroll-behavior: contain;
+}
+.vf-unified-workbench .vf-panel-head { min-height: 44px; padding: 0; }
+.vf-unified-workbench .vf-scenario-summary { min-height: 42px; padding-block: 9px; }
+.vf-unified-workbench .vf-voice-config > :deep(.voice-compact) { padding: 10px; }
+.vf-unified-workbench .vf-stage-panel { min-width: 0; }
+.vf-unified-workbench .vf-unity-stage,
+.vf-unified-workbench .vf-unity-stage :deep(.unity-webgl-panel) { min-height: 0; }
+.vf-unified-workbench .vf-command-actions .vf-button { width: auto; padding: 0 10px; font-size: 12px; }
+.vf-unified-workbench .vf-command-actions .vf-button span { display: inline; }
+.vf-unified-workbench .vf-camera-actions button { width: 32px; height: 32px; padding: 0; }
+.vf-unified-workbench .vf-camera-actions button span { display: none; }
+
+@container workspace (max-width: 860px) {
+  .virtual-fleet-page { height: auto; min-height: calc(100dvh - 36px); overflow: visible; }
+  .vf-workbench.vf-unified-workbench,
+  .vf-workbench.vf-unified-workbench.left-collapsed {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto auto;
+    overflow: visible;
+  }
+  .vf-unified-workbench .vf-config-panel {
+    position: relative;
+    grid-column: 2;
+    inset: auto;
+    height: auto;
+    max-height: 540px;
+  }
+  .vf-unified-workbench .vf-config-drawer.collapsed { height: 48px; grid-template-columns: minmax(0, 1fr); }
+  .vf-unified-workbench .vf-config-drawer.collapsed .vf-config-panel { position: absolute; inset: 0 0 0 48px; }
+  .vf-unified-workbench .vf-config-drawer.collapsed :deep(.console-navigation-rail) {
+    width: 100%; height: 48px; flex-direction: row; gap: 8px; padding: 5px;
+    overflow: auto hidden; border-right: 0; scrollbar-width: none;
+  }
+  .vf-unified-workbench .vf-config-drawer.collapsed :deep(.rail-navigation),
+  .vf-unified-workbench .vf-config-drawer.collapsed :deep(.rail-footer) { flex-direction: row; gap: 4px; }
+  .vf-unified-workbench .vf-config-drawer.collapsed :deep(.rail-footer) {
+    margin-top: 0; margin-left: auto; padding-top: 0; border-top: 0;
+  }
+  .vf-unified-workbench .vf-stage-panel { height: 660px; min-height: 480px; }
+  .vf-unified-workbench .vf-stage-panel.expanded { height: auto; min-height: 0; }
+  .vf-unified-workbench .vf-command-bar { grid-template-columns: minmax(0, 1fr); grid-template-areas: 'commands' 'cameras' 'steps'; }
+  .vf-unified-workbench .vf-command-actions,
+  .vf-unified-workbench .vf-camera-actions { justify-content: center; justify-self: stretch; flex-wrap: wrap; }
+  .vf-unified-workbench .vf-camera-status { text-align: center; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .vf-workbench.vf-unified-workbench, .vf-unified-workbench .vf-config-panel { transition: none; }
+}
 </style>

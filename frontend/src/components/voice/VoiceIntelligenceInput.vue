@@ -30,13 +30,14 @@ const props = withDefaults(defineProps<{
   allowMockSubmission?: boolean
   submissionDisabled?: boolean
   refined?: boolean
+  compact?: boolean
   proposalReady?: boolean
   reviewStatus?: string
   actionDisabledReason?: (action: VoiceAction) => string
 }>(), {
   adapter: undefined, runtimeContext: null, automationRuntime: null, operatorScope: '', inputDisabled: false,
   autoExecuteSpeech: false, allowMockSubmission: false, submissionDisabled: false, actionDisabledReason: undefined,
-  refined: false, proposalReady: false,
+  refined: false, compact: false, proposalReady: false,
 })
 const emit = defineEmits<{
   candidate: [intent: VoiceIntent, interpretationId?: string]
@@ -142,7 +143,7 @@ const captureTitle = computed(() => permissionPending.value ? '正在请求麦�
   : stage.value === 'RECORDING' ? '正在聆听你的指令'
     : stage.value === 'TRANSCRIBING' ? '正在转换为文字'
       : stage.value === 'PARSING' ? '正在理解指令'
-        : draft.value.trim() ? '文字已就绪' : '一句话，调度海空设备')
+        : draft.value.trim() ? '文字已就绪' : '点击录音')
 const recordingSecondsLeft = computed(() => Math.ceil(evaluateSpeechRecording({ elapsedMs: stageElapsed.value * 1000 }).remainingMs / 1000))
 const captureNote = computed(() => stage.value === 'RECORDING' ? `说完再次点击结束；停顿不会截断 · 剩余 ${recordingSecondsLeft.value} 秒`
   : stage.value === 'TRANSCRIBING' ? '请稍候，无需重复录音'
@@ -653,7 +654,7 @@ onBeforeUnmount(() => window.clearInterval(elapsedTimer))
 </script>
 
 <template>
-  <section class="intelligence-input" :class="{ 'is-refined': refined }" aria-label="语音与文本指令输入">
+  <section class="intelligence-input" :class="{ 'is-refined': refined, 'is-compact': compact }" aria-label="语音与文本指令输入">
     <template v-if="refined">
       <div class="refined-provider" aria-live="polite">
         <span><Cloud :size="15" aria-hidden="true" />{{ speechSource.label }}</span>
@@ -664,23 +665,25 @@ onBeforeUnmount(() => window.clearInterval(elapsedTimer))
           <button class="refined-mic" type="button" :aria-label="stage === 'RECORDING' ? '停止录音' : '开始录音'"
             :aria-pressed="stage === 'RECORDING'" :disabled="stage !== 'RECORDING' && (busy || coolingDown || !!pending || blocked || submissionDisabled)"
             @click="stage === 'RECORDING' ? stopRecording() : startRecording()">
-            <Square v-if="stage === 'RECORDING'" :size="27" aria-hidden="true" />
-            <Mic v-else :size="29" aria-hidden="true" />
+            <Square v-if="stage === 'RECORDING'" :size="compact ? 16 : 27" aria-hidden="true" />
+            <Mic v-else :size="compact ? 18 : 29" aria-hidden="true" />
           </button>
         </div>
-        <strong class="refined-capture-title">{{ captureTitle }}</strong>
-        <p class="refined-capture-note">{{ captureNote }}</p>
+        <div class="refined-capture-copy" aria-live="polite">
+          <strong class="refined-capture-title">{{ captureTitle }}</strong>
+          <p class="refined-capture-note">{{ captureNote }}</p>
+        </div>
         <div v-if="stage === 'RECORDING'" class="refined-wave" aria-hidden="true">
           <i v-for="(height, index) in waveHeights" :key="index" :style="{ height: `${height}px`, animationDelay: `${index * -.08}s` }" />
         </div>
       </section>
       <section class="refined-composer">
         <label class="refined-section-label">
-          <span>识别文字<small>{{ simulationSpeechEnabled ? '仿真语音自动执行 · 编辑后需确认' : automaticSpeech ? '常规语音自动执行 · 高风险与编辑后需确认' : '可编辑后再执行' }}</small></span>
+          <span>识别文字<small>{{ compact ? '编辑后需确认' : simulationSpeechEnabled ? '仿真语音自动执行 · 编辑后需确认' : automaticSpeech ? '常规语音自动执行 · 高风险与编辑后需确认' : '可编辑后再执行' }}</small></span>
           <div class="refined-transcript-box">
-            <textarea v-model="draft" rows="3" placeholder="试着说：开始任务，然后让一号无人机悬停。"
+            <textarea v-model="draft" rows="3" :placeholder="compact ? '如：一号无人机悬停' : '试着说：开始任务，然后让一号无人机悬停。'"
               aria-label="识别文字" :disabled="busy || !!pending || blocked || stage === 'RECORDING'" />
-            <div class="refined-text-footer"><span><PencilLine :size="12" aria-hidden="true" />也可以直接输入指令</span><span>{{ textLength }} / 200</span></div>
+            <div class="refined-text-footer"><span><PencilLine :size="12" aria-hidden="true" />{{ compact ? '可直接输入' : '也可以直接输入指令' }}</span><span>{{ textLength }} / 200</span></div>
           </div>
         </label>
         <p v-if="textLength > 200" class="refined-error" role="alert">识别文字共 {{ textLength }} 字，请编辑至 200 字以内；文字未截断。</p>
@@ -800,5 +803,31 @@ textarea:focus { outline:1px solid #58bfb3; border-color:#58bfb3; }.controls but
 .refined-action-area { margin-top:auto; }.refined-preview { display:flex; width:100%; min-height:43px; align-items:center; justify-content:center; gap:8px; padding:10px; border:1px solid #73e2cd; border-radius:8px; background:#73e2cd; color:#082b24; font-size:13px; font-weight:600; cursor:pointer; }.refined-preview:hover:not(:disabled) { background:#96eddc; }
 .refined-preview:disabled,.refined-examples button:disabled,.refined-recovery button:disabled { cursor:not-allowed; opacity:.45; }
 .is-refined button:focus-visible { outline:2px solid #73e2cd; outline-offset:4px; }
+.intelligence-input.is-refined.is-compact { gap:11px; }
+.is-compact .refined-provider { gap:3px 6px; font-size:10px; line-height:1.5; }
+.is-compact .refined-provider > span { gap:5px; }
+.is-compact .refined-provider small { font-size:9px; }
+.is-compact .refined-capture { display:grid; grid-template-columns:38px minmax(0,1fr); align-items:start; gap:8px; padding:0; text-align:left; }
+.is-compact .refined-mic-orbit { width:38px; height:38px; margin:0; border:0; background:none; }
+.is-compact .refined-mic-orbit::before { content:none; }
+.is-compact .refined-mic { width:38px; height:38px; border-radius:10px; box-shadow:none; }
+.is-compact .refined-capture-copy { min-width:0; padding-top:1px; }
+.is-compact .refined-capture-title { font-size:12px; line-height:1.5; overflow-wrap:anywhere; }
+.is-compact .refined-capture-note { margin-top:3px; font-size:10px; line-height:1.6; overflow-wrap:anywhere; }
+.is-compact .refined-wave { grid-column:2; justify-content:flex-start; height:16px; margin:0; }
+.is-compact .refined-wave i { max-height:16px; }
+.is-compact .refined-section-label { font-size:11px; }
+.is-compact .refined-section-label > span { flex-wrap:wrap; gap:3px 7px; margin-bottom:6px; }
+.is-compact .refined-section-label small { font-size:9px; }
+.is-compact .refined-transcript-box { border-radius:7px; }
+.is-compact .refined-transcript-box textarea { height:82px; min-height:76px; padding:9px 10px 4px; border-radius:7px; font-size:12px; line-height:1.6; }
+.is-compact .refined-text-footer { gap:4px; padding:3px 9px 7px; font-size:9px; }
+.is-compact .refined-examples { gap:5px; margin-top:7px; }
+.is-compact .refined-examples button { min-width:0; max-width:100%; padding:4px 6px; font-size:9px; overflow-wrap:anywhere; }
+.is-compact .refined-status,.is-compact .refined-error { font-size:10px; line-height:1.6; }
+.is-compact .refined-recovery { gap:5px; }
+.is-compact .refined-recovery button { min-width:0; max-width:100%; text-align:left; overflow-wrap:anywhere; }
+.is-compact .refined-action-area { margin-top:0; }
+.is-compact .refined-preview { min-height:36px; padding:8px; font-size:12px; border-radius:7px; }
 @media (prefers-reduced-motion:reduce) { .refined-wave i { animation:none; }.refined-mic { transition:none; } }
 </style>
