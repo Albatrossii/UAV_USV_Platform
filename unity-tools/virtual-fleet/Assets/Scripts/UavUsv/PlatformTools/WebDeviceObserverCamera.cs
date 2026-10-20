@@ -5,7 +5,7 @@ using UnityEngine;
 namespace UavUsv.PlatformTools
 {
     /// <summary>
-    /// WebGL-only observation camera used by the Vue system overview.
+    /// WebGL observation camera used by the algorithm simulation workspace.
     /// It never writes to mission agents and does not change ChaseCamera source code.
     /// </summary>
     public sealed class WebDeviceObserverCamera : MonoBehaviour
@@ -193,6 +193,7 @@ namespace UavUsv.PlatformTools
             selectedSubject = null;
             CurrentDeviceCode = string.Empty;
             mode = ObservationMode.Lighthouse;
+            overviewFrameInitialized = false;
             ResetCameraInteraction();
             ActivateObserver();
         }
@@ -297,12 +298,13 @@ namespace UavUsv.PlatformTools
             float rotationT = 1f - Mathf.Exp(-4.8f * Time.unscaledDeltaTime);
             float fovT = 1f - Mathf.Exp(-3.5f * Time.unscaledDeltaTime);
             hasRenderedObserverFrame = true;
-            if (mode == ObservationMode.Overview && interactionMode == ObservationMode.None)
+            if ((mode == ObservationMode.Overview || mode == ObservationMode.Lighthouse) &&
+                interactionMode == ObservationMode.None)
             {
                 if (ApplyOverviewTransition(
                         desiredPosition, desiredRotation, desiredFieldOfView, Time.unscaledTime))
                     return;
-                // Overview already smooths its focus and distance together.
+                // Fleet views already smooth their focus and distance together.
                 // A second positional/rotational lag would break the fitted frustum.
                 transform.SetPositionAndRotation(desiredPosition, desiredRotation);
                 observedCamera.fieldOfView = desiredFieldOfView;
@@ -576,36 +578,65 @@ namespace UavUsv.PlatformTools
             if (IsUav(selectedSubject))
             {
                 float height = Mathf.Clamp(
-                    Mathf.Max(visualTop + 5f, 6f),
-                    6f,
-                    14f
+                    Mathf.Max(visualTop + 7f, 8f),
+                    8f,
+                    18f
                 );
                 float back = Mathf.Clamp(
-                    Mathf.Max(visualRadius * 3.2f, 8f),
-                    8f,
-                    14f
+                    Mathf.Max(visualRadius * 3.8f, 12f),
+                    12f,
+                    24f
                 );
                 position = subject - forward * back + Vector3.up * height;
                 focus = subject +
                     forward * Mathf.Max(2f, visualRadius * 1.5f) +
                     Vector3.up * Mathf.Max(.8f, visualCenterHeight);
-                desiredFieldOfView = 45f;
+                FitDeviceContext(ref position, focus);
                 return;
             }
 
             float distance = Mathf.Clamp(
-                Mathf.Max(6f, visualRadius * 4f),
-                6f,
-                10f
+                Mathf.Max(10f, visualRadius * 4f),
+                10f,
+                22f
             );
             float heightUsv = Mathf.Clamp(
-                Mathf.Max(visualTop + 5f, 6f),
-                6f,
-                10f
+                Mathf.Max(visualTop + 7f, 8f),
+                8f,
+                16f
             );
             focus = subject + Vector3.up * Mathf.Max(.35f, visualCenterHeight);
             position = focus - forward * distance + Vector3.up * heightUsv;
-            desiredFieldOfView = 45f;
+            FitDeviceContext(ref position, focus);
+        }
+
+        private void FitDeviceContext(ref Vector3 position, Vector3 focus)
+        {
+            // Keep the selected vessel as the subject, but include nearby peers
+            // when possible. A far-away returning craft must not turn follow
+            // mode into a second global camera.
+            desiredFieldOfView = 52f;
+            Quaternion rotation = Quaternion.LookRotation(focus - position, Vector3.up);
+            Quaternion inverse = Quaternion.Inverse(rotation);
+            GetFramingTangents(desiredFieldOfView, out float tanX, out float tanY);
+            float distance = Vector3.Distance(position, focus);
+            framingPoints.Clear();
+            AddFramingPoints(selectedSubject);
+            distance = RequiredDistance(inverse, focus, tanX, tanY, distance);
+            float contextLimit = distance * 1.65f;
+            foreach (Transform neighbor in sceneTargets)
+            {
+                if (!neighbor || neighbor == selectedSubject || !neighbor.gameObject.activeInHierarchy)
+                    continue;
+                if ((neighbor.position - selectedSubject.position).sqrMagnitude > 36f * 36f)
+                    continue;
+                framingPoints.Clear();
+                AddFramingPoints(neighbor);
+                float candidate = RequiredDistance(inverse, focus, tanX, tanY, distance);
+                if (candidate <= contextLimit)
+                    distance = Mathf.Max(distance, candidate);
+            }
+            position = focus - rotation * Vector3.forward * distance;
         }
 
         private Vector3 ResolveDeviceOcclusion(Vector3 focus, Vector3 desiredPosition)
@@ -648,7 +679,7 @@ namespace UavUsv.PlatformTools
                 (candidate == selectedSubject || candidate.IsChildOf(selectedSubject));
         }
 
-        private static void GetVisualMetrics(
+        private void GetVisualMetrics(
             Transform subject,
             out float radius,
             out float top,
@@ -660,30 +691,7 @@ namespace UavUsv.PlatformTools
             if (!subject)
                 return;
 
-            Renderer[] renderers = subject.GetComponentsInChildren<Renderer>(false);
-            Bounds bounds = default;
-            bool found = false;
-            for (int i = 0; i < renderers.Length; i++)
-            {
-                Renderer renderer = renderers[i];
-                if (!renderer || !renderer.enabled ||
-                    !renderer.gameObject.activeInHierarchy)
-                    continue;
-
-                if (!found)
-                {
-                    bounds = renderer.bounds;
-                    found = true;
-                }
-                else
-                {
-                    bounds.Encapsulate(renderer.bounds);
-                }
-            }
-
-            if (!found)
-                return;
-
+            Bounds bounds = VisibleBounds(subject);
             radius = Mathf.Max(bounds.extents.x, bounds.extents.z);
             top = Mathf.Max(0f, bounds.max.y - subject.position.y);
             centerHeight = Mathf.Max(0f, bounds.center.y - subject.position.y);
@@ -696,7 +704,9 @@ namespace UavUsv.PlatformTools
         {
             if (!framingRenderers.TryGetValue(subject, out Renderer[] renderers))
             {
-                renderers = subject.GetComponentsInChildren<Renderer>(false);
+                // Cache inactive children too: landing/flight visuals can be
+                // enabled later without replacing the device Transform.
+                renderers = subject.GetComponentsInChildren<Renderer>(true);
                 framingRenderers[subject] = renderers;
             }
             Bounds bounds = new Bounds(subject.position, Vector3.one);
@@ -713,46 +723,81 @@ namespace UavUsv.PlatformTools
 
         private void CalculateOverview(out Vector3 position, out Vector3 focus)
         {
+            CalculateFleetView(Quaternion.Euler(42f, -35f, 0f), out position, out focus);
+        }
+
+        private void AddFramingPoints(Transform subject)
+        {
+            Bounds bounds = VisibleBounds(subject);
+            for (int corner = 0; corner < 8; corner++)
+                framingPoints.Add(bounds.center + Vector3.Scale(bounds.extents, new Vector3(
+                    (corner & 1) == 0 ? -1f : 1f,
+                    (corner & 2) == 0 ? -1f : 1f,
+                    (corner & 4) == 0 ? -1f : 1f)));
+        }
+
+        private void GetFramingTangents(float fov, out float tanX, out float tanY)
+        {
+            float tangent = Mathf.Tan(fov * Mathf.Deg2Rad * .5f);
+            // Reserve label space in pixels as well as a small proportional
+            // margin. Large canvases no longer waste 8% of their height at each
+            // edge; narrow/resized canvases still have readable labels.
+            float usableX = Mathf.Clamp(1f - 48f / Mathf.Max(1, observedCamera.pixelWidth), .76f, .94f);
+            float usableY = Mathf.Clamp(1f - 72f / Mathf.Max(1, observedCamera.pixelHeight), .70f, .90f);
+            tanX = tangent * Mathf.Max(.1f, observedCamera.aspect) * usableX;
+            tanY = tangent * usableY;
+        }
+
+        private float RequiredDistance(Quaternion inverse, Vector3 focus, float tanX, float tanY, float minimum)
+        {
+            float required = minimum;
+            foreach (Vector3 point in framingPoints)
+            {
+                Vector3 local = inverse * (point - focus);
+                // Binary overloads avoid an allocation per hull corner/frame.
+                required = Mathf.Max(required, Mathf.Abs(local.x) / tanX - local.z);
+                required = Mathf.Max(required, Mathf.Abs(local.y) / tanY - local.z);
+                required = Mathf.Max(required, observedCamera.nearClipPlane + 1f - local.z);
+            }
+            return required;
+        }
+
+        private void CalculateFleetView(Quaternion rotation, out Vector3 position, out Vector3 focus)
+        {
             // Fit every visible hull in camera coordinates, including altitude
             // and perspective depth. No percentile exclusion or far-distance cap.
             const float fov = 52f;
-            Quaternion rotation = Quaternion.Euler(60f, -35f, 0f);
             Quaternion inverse = Quaternion.Inverse(rotation);
+            GetFramingTangents(fov, out float tanX, out float tanY);
             framingPoints.Clear();
-            Vector3 minimum = Vector3.one * float.PositiveInfinity;
-            Vector3 maximum = Vector3.one * float.NegativeInfinity;
             foreach (Transform subject in sceneTargets)
             {
                 if (!subject || !subject.gameObject.activeInHierarchy) continue;
-                Bounds bounds = VisibleBounds(subject);
-                for (int corner = 0; corner < 8; corner++)
-                {
-                    Vector3 point = bounds.center + Vector3.Scale(bounds.extents, new Vector3(
-                        (corner & 1) == 0 ? -1f : 1f,
-                        (corner & 2) == 0 ? -1f : 1f,
-                        (corner & 4) == 0 ? -1f : 1f));
-                    Vector3 projected = inverse * point;
-                    minimum = Vector3.Min(minimum, projected);
-                    maximum = Vector3.Max(maximum, projected);
-                    framingPoints.Add(point);
-                }
+                AddFramingPoints(subject);
             }
-            Vector3 rawFocus = framingPoints.Count == 0 ? Vector3.zero : rotation * ((minimum + maximum) * .5f);
-            if (!overviewFrameInitialized) overviewFocus = rawFocus;
-            else overviewFocus = Vector3.Lerp(overviewFocus, rawFocus, 1f-Mathf.Exp(-3f*Time.unscaledDeltaTime));
-
-            float tanY = Mathf.Tan(fov * Mathf.Deg2Rad * .5f);
-            float tanX = tanY * Mathf.Max(.1f, observedCamera.aspect);
-            float required = 20f;
+            Vector2 lower = Vector2.one * float.NegativeInfinity;
+            Vector2 upper = Vector2.one * float.PositiveInfinity;
+            float minDepth = float.PositiveInfinity, maxDepth = float.NegativeInfinity;
             foreach (Vector3 point in framingPoints)
             {
-                Vector3 local = inverse * (point-overviewFocus);
-                // Use binary overloads: the params overload allocates an array
-                // for every corner of every vessel on every render frame.
-                required = Mathf.Max(required, Mathf.Abs(local.x)/(tanX*.88f)-local.z);
-                required = Mathf.Max(required, Mathf.Abs(local.y)/(tanY*.84f)-local.z);
-                required = Mathf.Max(required, observedCamera.nearClipPlane+1f-local.z);
+                Vector3 q = inverse * point;
+                lower = Vector2.Max(lower, new Vector2(q.x - tanX * q.z, q.y - tanY * q.z));
+                upper = Vector2.Min(upper, new Vector2(q.x + tanX * q.z, q.y + tanY * q.z));
+                minDepth = Mathf.Min(minDepth, q.z);
+                maxDepth = Mathf.Max(maxDepth, q.z);
             }
+            // Perspective-aware minimax focus. An ordinary world/bounds center
+            // over-weights far-away hulls and leaves unnecessary empty water.
+            Vector3 rawFocus = framingPoints.Count == 0 ? Vector3.zero : rotation * new Vector3(
+                (lower.x + upper.x) * .5f, (lower.y + upper.y) * .5f, (minDepth + maxDepth) * .5f);
+            if (!overviewFrameInitialized) overviewFocus = rawFocus;
+            else overviewFocus = Vector3.Lerp(overviewFocus, rawFocus, 1f-Mathf.Exp(-3f*Time.unscaledDeltaTime));
+            // Refit after smoothing, not before. This guarantees that a moving
+            // outlier or an aspect-ratio change cannot escape the camera.
+            float required = RequiredDistance(inverse, overviewFocus, tanX, tanY, 12f);
+            float cameraRise = -(rotation * Vector3.forward).y;
+            if (cameraRise > .01f)
+                required = Mathf.Max(required, (2.4f - overviewFocus.y) / cameraRise);
             // Expansion is a visibility constraint; contraction is damped.
             // Normal motion changes the fitted distance continuously. Only a
             // newly generated scenario needs a one-time reframing jump.
@@ -776,6 +821,11 @@ namespace UavUsv.PlatformTools
             focus = overviewFocus;
             position = focus-rotation*Vector3.forward*overviewDistance;
             desiredFieldOfView = fov;
+            // An unusually dispersed fleet must not disappear at the far clip.
+            float farthest = 0f;
+            foreach (Vector3 point in framingPoints)
+                farthest = Mathf.Max(farthest, (inverse * (point - position)).z);
+            observedCamera.farClipPlane = Mathf.Max(observedCamera.farClipPlane, farthest + 50f);
         }
 
         [Serializable]
@@ -792,7 +842,7 @@ namespace UavUsv.PlatformTools
 
         public FramingReport GetFramingReport()
         {
-            var report = new FramingReport { controller = CurrentModeName, revision = "full-hull-20260909",
+            var report = new FramingReport { controller = CurrentModeName, revision = "tight-all-nodes-20261016",
                 minimumX = 1f, minimumY = 1f, maximumX = 0f, maximumY = 0f,
                 minimumDevicePixels = float.MaxValue };
             if (!observedCamera) return report;
@@ -812,7 +862,8 @@ namespace UavUsv.PlatformTools
                     Vector3 point = bounds.center + Vector3.Scale(bounds.extents,new Vector3(
                         (corner&1)==0?-1:1, (corner&2)==0?-1:1, (corner&4)==0?-1:1));
                     Vector3 v = observedCamera.WorldToViewportPoint(point);
-                    outside |= v.z <= 0 || v.x < 0 || v.x > 1 || v.y < 0 || v.y > 1;
+                    outside |= v.z < observedCamera.nearClipPlane || v.z > observedCamera.farClipPlane ||
+                        v.x < 0 || v.x > 1 || v.y < 0 || v.y > 1;
                     lo=Vector2.Min(lo,new Vector2(v.x,v.y)); hi=Vector2.Max(hi,new Vector2(v.x,v.y));
                 }
                 if (outside) report.outsideCount++;
@@ -835,14 +886,12 @@ namespace UavUsv.PlatformTools
                 return;
             }
 
-            Vector3 outward = lighthouse.position - groupCenter;
-            outward.y = 0f;
-            if (outward.sqrMagnitude < .01f)
-                outward = Vector3.back;
-            outward.Normalize();
-            position = lighthouse.position + outward * 12f + Vector3.up * 24f;
-            focus = Vector3.Lerp(lighthouse.position, groupCenter, .8f) + Vector3.up * 2f;
-            desiredFieldOfView = Mathf.Clamp(56f + spread * .12f, 56f, 70f);
+            Vector3 towardFleet = groupCenter - lighthouse.position;
+            towardFleet.y = 0f;
+            float yaw = towardFleet.sqrMagnitude < .01f ? -35f : Quaternion.LookRotation(towardFleet).eulerAngles.y;
+            // Keep the shore-facing direction without anchoring to a fixed
+            // perch that loses the fleet as the mission moves offshore.
+            CalculateFleetView(Quaternion.Euler(42f, yaw, 0f), out position, out focus);
         }
 
         private void CalculateGroupFrame(out Vector3 center, out float spread)

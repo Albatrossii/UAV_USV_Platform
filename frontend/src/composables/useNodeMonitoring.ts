@@ -1,10 +1,12 @@
-import { computed, onActivated, onBeforeUnmount, onDeactivated, onMounted, ref } from 'vue'
+import { computed, onActivated, onBeforeUnmount, onDeactivated, onMounted, ref, type InjectionKey } from 'vue'
 
 import { fetchRuntimeNodes } from '@/api/monitoring'
 import type { RuntimeNode } from '@/types/monitoring'
 
 export const NODE_MONITOR_POLL_MS = 5_000
 export const NODE_MONITOR_SNAPSHOT_TTL_MS = 15_000
+// A page may share one read-only poller between its detailed and compact views.
+export const nodeMonitoringKey: InjectionKey<ReturnType<typeof useNodeMonitoring>> = Symbol('node-monitoring')
 
 /** A local, read-only snapshot. Never changes filters or connections in the shared monitoring store. */
 export function useNodeMonitoring() {

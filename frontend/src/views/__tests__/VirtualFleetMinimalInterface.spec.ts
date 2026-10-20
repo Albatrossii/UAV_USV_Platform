@@ -5,11 +5,13 @@ import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import VirtualFleetConfigView from '@/views/VirtualFleetConfigView.vue'
 import ConsoleLayout from '@/components/layout/ConsoleLayout.vue'
 import VoiceP0ControlPanel from '@/components/voice/VoiceP0ControlPanel.vue'
+import CompactNodeViewBar from '@/components/monitoring/CompactNodeViewBar.vue'
 import { simulationRuntime } from '@/composables/simulationRuntime'
 import { appendExperimentFrame, archiveError } from '@/services/experimentArchive'
 import { useAuthStore } from '@/stores/auth'
 import { useUnityBridgeStore } from '@/stores/unityBridge'
 import { controlAlgorithmRun } from '@/api/algorithm'
+import { fetchRuntimeNodes } from '@/api/monitoring'
 import type { AlgorithmRuntimeFrame } from '@/types/mission'
 
 const { handleUnityPresentationMessage } = vi.hoisted(() => ({ handleUnityPresentationMessage: vi.fn() }))
@@ -60,6 +62,7 @@ vi.mock('@/api/algorithm', () => ({
   fetchAlgorithmRunStatus: vi.fn().mockResolvedValue({ state: 'STOPPED', sequence: 0 }),
   fetchAlgorithmFrames: vi.fn().mockResolvedValue([]),
 }))
+vi.mock('@/api/monitoring', () => ({ fetchRuntimeNodes: vi.fn().mockResolvedValue([]) }))
 
 interface ViewSetup {
   state: { algorithm: string; uavCount: number; usvCount: number; uavSpeed: number; usvSpeed: number; runId: number; mission: string; sequence: number }
@@ -79,13 +82,14 @@ interface ViewSetup {
 const wrappers: VueWrapper[] = []
 const scenarioSelector = '.vf-scenario-config:not(.vf-voice-config)'
 
-async function createView() {
+async function createView(embedded = false) {
   const postToUnity = vi.fn().mockReturnValue('minimal-ui-test-request')
   simulationRuntime.panel.value = {
     postToUnity, postPresentationEnvelope: vi.fn().mockReturnValue(true),
     beginViewportTransition: vi.fn(), endViewportTransition: vi.fn(), syncViewport: vi.fn(), reload: vi.fn(),
   } as unknown as NonNullable<typeof simulationRuntime.panel.value>
   const wrapper = mount(VirtualFleetConfigView, {
+    props: { embedded },
     global: { stubs: { RouterLink: { template: '<a><slot /></a>' } } },
   })
   wrappers.push(wrapper)
@@ -111,6 +115,7 @@ describe('VirtualFleetConfigView minimal simulation interface', () => {
     vi.useFakeTimers()
     vi.setSystemTime(new Date('2026-10-11T09:00:00.000Z'))
     vi.clearAllMocks()
+    vi.mocked(fetchRuntimeNodes).mockResolvedValue([])
     archiveError.value = ''
     sessionStorage.clear()
     setActivePinia(createPinia())
@@ -140,16 +145,17 @@ describe('VirtualFleetConfigView minimal simulation interface', () => {
     expect(wrapper.get('.vf-config-panel').text()).toContain('生成场景')
     expect(wrapper.get('.vf-config-panel').findAll('input')).toHaveLength(4)
     expect(wrapper.find('.vf-config-panel [data-test="node-communication-panel"]').exists()).toBe(true)
-    expect(wrapper.getComponent({ name: 'NodeCommunicationPanel' }).props('defaultOpen')).toBe(false)
+    expect(wrapper.getComponent({ name: 'NodeCommunicationPanel' }).props('defaultOpen')).toBe(true)
     const modules = wrapper.findAll('.vf-config-panel > details, .vf-config-panel > [data-test="node-communication-panel"]')
     expect(modules.map(module => module.element)).toEqual([
       wrapper.get('.vf-voice-config').element,
       wrapper.get(scenarioSelector).element,
       wrapper.get('[data-test="node-communication-panel"]').element,
     ])
-    expect((wrapper.get('.vf-voice-config').element as HTMLDetailsElement).open).toBe(true)
-    expect((wrapper.get(scenarioSelector).element as HTMLDetailsElement).open).toBe(true)
+    expect((wrapper.get('.vf-voice-config').element as HTMLDetailsElement).open).toBe(false)
+    expect((wrapper.get(scenarioSelector).element as HTMLDetailsElement).open).toBe(false)
     expect(wrapper.find('[data-simulation-viewport]').exists()).toBe(true)
+    expect(wrapper.findComponent(CompactNodeViewBar).exists()).toBe(true)
     for (const title of ['开始任务', '暂停任务', '停止任务']) {
       expect(wrapper.find(`button[title="${title}"]`).exists()).toBe(true)
     }
@@ -165,10 +171,42 @@ describe('VirtualFleetConfigView minimal simulation interface', () => {
     expect(wrapper.get('option[value="GB_SFLA_CS"]').text()).toBe('GB-SFLA-CS 协同围捕')
   })
 
+  it('uses the shared outer shell without adding or removing task-console content', async () => {
+    const { wrapper, setup, postToUnity } = await createView(true)
+    expect(wrapper.findComponent(ConsoleLayout).exists()).toBe(false)
+    expect(wrapper.find('[data-test="navigation-rail"]').exists()).toBe(false)
+    expect(wrapper.find('.vf-side-brand').exists()).toBe(false)
+    expect(wrapper.find('.vf-app-header').exists()).toBe(false)
+    expect(wrapper.findAll('.vf-config-panel')).toHaveLength(1)
+    expect(wrapper.findAll('[data-test="voice-control"]')).toHaveLength(1)
+    expect(wrapper.find('[data-test="node-communication-panel"]').exists()).toBe(true)
+    expect(wrapper.findComponent(CompactNodeViewBar).exists()).toBe(true)
+    expect(wrapper.find('[data-simulation-viewport]').exists()).toBe(true)
+    expect(wrapper.findAll('.vf-scenario-body input')).toHaveLength(4)
+    expect(wrapper.emitted('workspace-status')?.at(-1)?.[0]).toMatchObject({
+      deviceCode: '未选择', statuses: [expect.objectContaining({ label: expect.stringContaining('独立仿真') })],
+    })
+
+    const mission = { ...setup.state }
+    const voice = wrapper.getComponent(VoiceP0ControlPanel).vm
+    const inputs = wrapper.findAll('.vf-scenario-body input').map(input => input.element)
+    postToUnity.mockClear()
+    vi.mocked(controlAlgorithmRun).mockClear()
+    await wrapper.get('button[title="收起总控"]').trigger('click')
+    expect(wrapper.get('.vf-config-panel').attributes('inert')).toBeDefined()
+    await wrapper.get('button[aria-label="展开总控"]').trigger('click')
+    expect(wrapper.getComponent(VoiceP0ControlPanel).vm).toBe(voice)
+    expect(wrapper.findAll('.vf-scenario-body input').map(input => input.element)).toEqual(inputs)
+    expect(setup.state).toEqual(mission)
+    expect(controlAlgorithmRun).not.toHaveBeenCalled()
+    expect(postToUnity).not.toHaveBeenCalled()
+  })
+
   it('keeps entered parameters and input elements when folding the scenario or the whole sidebar', async () => {
     const { wrapper, setup } = await createView()
     setup.state.mission = 'STOPPED'
     await flushPromises()
+    await wrapper.get(`${scenarioSelector} > summary`).trigger('click')
     const inputs = wrapper.findAll('.vf-scenario-body input')
     const originalInputs = inputs.map(input => input.element)
     await wrapper.get('.vf-scenario-body select').setValue('ESCORT_GUARD')
@@ -190,6 +228,8 @@ describe('VirtualFleetConfigView minimal simulation interface', () => {
 
   it('folds voice and scenario modules independently without changing the running mission', async () => {
     const { wrapper, setup, postToUnity } = await createView()
+    await wrapper.get('.vf-voice-config > summary').trigger('click')
+    await wrapper.get(`${scenarioSelector} > summary`).trigger('click')
     const voiceDetails = wrapper.get('.vf-voice-config').element as HTMLDetailsElement
     const scenarioDetails = wrapper.get(scenarioSelector).element as HTMLDetailsElement
     const monitoring = wrapper.getComponent({ name: 'NodeCommunicationPanel' }).vm
@@ -213,6 +253,7 @@ describe('VirtualFleetConfigView minimal simulation interface', () => {
 
   it('keeps the voice instance, draft, runtime props, and message bindings while the whole console is folded', async () => {
     const { wrapper, setup, postToUnity } = await createView()
+    await wrapper.get('.vf-voice-config > summary').trigger('click')
     const voice = wrapper.getComponent(VoiceP0ControlPanel)
     const voiceInstance = voice.vm
     const draft = voice.get('textarea')
@@ -292,13 +333,11 @@ describe('VirtualFleetConfigView minimal simulation interface', () => {
   })
 
   it('tracks control drawer resizing only while active and disconnects its observer on unmount', async () => {
-    const observe = vi.fn()
-    const disconnect = vi.fn()
-    let notifyResize!: () => void
+    const observers: Array<{ notify: () => void; observe: ReturnType<typeof vi.fn>; disconnect: ReturnType<typeof vi.fn> }> = []
     vi.stubGlobal('ResizeObserver', class {
-      constructor(callback: () => void) { notifyResize = callback }
-      observe = observe
-      disconnect = disconnect
+      observe = vi.fn()
+      disconnect = vi.fn()
+      constructor(notify: () => void) { observers.push({ notify, observe: this.observe, disconnect: this.disconnect }) }
     })
     const host = mount({
       components: { VirtualFleetConfigView },
@@ -308,8 +347,12 @@ describe('VirtualFleetConfigView minimal simulation interface', () => {
     wrappers.push(host)
     await flushPromises()
     const originalViewId = host.getComponent(VirtualFleetConfigView).vm.$.uid
-    expect(observe).toHaveBeenCalledOnce()
-    expect(observe).toHaveBeenCalledWith(host.get('.vf-config-drawer').element)
+    const drawerObserver = observers.find(observer => observer.observe.mock.calls.some(
+      ([element]) => element === host.get('.vf-config-drawer').element,
+    ))!
+    const { notify: notifyResize, observe, disconnect } = drawerObserver
+    expect(observe).toHaveBeenCalledTimes(2)
+    expect(observe).toHaveBeenCalledWith(host.get('.vf-main-column').element)
 
     const track = vi.fn()
     window.addEventListener('unity-runtime-track', track)
@@ -324,7 +367,7 @@ describe('VirtualFleetConfigView minimal simulation interface', () => {
       expect(host.getComponent(VirtualFleetConfigView).vm.$.uid).toBe(originalViewId)
       notifyResize()
       expect(track).toHaveBeenCalledTimes(2)
-      expect(observe).toHaveBeenCalledOnce()
+      expect(observe).toHaveBeenCalledTimes(2)
 
       host.unmount()
       wrappers.splice(wrappers.indexOf(host), 1)
@@ -364,7 +407,9 @@ describe('VirtualFleetConfigView minimal simulation interface', () => {
   it('uses configuration only before generation and keeps actual scene devices separate from targets', async () => {
     const { wrapper, setup } = await createView()
     const panel = wrapper.getComponent({ name: 'NodeCommunicationPanel' })
+    const compactNodes = wrapper.getComponent(CompactNodeViewBar)
     expect(panel.props('deviceCodes')).toEqual(['UAV-001', 'UAV-002', 'UAV-003', 'USV-001', 'USV-002', 'USV-003'])
+    expect(compactNodes.props('rows').map((row: { code: string }) => row.code)).toEqual(panel.props('deviceCodes'))
     setup.state.uavCount = 1
     setup.state.usvCount = 2
     await flushPromises()
@@ -379,6 +424,7 @@ describe('VirtualFleetConfigView minimal simulation interface', () => {
     ]
     await flushPromises()
     expect(panel.props('deviceCodes')).toEqual(['UAV-002', 'USV-001'])
+    expect(compactNodes.props('rows').map((row: { code: string }) => row.code)).toEqual(['UAV-002', 'USV-001'])
     expect(panel.props('targets')).toEqual([])
     const sample = frame()
     sample.targets = [
@@ -393,6 +439,7 @@ describe('VirtualFleetConfigView minimal simulation interface', () => {
     ])
     expect(panel.props('targetSource')).toBe('算法仿真 · 当前场景')
     expect(panel.props('deviceCodes')).toEqual(['UAV-002', 'USV-001'])
+    expect(compactNodes.props('rows').map((row: { code: string }) => row.code)).toEqual(['UAV-002', 'USV-001'])
   })
 
   it('selects a node without issuing a task or changing the camera', async () => {

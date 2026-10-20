@@ -2,12 +2,18 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 
+import ConsoleLayout from '@/components/layout/ConsoleLayout.vue'
+import WorkspaceHeader from '@/components/layout/WorkspaceHeader.vue'
+import type { WorkspaceHeaderState } from '@/components/layout/workspaceHeader'
 import DashboardView from '@/views/DashboardView.vue'
 import VirtualFleetConfigView from '@/views/VirtualFleetConfigView.vue'
 
 const route = useRoute()
 const simulationActive = computed(() => route.query.workspace === 'simulation')
 const simulationMounted = ref(simulationActive.value)
+const overviewHeader = ref<WorkspaceHeaderState>({ deviceCode: '', deviceContext: '全局态势', statuses: [] })
+const simulationHeader = ref<WorkspaceHeaderState>({ deviceCode: '', deviceContext: '', statuses: [] })
+const activeHeader = computed(() => simulationActive.value ? simulationHeader.value : overviewHeader.value)
 
 let prewarmTimer: number | null = null
 let settleTimer: number | null = null
@@ -60,13 +66,16 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
+  <ConsoleLayout title="系统总览" eyebrow="UAV-USV" :show-refresh="false" :default-sidebar-collapsed="true" workspace-navigation immersive>
+  <WorkspaceHeader :active-workspace="simulationActive ? 'simulation' : 'overview'" :state="activeHeader" />
   <div class="overview-workspace-stack" :class="{ 'simulation-active': simulationActive }">
     <section
       class="overview-workspace-pane overview-pane"
       :class="simulationActive ? 'is-inactive' : 'is-active'"
       :aria-hidden="simulationActive"
+      :inert="simulationActive ? true : undefined"
     >
-      <DashboardView />
+      <DashboardView embedded @workspace-status="overviewHeader = $event" />
     </section>
 
     <section
@@ -74,17 +83,24 @@ onBeforeUnmount(() => {
       class="overview-workspace-pane simulation-pane"
       :class="simulationActive ? 'is-active' : 'is-inactive'"
       :aria-hidden="!simulationActive"
+      :inert="!simulationActive ? true : undefined"
     >
-      <VirtualFleetConfigView />
+      <VirtualFleetConfigView embedded @workspace-status="simulationHeader = $event" />
     </section>
   </div>
+  </ConsoleLayout>
 </template>
 
 <style scoped>
+:global(html:has(.workspace-navigation)) {
+  /* Both workspaces share the same width even when only one needs scrolling. */
+  scrollbar-gutter: stable;
+}
+
 .overview-workspace-stack {
   position: relative;
   min-width: 0;
-  min-height: 100dvh;
+  margin-top: 10px;
   overflow: hidden;
   background: #061113;
   isolation: isolate;
@@ -93,7 +109,6 @@ onBeforeUnmount(() => {
 .overview-workspace-pane {
   width: 100%;
   min-width: 0;
-  min-height: 100dvh;
   backface-visibility: hidden;
   contain: layout paint style;
 }

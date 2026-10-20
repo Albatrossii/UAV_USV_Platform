@@ -15,6 +15,7 @@ import { computed, onActivated, onBeforeUnmount, onDeactivated, onMounted, ref, 
 import { useRoute } from 'vue-router'
 
 import ConsoleLayout from '@/components/layout/ConsoleLayout.vue'
+import type { WorkspaceHeaderState } from '@/components/layout/workspaceHeader'
 import VehicleGlyph from '@/components/control/VehicleGlyph.vue'
 import PointCloudOverviewPanel from '@/components/sensor/PointCloudOverviewPanel.vue'
 import type { VehicleQuickCommand } from '@/components/control/VehicleQuickControl.vue'
@@ -52,6 +53,9 @@ type UnityMessage = {
 }
 
 type OverviewRuntimeMode = 'VIRTUAL_SIMULATION' | 'REAL'
+
+const props = withDefaults(defineProps<{ embedded?: boolean }>(), { embedded: false })
+const emit = defineEmits<{ 'workspace-status': [state: WorkspaceHeaderState] }>()
 
 class PostMissionAlgorithmRuntimeError extends Error {
   constructor(message: string) {
@@ -1638,12 +1642,24 @@ watch(
   () => trajectoryStore.frame?.sequence,
   () => syncOperationalStatesFromTrajectory(),
 )
+
+// Publish display-only chrome data; the two workspaces keep independent runtimes.
+watch((): WorkspaceHeaderState => ({
+  deviceCode: selectedDeviceCode.value.toUpperCase(),
+  deviceContext: selectedCameraMode.value === 'device-follow' ? '设备跟随' : '全局态势',
+  statuses: [
+    { label: `ROS ${rosBridgeOnline.value ? '在线' : '离线'}`, tone: rosBridgeOnline.value ? 'online' : 'offline' },
+    { label: `Unity ${unityReady.value ? '在线' : '等待'}`, tone: unityReady.value ? 'online' : 'offline' },
+    { label: `${onlineVehicleCount.value}/6 实时位姿`, tone: 'info' },
+    { label: `${onlineNodeCount.value}/${displayedNodes.value.length} 节点正常`, tone: 'offline' },
+  ],
+}), status => emit('workspace-status', status), { immediate: true })
 </script>
 
 <template>
-  <ConsoleLayout title="系统总览" eyebrow="MISSION OVERVIEW" :show-refresh="false" immersive>
+  <component :is="props.embedded ? 'div' : ConsoleLayout" v-bind="props.embedded ? {} : { title: '系统总览', eyebrow: 'MISSION OVERVIEW', showRefresh: false, immersive: true }">
     <section class="overview-console overview-hf" aria-label="海空协同仿真总览">
-      <header class="overview-hf-statusbar">
+      <header v-if="!props.embedded" class="overview-hf-statusbar">
         <div class="overview-current-view">
           <strong>当前观察设备</strong>
           <span>{{ selectedDeviceCode.toUpperCase() }}</span>
@@ -1850,5 +1866,5 @@ watch(
       </section>
 
     </section>
-  </ConsoleLayout>
+  </component>
 </template>

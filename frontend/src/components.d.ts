@@ -12,6 +12,7 @@ export {}
 declare module 'vue' {
   export interface GlobalComponents {
     AlgorithmManagerDialog: typeof import('./components/mission/AlgorithmManagerDialog.vue')['default']
+    CompactNodeViewBar: typeof import('./components/monitoring/CompactNodeViewBar.vue')['default']
     ConsoleLayout: typeof import('./components/layout/ConsoleLayout.vue')['default']
     ConsoleNavigationRail: typeof import('./components/layout/ConsoleNavigationRail.vue')['default']
     CooperativeSituationHud: typeof import('./components/mission/CooperativeSituationHud.vue')['default']
@@ -56,6 +57,7 @@ declare module 'vue' {
     VoiceIntelligenceInput: typeof import('./components/voice/VoiceIntelligenceInput.vue')['default']
     VoiceP0ControlPanel: typeof import('./components/voice/VoiceP0ControlPanel.vue')['default']
     WebSocketQualityCard: typeof import('./components/monitoring/WebSocketQualityCard.vue')['default']
+    WorkspaceHeader: typeof import('./components/layout/WorkspaceHeader.vue')['default']
   }
   export interface GlobalDirectives {
     vLoading: typeof import('element-plus/es')['ElLoadingDirective']

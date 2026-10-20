@@ -1,8 +1,8 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, inject, ref, watch } from 'vue'
 import { ChevronRight, Crosshair, Plane, Radio, Ship } from '@lucide/vue'
 
-import { useNodeMonitoring } from '@/composables/useNodeMonitoring'
+import { nodeMonitoringKey, useNodeMonitoring } from '@/composables/useNodeMonitoring'
 import { buildNodeCommunicationRows, normalizeNodeCode } from '@/utils/nodeCommunication'
 
 const props = withDefaults(defineProps<{
@@ -13,7 +13,7 @@ const props = withDefaults(defineProps<{
   defaultOpen?: boolean
 }>(), { selectedDevice: '', targets: () => [], targetSource: '算法仿真 · 当前场景', defaultOpen: true })
 const emit = defineEmits<{ select: [code: string] }>()
-const monitor = useNodeMonitoring()
+const monitor = inject(nodeMonitoringKey, null) ?? useNodeMonitoring()
 const expandedCode = ref('')
 const abnormalOnly = ref(false)
 const rows = computed(() => buildNodeCommunicationRows(

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onActivated, onBeforeUnmount, onDeactivated, onMounted, reactive, ref, watch } from 'vue'
+import { computed, onActivated, onBeforeUnmount, onDeactivated, onMounted, provide, reactive, ref, watch } from 'vue'
 import {
   AudioLines,
   ChevronLeft,
@@ -17,7 +17,11 @@ import {
 
 import ConsoleLayout from '@/components/layout/ConsoleLayout.vue'
 import ConsoleNavigationRail from '@/components/layout/ConsoleNavigationRail.vue'
+import type { WorkspaceHeaderState } from '@/components/layout/workspaceHeader'
 import NodeCommunicationPanel from '@/components/monitoring/NodeCommunicationPanel.vue'
+import CompactNodeViewBar from '@/components/monitoring/CompactNodeViewBar.vue'
+import { nodeMonitoringKey, useNodeMonitoring } from '@/composables/useNodeMonitoring'
+import { buildNodeCommunicationRows } from '@/utils/nodeCommunication'
 import { ApiClientError } from '@/api/http'
 import VoiceP0ControlPanel from '@/components/voice/VoiceP0ControlPanel.vue'
 import {
@@ -73,6 +77,9 @@ type ScenarioInitialPose = {
 
 type TacticalEvent = SimulationTacticalNotice
 
+const props = withDefaults(defineProps<{ embedded?: boolean }>(), { embedded: false })
+const emit = defineEmits<{ 'workspace-status': [state: WorkspaceHeaderState] }>()
+
 type VirtualFleetRecoverySnapshot = {
   version: 1
   userScope: string
@@ -94,6 +101,7 @@ type VirtualFleetRecoverySnapshot = {
   currentAlgorithmFrame: AlgorithmRuntimeFrame | null
   selectedDevice: string
   cameraMode: string
+  cameraFollowDevice?: string
   missionElapsedMs: number
 }
 
@@ -154,6 +162,10 @@ watch(
 )
 const selectedDevice = ref(restoredRuntime?.selectedDevice ?? '')
 const cameraMode = ref(restoredRuntime?.cameraMode ?? 'overview')
+// Selection in the network list is inspection only; it must not claim that
+// Unity followed that node until an actual camera request/ack changes target.
+const cameraFollowDevice = ref(restoredRuntime?.cameraFollowDevice ??
+  (cameraMode.value === 'device-follow' ? selectedDevice.value : ''))
 const cameraViewActive = ref(true)
 const commandFocusActive = ref(false)
 const automaticCameraRequests = new Set<string>()
@@ -162,7 +174,7 @@ const cameraFeedback = ref('')
 let latestCameraRequestId = ''
 let cameraInteractionRevision = 0
 let initialCameraTimer: number | undefined
-let confirmedCamera = { mode: cameraMode.value, deviceCode: selectedDevice.value }
+let confirmedCamera = { mode: cameraMode.value, deviceCode: cameraFollowDevice.value || selectedDevice.value }
 const scenarioReadyRunId = ref<number | null>(null)
 const scenarioLoading = ref(false)
 const algorithmPrepared = ref(restoredRuntime !== null)
@@ -177,7 +189,11 @@ const leftPanelCollapsed = ref(false)
 const panelTransitioning = ref(false)
 let panelTransitionTimer: number | undefined
 const controlDrawer = ref<HTMLElement | null>(null)
+const simulationMain = ref<HTMLElement | null>(null)
+const simulationAvailableHeight = ref(700)
 let controlDrawerObserver: ResizeObserver | null = null
+const nodeMonitor = useNodeMonitoring()
+provide(nodeMonitoringKey, nodeMonitor)
 const logEntries = ref<string[]>([])
 const voiceControlPanel = ref<InstanceType<typeof VoiceP0ControlPanel> | null>(null)
 const voiceControlStore = useVoiceControlStore()
@@ -520,6 +536,7 @@ function persistRuntimeRecovery() {
     selectedDevice: selectedDevice.value,
     // A brief command close-up is presentation only, not a sticky follow preference.
     cameraMode: commandFocusActive.value ? 'overview' : cameraMode.value,
+    cameraFollowDevice: commandFocusActive.value ? '' : cameraFollowDevice.value,
     missionElapsedMs: missionElapsedMs.value + (missionClockStartedAt.value === null
       ? 0
       : Date.now() - missionClockStartedAt.value),
@@ -535,7 +552,7 @@ function scheduleRuntimeRecovery() {
 watch(
   () => [
     state.algorithm, state.uavCount, state.usvCount, state.uavSpeed, state.usvSpeed,
-    state.mission, state.runId, state.sequence, selectedDevice.value, cameraMode.value,
+    state.mission, state.runId, state.sequence, selectedDevice.value, cameraMode.value, cameraFollowDevice.value,
   ],
   scheduleRuntimeRecovery,
 )
@@ -689,7 +706,8 @@ function onUnityLoading() {
   clearTimeout(recoveryTimer)
   recoveryPoseSequence = null
   if (!recoveringScene.value) {
-    restoredCamera = { mode: cameraMode.value, deviceCode: selectedDevice.value }
+    restoredCamera = { mode: cameraMode.value, deviceCode: cameraMode.value === 'device-follow'
+      ? cameraFollowDevice.value : selectedDevice.value }
   }
   recoveringScene.value = savedScenario !== null
   scenarioLoading.value = recoveringScene.value
@@ -1004,6 +1022,7 @@ function onUnityMessage(message: UnityMessage) {
       commandCameraDirector.cancel()
       cameraMode.value = confirmedCamera.mode
       selectedDevice.value = confirmedCamera.deviceCode
+      cameraFollowDevice.value = confirmedCamera.mode === 'device-follow' ? confirmedCamera.deviceCode : ''
       cameraFeedback.value = `视角切换失败：${String(message.payload.status ?? message.payload.message ?? '请重新选择设备后重试')}`
       return
     }
@@ -1016,7 +1035,9 @@ function onUnityMessage(message: UnityMessage) {
     }
     if (mode) cameraMode.value = mode
     if (deviceCode) selectedDevice.value = deviceCode
-    confirmedCamera = { mode: cameraMode.value, deviceCode: selectedDevice.value }
+    cameraFollowDevice.value = cameraMode.value === 'device-follow'
+      ? deviceCode || cameraFollowDevice.value || selectedDevice.value : ''
+    confirmedCamera = { mode: cameraMode.value, deviceCode: cameraFollowDevice.value || selectedDevice.value }
     cameraFeedback.value = ''
     addLog(`cameraChanged: ${deviceCode || '-'} / ${mode || '-'}`)
   }
@@ -1394,6 +1415,7 @@ async function resetMission() {
   initialScenarioPoses.value = []
   scenarioReadyRunId.value = null
   selectedDevice.value = ''
+  cameraFollowDevice.value = ''
   addLog('missionReset: 清理算法、轨迹和 Unity 运行实例')
   send('missionReset', { runtimeMode: 'VIRTUAL_SIMULATION', runId: state.runId })
   unityPanel.value?.reload()
@@ -1578,6 +1600,14 @@ const simulationTargets = computed(() => (currentAlgorithmFrame.value?.targets ?
   label: target.type === 'ESCORT_TARGET' ? '护航目标' : '敌船',
   state: target.state || '未上报',
 })))
+const compactNodeRows = computed(() => buildNodeCommunicationRows(
+  sceneDeviceCodes.value, nodeMonitor.nodes.value, nodeMonitor.now.value,
+  nodeMonitor.observedAt.value, nodeMonitor.available.value,
+))
+const observedDeviceLabel = computed(() => (cameraMode.value === 'device-follow' ? cameraFollowDevice.value : '')
+  || selectedDevice.value || cameraTargetDevice.value || '未选择')
+const observedDeviceType = computed(() => observedDeviceLabel.value.startsWith('UAV') ? '无人机'
+  : observedDeviceLabel.value.startsWith('USV') ? '无人艇' : '')
 function selectMonitoringDevice(deviceCode: string) {
   if (sceneDeviceCodes.value.includes(deviceCode)) selectedDevice.value = deviceCode
 }
@@ -1590,8 +1620,8 @@ const cameraStatus = computed(() => {
   if (!unityReady.value) return '等待画面连接'
   if (!cameraControlsReady.value) return '等待场景就绪'
   if (cameraMode.value === 'device-follow') return commandFocusActive.value
-    ? `指令定位 ${selectedDevice.value} · 2.5 秒后回全局`
-    : `持续跟随 ${selectedDevice.value}`
+    ? `指令定位 ${cameraFollowDevice.value} · 2.5 秒后回全局`
+    : `持续跟随 ${cameraFollowDevice.value}`
   return cameraDeviceCodes.value.length ? '全局视角' : '全局视角 · 暂无可跟随设备'
 })
 
@@ -1615,6 +1645,7 @@ function requestCamera(mode: 'overview' | 'device-follow', deviceCode = '', auto
   }
   cameraFeedback.value = ''
   cameraMode.value = mode
+  cameraFollowDevice.value = mode === 'device-follow' ? deviceCode : ''
   if (deviceCode) selectedDevice.value = deviceCode
 }
 
@@ -1643,6 +1674,21 @@ function followSelectedDevice() {
   if (!cameraControlsReady.value || !cameraTargetDevice.value) return
   commandCameraDirector.cancel()
   requestCamera('device-follow', cameraTargetDevice.value)
+}
+
+function followNodeDevice(deviceCode: string) {
+  if (!cameraControlsReady.value || !cameraDeviceCodes.value.includes(deviceCode)) return
+  selectedDevice.value = deviceCode
+  followSelectedDevice()
+}
+
+function trackNodeBarResize() {
+  if (cameraViewActive.value) window.dispatchEvent(new CustomEvent('unity-runtime-track'))
+}
+
+function endNodeBarResize() {
+  unityPanel.value?.endViewportTransition()
+  trackNodeBarResize()
 }
 
 function chooseCameraDevice(event: Event) {
@@ -1734,9 +1780,11 @@ onMounted(() => {
   // In the stacked layout, controls can move the stage without resizing it.
   // Observe the whole console so folded cards and new voice receipts both align the persistent renderer.
   controlDrawerObserver = new ResizeObserver(() => {
+    if (simulationMain.value) simulationAvailableHeight.value = Math.max(0, simulationMain.value.clientHeight - 54)
     if (cameraViewActive.value) window.dispatchEvent(new CustomEvent('unity-runtime-track'))
   })
   controlDrawerObserver.observe(controlDrawer.value)
+  if (simulationMain.value) controlDrawerObserver.observe(simulationMain.value)
 })
 
 onBeforeUnmount(() => {
@@ -1757,37 +1805,27 @@ onBeforeUnmount(() => {
   stopAlgorithmPolling()
   pauseMissionClock()
 })
+
+watch((): WorkspaceHeaderState => ({
+  deviceCode: observedDeviceLabel.value,
+  deviceContext: observedDeviceType.value,
+  statuses: [{ label: `独立仿真 WebGL · ${unityReady.value ? 'ONLINE' : 'CONNECTING'}`, tone: unityReady.value ? 'online' : 'offline' }],
+}), status => emit('workspace-status', status), { immediate: true })
 </script>
 
 <template>
-  <ConsoleLayout
-    title="算法仿真"
-    eyebrow="VIRTUAL FLEET / UNITY BRIDGE V3"
-    :show-refresh="false"
-    :default-sidebar-collapsed="true"
-    hide-sidebar
-    immersive
+  <component
+    :is="props.embedded ? 'div' : ConsoleLayout"
+    v-bind="props.embedded ? {} : {
+      title: '算法仿真',
+      eyebrow: 'VIRTUAL FLEET / UNITY BRIDGE V3',
+      showRefresh: false,
+      defaultSidebarCollapsed: true,
+      hideSidebar: true,
+      immersive: true,
+    }"
   >
-    <div class="virtual-fleet-page">
-      <header class="vf-app-header">
-        <div class="vf-app-title">
-          <span>UAV-USV 协同仿真平台</span>
-          <strong>算法仿真</strong>
-        </div>
-        <nav class="vf-workspace-switch" aria-label="工作空间切换">
-          <RouterLink :to="{ name: 'dashboard' }">系统总览</RouterLink>
-          <span class="active">算法仿真</span>
-        </nav>
-        <div class="vf-instance-status" :class="{ offline: !unityReady }">
-          <i></i>
-          独立仿真 WebGL · {{ unityReady ? 'ONLINE' : 'CONNECTING' }}
-        </div>
-      </header>
-      <p v-if="frameConnectionError" class="vf-recovery-notice" role="status">
-        {{ frameConnectionError }}
-        <button v-if="frameConnectionError && frameFailures > 0" type="button" @click="nextFramePollAt = 0; pollAlgorithmFrame()">立即查询</button>
-      </p>
-
+    <div class="virtual-fleet-page vf-balanced-page" :class="{ 'vf-embedded-page': props.embedded }">
       <div
         class="vf-workbench vf-unified-workbench"
         :class="{
@@ -1798,10 +1836,15 @@ onBeforeUnmount(() => {
         @transitioncancel="handleWorkbenchTransitionCancel"
       >
         <aside ref="controlDrawer" class="vf-config-drawer" :class="{ collapsed: leftPanelCollapsed }">
+          <div v-if="!props.embedded" class="vf-side-brand"><strong>UAV-USV 协同仿真平台</strong><span>算法仿真</span></div>
           <ConsoleNavigationRail
+            v-if="!props.embedded"
             :collapsed="leftPanelCollapsed"
             @toggle="setLeftPanelCollapsed(!leftPanelCollapsed)"
           />
+          <button v-if="props.embedded && leftPanelCollapsed" class="vf-drawer-reopen" type="button" aria-label="展开总控" title="展开任务控制台" @click="setLeftPanelCollapsed(false)">
+            <ChevronRight :size="17" /><span>任务控制台</span>
+          </button>
           <section class="vf-config-panel" aria-label="任务控制台" :inert="leftPanelCollapsed ? true : undefined">
             <div class="vf-panel-head">
               <div><h3>任务控制台</h3><span>V3 PROTOCOL</span></div>
@@ -1809,7 +1852,7 @@ onBeforeUnmount(() => {
                 <ChevronLeft :size="17" />
               </button>
             </div>
-            <details class="vf-voice-config vf-scenario-config" open>
+            <details class="vf-voice-config vf-scenario-config">
               <summary class="vf-scenario-summary">
                 <span class="vf-scenario-title"><AudioLines :size="16" />语音控制</span>
                 <span class="vf-scenario-summary-right">语音 / 文本<ChevronRight class="vf-scenario-arrow" :size="12" /></span>
@@ -1824,7 +1867,7 @@ onBeforeUnmount(() => {
                 @presentation-message="sendPresentationMessage"
               />
             </details>
-            <details class="vf-scenario-config" open>
+            <details class="vf-scenario-config">
               <summary class="vf-scenario-summary">
                 <span class="vf-scenario-title"><LayoutGrid :size="16" />场景配置</span>
                 <span class="vf-scenario-summary-right">
@@ -1880,7 +1923,7 @@ onBeforeUnmount(() => {
               </div>
             </details>
             <NodeCommunicationPanel
-              :default-open="false"
+              :default-open="true"
               :device-codes="sceneDeviceCodes"
               :selected-device="selectedDevice"
               :targets="simulationTargets"
@@ -1890,13 +1933,30 @@ onBeforeUnmount(() => {
           </section>
         </aside>
 
+        <div ref="simulationMain" class="vf-main-column">
+          <header v-if="!props.embedded" class="vf-app-header">
+            <div class="vf-observed-device" :class="{ usv: observedDeviceType === '无人艇' }">
+              <span>当前观察设备</span><strong>{{ observedDeviceLabel }}</strong><small>{{ observedDeviceType }}</small>
+            </div>
+            <nav class="vf-workspace-switch" aria-label="工作空间切换">
+              <RouterLink :to="{ name: 'dashboard' }">系统总览</RouterLink>
+              <span class="active">算法仿真</span>
+            </nav>
+            <div class="vf-instance-status" :class="{ offline: !unityReady }"><i></i>独立仿真 WebGL · {{ unityReady ? 'ONLINE' : 'CONNECTING' }}</div>
+          </header>
+          <p v-if="frameConnectionError" class="vf-recovery-notice" role="status">
+            {{ frameConnectionError }}
+            <button v-if="frameFailures > 0" type="button" @click="nextFramePollAt = 0; pollAlgorithmFrame()">立即查询</button>
+          </p>
         <section class="vf-stage-panel" :class="{ expanded: webglExpanded }">
+          <div class="vf-stage-top">
           <div class="vf-stage-head">
-            <div>
-              <h3>算法仿真</h3>
+            <div class="vf-mission-heading">
+              <h3>海空协同任务</h3>
+              <span>{{ stageCompositionLabel }}</span>
             </div>
             <div class="vf-stage-actions">
-              <strong>{{ stageCompositionLabel }}</strong>
+              <strong class="vf-algorithm-name">{{ isEscortAlgorithm ? '智能粒球仿真护航' : 'GB-SFLA-CS 协同围捕' }}</strong>
               <button class="vf-expand" type="button" :aria-label="webglExpanded ? '还原画面' : '放大画面'" @click="toggleWebglExpanded">
                 <Minimize2 v-if="webglExpanded" :size="16" />
                 <Maximize2 v-else :size="16" />
@@ -1904,9 +1964,24 @@ onBeforeUnmount(() => {
               </button>
             </div>
           </div>
-          <div class="vf-target-legend" aria-label="敌我目标标识">
-            <span v-if="isEscortAlgorithm" class="friendly"><i></i>我方护航船</span>
-            <span class="hostile"><i></i>{{ isCaptureAlgorithm ? '围捕目标' : '敌方威胁船' }}</span>
+          <div class="vf-view-toolbar">
+            <div class="vf-command-actions">
+              <button class="vf-button success" type="button" :title="state.mission === 'PAUSED' ? '继续任务' : '开始任务'" :disabled="missionActionDisabled" @click="startMission">
+                <Play :size="15" /> <span>{{ algorithmPreparing ? '准备中' : state.mission === 'PAUSED' ? '继续' : '开始' }}</span>
+              </button>
+              <button class="vf-button" type="button" title="暂停任务" :disabled="state.mission !== 'RUNNING'" @click="pauseMission"><Pause :size="15" /><span>暂停</span></button>
+              <button class="vf-button danger" type="button" title="停止任务" :disabled="state.mission === 'STOPPED'" @click="stopMission"><CircleStop :size="15" /><span>停止</span></button>
+            </div>
+            <div class="vf-camera-actions">
+              <select aria-label="跟随目标" :value="cameraTargetDevice" :disabled="!cameraControlsReady || !cameraDeviceCodes.length" @change="chooseCameraDevice">
+                <option v-if="!cameraDeviceCodes.length" value="">暂无设备</option>
+                <option v-for="deviceCode in cameraDeviceCodes" :key="deviceCode" :value="deviceCode">{{ deviceCode }}</option>
+              </select>
+              <button type="button" aria-label="跟随设备" :title="cameraTargetDevice ? `持续跟随 ${cameraTargetDevice}` : '等待场景中的无人机或无人艇就绪'" :class="{ active: cameraMode === 'device-follow' }" :aria-pressed="cameraMode === 'device-follow'" :disabled="!cameraTargetDevice || !cameraControlsReady" @click="followSelectedDevice"><Eye :size="15" /><span>跟随设备</span></button>
+              <button type="button" aria-label="全局视角" title="全局观察无人机与无人艇" :class="{ active: cameraMode === 'overview' }" :aria-pressed="cameraMode === 'overview'" :disabled="!cameraControlsReady" @click="setOverviewCamera"><Globe2 :size="15" /><span>全局视角</span></button>
+              <small class="vf-camera-status" :class="{ error: cameraFeedback }" role="status" aria-live="polite">{{ cameraStatus }}</small>
+            </div>
+          </div>
           </div>
           <div class="vf-unity-stage" data-simulation-viewport></div>
           <div class="vf-live-strip">
@@ -1924,19 +1999,12 @@ onBeforeUnmount(() => {
               <small v-if="stageProgress.detail">{{ stageProgress.detail }}</small>
             </span>
             <span v-if="singleDeviceRuntimeNotice" class="vf-return-notice">{{ singleDeviceRuntimeNotice }}</span>
+            <div class="vf-target-legend" aria-label="敌我目标标识">
+              <span v-if="isEscortAlgorithm" class="friendly"><i></i>我方护航船</span>
+              <span class="hostile"><i></i>{{ isCaptureAlgorithm ? '围捕目标' : '敌方威胁船' }}</span>
+            </div>
           </div>
           <div class="vf-command-bar">
-            <div class="vf-command-actions">
-              <button class="vf-button success" type="button" :title="state.mission === 'PAUSED' ? '继续任务' : '开始任务'" :disabled="missionActionDisabled" @click="startMission">
-                <Play :size="15" /> <span>{{ algorithmPreparing ? '准备中' : state.mission === 'PAUSED' ? '继续' : '开始' }}</span>
-              </button>
-              <button class="vf-button" type="button" title="暂停任务" :disabled="state.mission !== 'RUNNING'" @click="pauseMission">
-                <Pause :size="15" /> <span>暂停</span>
-              </button>
-              <button class="vf-button danger" type="button" title="停止任务" :disabled="state.mission === 'STOPPED'" @click="stopMission">
-                <CircleStop :size="15" /> <span>停止</span>
-              </button>
-            </div>
             <ol class="vf-phase-stepper">
               <li
                 v-for="(step, index) in phaseSteps"
@@ -1947,25 +2015,21 @@ onBeforeUnmount(() => {
                 <span>{{ index + 1 }}</span><em>{{ step }}</em>
               </li>
             </ol>
-            <div class="vf-camera-actions">
-              <select aria-label="跟随目标" :value="cameraTargetDevice" :disabled="!cameraControlsReady || !cameraDeviceCodes.length" @change="chooseCameraDevice">
-                <option v-if="!cameraDeviceCodes.length" value="">暂无设备</option>
-                <option v-for="deviceCode in cameraDeviceCodes" :key="deviceCode" :value="deviceCode">{{ deviceCode }}</option>
-              </select>
-              <button type="button" aria-label="跟随设备" :title="cameraTargetDevice ? `持续跟随 ${cameraTargetDevice}` : '等待场景中的无人机或无人艇就绪'" :class="{ active: cameraMode === 'device-follow' }" :aria-pressed="cameraMode === 'device-follow'" :disabled="!cameraTargetDevice || !cameraControlsReady" @click="followSelectedDevice">
-                <Eye :size="15" /><span>跟随设备</span>
-              </button>
-              <button type="button" aria-label="全局视角" title="全局观察无人机与无人艇" :class="{ active: cameraMode === 'overview' }" :aria-pressed="cameraMode === 'overview'" :disabled="!cameraControlsReady" @click="setOverviewCamera">
-                <Globe2 :size="15" /><span>全局视角</span>
-              </button>
-              <small class="vf-camera-status" :class="{ error: cameraFeedback }" role="status" aria-live="polite">{{ cameraStatus }}</small>
-            </div>
           </div>
         </section>
-
+        <CompactNodeViewBar
+          :rows="compactNodeRows" :selected-device="selectedDevice"
+          :follow-device="cameraMode === 'device-follow' ? cameraFollowDevice : ''"
+          :controls-ready="cameraControlsReady" :available-height="simulationAvailableHeight"
+          @select="followNodeDevice"
+          @resize="trackNodeBarResize"
+          @resize-start="unityPanel?.beginViewportTransition()"
+          @resize-end="endNodeBarResize"
+        />
+        </div>
       </div>
     </div>
-  </ConsoleLayout>
+  </component>
 </template>
 
 <style scoped>
@@ -2281,7 +2345,7 @@ onBeforeUnmount(() => {
 .vf-unified-workbench .vf-camera-actions button { width: 32px; height: 32px; padding: 0; }
 .vf-unified-workbench .vf-camera-actions button span { display: none; }
 
-@container workspace (max-width: 860px) {
+@container workspace (max-width: 760px) {
   .virtual-fleet-page { height: auto; min-height: calc(100dvh - 36px); overflow: visible; }
   .vf-workbench.vf-unified-workbench,
   .vf-workbench.vf-unified-workbench.left-collapsed {
@@ -2316,5 +2380,135 @@ onBeforeUnmount(() => {
 }
 @media (prefers-reduced-motion: reduce) {
   .vf-workbench.vf-unified-workbench, .vf-unified-workbench .vf-config-panel { transition: none; }
+}
+/* Balanced simulation workspace: only this view changes, never the overview. */
+.virtual-fleet-page.vf-balanced-page { height: calc(100dvh - 36px); min-height: 620px; overflow: hidden; }
+.vf-balanced-page .vf-workbench.vf-unified-workbench {
+  --vf-left-width: clamp(286px, 20vw, 365px);
+  grid-template-columns: var(--vf-current-left) minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+  gap: 10px; overflow: hidden;
+}
+.vf-balanced-page .vf-config-drawer { grid-template-rows: 47px minmax(0, 1fr); }
+.vf-side-brand { grid-column: 1 / -1; display: flex; align-items: center; justify-content: space-between; gap: 6px; padding: 0 12px; border-bottom: 1px solid #28464d; white-space: nowrap; }
+.vf-side-brand strong { color: #d8f0ec; font-size: 12px; }
+.vf-side-brand span { color: #81aab2; font-size: 10px; }
+.vf-balanced-page .vf-config-panel { position: absolute; inset: 47px 0 0 48px; width: auto; height: calc(100% - 47px); max-height: none; padding: 0 9px 12px; }
+.vf-balanced-page .vf-config-drawer > :deep(.console-navigation-rail) { grid-row: 2; }
+.vf-balanced-page .vf-config-drawer.collapsed { grid-template-rows: minmax(0, 1fr); }
+.vf-balanced-page .vf-config-drawer.collapsed .vf-side-brand { display: none; }
+.vf-balanced-page .vf-config-drawer.collapsed > :deep(.console-navigation-rail) { grid-row: 1; }
+.vf-main-column { display: flex; flex-direction: column; gap: 8px; min-width: 0; min-height: 0; overflow: hidden; }
+.vf-balanced-page .vf-app-header { display: flex; flex: 0 0 auto; min-height: 46px; padding: 5px 12px; gap: 10px; justify-content: space-between; }
+.vf-observed-device { display: flex; align-items: center; gap: 8px; min-width: 0; font-size: 10px; color: #8eb4ba; }
+.vf-observed-device strong { color: #ffcf72; font-size: 13px; white-space: nowrap; }
+.vf-observed-device.usv strong { color: #ef888c; }
+.vf-observed-device small { font-size: 10px; }
+.vf-balanced-page .vf-workspace-switch { display: flex; flex-shrink: 0; }
+.vf-balanced-page .vf-workspace-switch a, .vf-balanced-page .vf-workspace-switch span { min-width: 78px; padding: 5px 10px; font-size: 10px; }
+.vf-balanced-page .vf-instance-status { flex-shrink: 0; font-size: 10px; }
+.vf-balanced-page .vf-stage-panel { height: auto; min-height: 0; flex: 1 1 0; display: flex; flex-direction: column; }
+.vf-stage-top { display: flex; flex: 0 0 auto; align-items: center; justify-content: space-between; flex-wrap: wrap; background: linear-gradient(100deg, #112b32, #091e27); border-bottom: 1px solid #24434b; }
+.vf-balanced-page .vf-stage-head { flex: 0 0 auto; min-height: 52px; padding: 9px 12px; flex-wrap: nowrap; gap: 8px; background: linear-gradient(100deg, #112b32, #091e27); }
+.vf-balanced-page .vf-stage-top .vf-stage-head { flex: 1; border-bottom: 0; background: transparent; }
+.vf-balanced-page .vf-stage-top .vf-view-toolbar { border: 0; background: transparent; }
+.vf-balanced-page .vf-mission-heading { min-width: 0; }
+.vf-balanced-page .vf-stage-head h3 { font-size: 17px; }
+.vf-balanced-page .vf-mission-heading > span { font-size: 10px; }
+.vf-balanced-page .vf-stage-actions { min-width: 0; gap: 10px; }
+.vf-balanced-page .vf-stage-actions > .vf-algorithm-name { display: block; color: #9cc4c7; font-size: 11px; font-weight: 500; }
+.vf-view-toolbar { flex: 0 0 auto; display: flex; align-items: center; justify-content: space-between; gap: 6px 12px; padding: 6px 12px; border-bottom: 1px solid #24434b; background: #0a2027; }
+.vf-balanced-page .vf-command-actions { flex-shrink: 0; }
+.vf-balanced-page .vf-view-toolbar .vf-button { min-height: 29px; padding: 0 9px; font-size: 11px; }
+.vf-balanced-page .vf-camera-actions { min-width: 0; display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 6px; }
+.vf-balanced-page .vf-camera-actions button { width: auto; height: 29px; min-height: 29px; padding: 0 8px; }
+.vf-balanced-page .vf-camera-actions button span { display: inline; }
+.vf-balanced-page .vf-camera-actions select { min-height: 29px; }
+.vf-balanced-page .vf-camera-status { flex-basis: auto; font-size: 10px; }
+.vf-balanced-page .vf-target-legend { position: static; flex: 0 0 auto; border: 0; border-radius: 0; padding: 0; background: transparent; }
+.vf-balanced-page .vf-target-legend i { box-shadow: none; }
+.vf-balanced-page .vf-unity-stage { height: auto; min-height: 180px; flex: 1 1 0; }
+.vf-balanced-page .vf-live-strip { flex: 0 0 auto; min-height: 29px; padding: 6px 12px; gap: 6px 15px; }
+.vf-balanced-page .vf-live-strip .vf-stage-progress { flex-basis: auto; padding: 0; }
+.vf-balanced-page .vf-return-notice { line-height: 1.5; }
+.vf-balanced-page .vf-command-bar { display: block; flex: 0 0 auto; min-height: 32px; padding: 5px 10px; }
+.vf-balanced-page .vf-phase-stepper { justify-content: center; scrollbar-width: thin; }
+.vf-balanced-page .vf-phase-stepper li { flex-shrink: 0; min-width: 34px; font-size: 9px; }
+.vf-balanced-page .vf-phase-stepper li span { width: 20px; height: 20px; }
+.vf-balanced-page .vf-phase-stepper li em { display: inline; }
+.vf-balanced-page .vf-stage-panel.expanded { position: fixed; inset: 10px; height: auto; min-height: 0; }
+.vf-balanced-page .vf-stage-panel.expanded .vf-unity-stage { min-height: 0; }
+.vf-balanced-page .vf-recovery-notice { flex-shrink: 0; border: 1px solid #4d5641; border-radius: 5px; font-size: 11px; line-height: 1.5; }
+@container workspace (max-width: 1350px) {
+  .vf-balanced-page .vf-workbench.vf-unified-workbench { --vf-left-width: 305px; }
+  .vf-balanced-page .vf-instance-status { max-width: 145px; }
+  .vf-balanced-page .vf-observed-device > small { display: none; }
+  .vf-balanced-page .vf-camera-status { flex-basis: 100%; }
+  .vf-balanced-page .vf-stage-top .vf-camera-status:not(.error) { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+  .vf-balanced-page .vf-phase-stepper li em { display: none; }
+}
+@container workspace (max-width: 1100px) {
+  .virtual-fleet-page.vf-balanced-page { min-height: 700px; }
+  .vf-balanced-page .vf-workbench.vf-unified-workbench { --vf-left-width: 286px; }
+  .vf-balanced-page .vf-app-header { flex-wrap: wrap; gap: 5px; }
+  .vf-balanced-page .vf-instance-status { max-width: none; width: 100%; font-size: 9px; }
+  .vf-balanced-page .vf-stage-head h3 { font-size: 15px; }
+  .vf-balanced-page .vf-view-toolbar { padding: 5px 8px; gap: 6px; }
+  .vf-balanced-page .vf-stage-top .vf-view-toolbar { width: 100%; }
+  .vf-balanced-page .vf-camera-actions button { width: 29px; padding: 0; }
+  .vf-balanced-page .vf-camera-actions button span { display: none; }
+}
+@container workspace (max-width: 760px) {
+  .virtual-fleet-page.vf-balanced-page { height: auto; min-height: 0; overflow: visible; }
+  .vf-balanced-page .vf-workbench.vf-unified-workbench { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto auto; overflow: visible; }
+  .vf-balanced-page .vf-config-drawer { grid-template-columns: 48px minmax(0, 1fr); }
+  .vf-balanced-page .vf-config-panel { position: relative; grid-column: 2; grid-row: 2; inset: auto; height: auto; max-height: 450px; }
+  .vf-balanced-page .vf-config-drawer.collapsed { height: 48px; grid-template-columns: minmax(0, 1fr); }
+  .vf-balanced-page .vf-config-drawer.collapsed .vf-config-panel { position: absolute; inset: 0 0 0 48px; }
+  .vf-balanced-page .vf-main-column { height: max(720px, calc(100dvh - 24px)); }
+  .vf-balanced-page .vf-app-header { padding: 7px 9px; }
+  .vf-balanced-page .vf-workspace-switch a, .vf-balanced-page .vf-workspace-switch span { min-width: 61px; padding-inline: 6px; }
+  .vf-balanced-page .vf-observed-device { gap: 5px; font-size: 9px; }
+  .vf-balanced-page .vf-observed-device strong { font-size: 11px; }
+  .vf-balanced-page .vf-stage-head { padding: 8px; }
+  .vf-balanced-page .vf-stage-actions > .vf-algorithm-name { max-width: 110px; font-size: 10px; }
+  .vf-balanced-page .vf-view-toolbar { flex-wrap: wrap; }
+  .vf-balanced-page .vf-view-toolbar .vf-camera-actions { flex: 1; justify-content: flex-end; }
+  .vf-balanced-page .vf-view-toolbar .vf-command-actions { justify-content: flex-start; }
+  .vf-balanced-page .vf-view-toolbar .vf-button { padding-inline: 7px; }
+  .vf-balanced-page .vf-live-strip { padding: 6px 8px; gap: 5px 10px; }
+  .vf-balanced-page .vf-phase-stepper { justify-content: flex-start; }
+}
+/* Only the external logo, system navigation and header move into the shared shell.
+   Keep the task console and every simulation control in their original work area. */
+.virtual-fleet-page.vf-embedded-page {
+  height: calc(100dvh - 102px);
+  min-height: 560px;
+}
+.vf-embedded-page .vf-workbench.vf-unified-workbench {
+  --vf-left-width: clamp(238px, calc(20vw - 48px), 317px);
+}
+.vf-embedded-page .vf-config-drawer {
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+}
+.vf-embedded-page .vf-config-panel,
+.vf-embedded-page .vf-config-drawer.collapsed .vf-config-panel {
+  inset: 0;
+  height: 100%;
+}
+@container workspace (max-width: 1350px) {
+  .vf-embedded-page .vf-workbench.vf-unified-workbench { --vf-left-width: 257px; }
+}
+@container workspace (max-width: 1100px) {
+  .virtual-fleet-page.vf-embedded-page { height: calc(100dvh - 118px); }
+  .vf-embedded-page .vf-workbench.vf-unified-workbench { --vf-left-width: 238px; }
+}
+@container workspace (max-width: 760px) {
+  .virtual-fleet-page.vf-embedded-page { height: auto; min-height: 0; }
+  .vf-embedded-page .vf-config-panel { position: relative; grid-column: 1; grid-row: 1; height: auto; }
+  .vf-embedded-page .vf-config-drawer.collapsed .vf-config-panel { position: absolute; }
+  .vf-embedded-page .vf-config-drawer.collapsed .vf-drawer-reopen { position: relative; flex-direction: row; height: 48px; }
+  .vf-embedded-page .vf-config-drawer.collapsed .vf-drawer-reopen span { writing-mode: horizontal-tb; }
 }
 </style>

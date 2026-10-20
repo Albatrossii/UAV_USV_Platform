@@ -4,6 +4,9 @@ import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import { nextTick } from 'vue'
 
 import VirtualFleetConfigView from '@/views/VirtualFleetConfigView.vue'
+import CompactNodeViewBar from '@/components/monitoring/CompactNodeViewBar.vue'
+import { controlAlgorithmRun } from '@/api/algorithm'
+import { fetchRuntimeNodes } from '@/api/monitoring'
 import { simulationRuntime } from '@/composables/simulationRuntime'
 import { useAuthStore } from '@/stores/auth'
 import { useVoiceControlStore } from '@/stores/voiceControl'
@@ -26,6 +29,7 @@ vi.mock('@/api/algorithm', () => ({
   fetchAlgorithmRunStatus: vi.fn(),
   fetchAlgorithmFrames: vi.fn().mockResolvedValue([]),
 }))
+vi.mock('@/api/monitoring', () => ({ fetchRuntimeNodes: vi.fn().mockResolvedValue([]) }))
 
 const runId = 7001
 const runtimeRef = '11111111-1111-4111-8111-111111111111'
@@ -101,6 +105,7 @@ type ViewSetup = {
   scenarioLoading: boolean
   plannedScenarioPoses: GridScenarioPose[]
   cameraMode: string
+  cameraFollowDevice: string
   selectedDevice: string
 }
 
@@ -120,7 +125,7 @@ async function createView() {
     reload: vi.fn(),
   } as unknown as NonNullable<typeof simulationRuntime.panel.value>
   const wrapper = mount(VirtualFleetConfigView, {
-    global: { stubs: { RouterLink: { template: '<a><slot /></a>' }, NodeCommunicationPanel: true } },
+    global: { stubs: { RouterLink: { template: '<a><slot /></a>' } } },
   })
   wrappers.push(wrapper)
   // Set only the Unity scene-readiness fixture. All camera watchers, handlers,
@@ -160,6 +165,8 @@ describe('VirtualFleetConfigView single-device command camera', () => {
   beforeEach(() => {
     vi.useFakeTimers()
     vi.setSystemTime(new Date('2026-10-09T09:00:00.000Z'))
+    vi.clearAllMocks()
+    vi.mocked(fetchRuntimeNodes).mockResolvedValue([])
     sessionStorage.clear()
     setActivePinia(createPinia())
     useAuthStore().user = { username: 'admin', role: 'ADMIN' }
@@ -215,6 +222,135 @@ describe('VirtualFleetConfigView single-device command camera', () => {
     expect(view.wrapper.get('.vf-camera-status').text()).toBe('持续跟随 USV-001')
     await vi.advanceTimersByTimeAsync(5000)
     expect(cameraCalls(view)).toHaveLength(1)
+  })
+
+  it('uses bottom node cards to follow while left node selection only selects', async () => {
+    const view = await createView()
+    await view.wrapper.get('.ncp-entry[data-node="UAV-001"] button').trigger('click')
+    expect(view.setup.selectedDevice).toBe('UAV-001')
+    expect(view.setup.cameraMode).toBe('overview')
+    expect(view.postToUnity).not.toHaveBeenCalled()
+
+    const card = view.wrapper.get('.cnv-card[data-node="USV-001"]')
+    await card.trigger('click')
+    expect(view.postToUnity.mock.calls).toEqual([['selectDevice', { deviceCode: 'USV-001' }]])
+    expect(view.setup.selectedDevice).toBe('USV-001')
+    expect(view.setup.cameraMode).toBe('device-follow')
+    expect(card.attributes('aria-pressed')).toBe('true')
+    expect(view.wrapper.get('.vf-observed-device').text()).toContain('USV-001')
+    expect(view.wrapper.get('.ncp-entry[data-node="USV-001"] button').attributes('data-selected')).toBe('true')
+    expect(controlAlgorithmRun).not.toHaveBeenCalled()
+    expect(view.store.proposal).toBeNull()
+    expect(view.store.execution).toBeNull()
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(view.postToUnity).toHaveBeenCalledOnce()
+  })
+
+  it('keeps the followed device when a different left-panel node is selected', async () => {
+    const view = await createView()
+    view.setup.plannedScenarioPoses.push({ ...view.setup.plannedScenarioPoses[1]!, deviceCode: 'USV-002' })
+    await nextTick()
+    await view.wrapper.get('.cnv-card[data-node="USV-002"]').trigger('click')
+    simulationRuntime.events!.message({ type: 'cameraChanged',
+      requestId: view.postToUnity.mock.results[0]!.value,
+      payload: { success: true, mode: 'device-follow', deviceCode: 'USV-002' },
+    })
+    await nextTick()
+    view.postToUnity.mockClear()
+
+    await view.wrapper.get('.ncp-entry[data-node="UAV-001"] button').trigger('click')
+    expect(view.setup.selectedDevice).toBe('UAV-001')
+    expect(view.setup.cameraFollowDevice).toBe('USV-002')
+    expect(view.wrapper.get('.cnv-card[data-node="UAV-001"]').attributes('data-selected')).toBe('true')
+    expect(view.wrapper.get('.cnv-card[data-node="UAV-001"]').attributes('aria-pressed')).toBe('false')
+    expect(view.wrapper.get('.cnv-card[data-node="USV-002"]').attributes('aria-pressed')).toBe('true')
+    expect(view.wrapper.get('.vf-observed-device').text()).toContain('USV-002')
+    expect(view.wrapper.get('.vf-camera-status').text()).toBe('持续跟随 USV-002')
+    expect(view.postToUnity).not.toHaveBeenCalled()
+    expect(controlAlgorithmRun).not.toHaveBeenCalled()
+  })
+
+  it('restores the last acknowledged follow target after another card request is rejected', async () => {
+    const view = await createView()
+    await view.wrapper.get('.cnv-card[data-node="USV-001"]').trigger('click')
+    simulationRuntime.events!.message({ type: 'cameraChanged',
+      requestId: view.postToUnity.mock.results[0]!.value,
+      payload: { success: true, mode: 'device-follow', deviceCode: 'USV-001' },
+    })
+    await nextTick()
+    await view.wrapper.get('.cnv-card[data-node="UAV-001"]').trigger('click')
+    expect(view.setup.cameraFollowDevice).toBe('UAV-001')
+    simulationRuntime.events!.message({ type: 'cameraChanged',
+      requestId: view.postToUnity.mock.results[1]!.value,
+      payload: { success: false, mode: 'device-follow', status: 'Unity scene device not found: UAV-001' },
+    })
+    await nextTick()
+
+    expect(view.setup.cameraMode).toBe('device-follow')
+    expect(view.setup.cameraFollowDevice).toBe('USV-001')
+    expect(view.wrapper.get('.cnv-card[data-node="USV-001"]').attributes('aria-pressed')).toBe('true')
+    expect(view.wrapper.get('.cnv-card[data-node="UAV-001"]').attributes('aria-pressed')).toBe('false')
+    expect(view.wrapper.get('.vf-observed-device').text()).toContain('USV-001')
+    expect(view.wrapper.get('.vf-camera-status').text()).toContain('视角切换失败')
+    expect(controlAlgorithmRun).not.toHaveBeenCalled()
+  })
+
+  it.each(['loading', 'disconnected', 'recovering', 'unconfirmed'] as const)(
+    'blocks bottom card camera requests while the scene is %s', async readiness => {
+      const view = await createView()
+      if (readiness === 'loading') view.setup.scenarioLoading = true
+      if (readiness === 'disconnected') view.setup.unityReady = false
+      if (readiness === 'recovering') simulationRuntime.recovering.value = true
+      if (readiness === 'unconfirmed') view.setup.scenarioReadyRunId = null
+      await nextTick()
+      const card = view.wrapper.get('.cnv-card[data-node="USV-001"]')
+      expect(card.attributes('disabled')).toBeDefined()
+      await card.trigger('click')
+      // The page also guards requests if a stale child event arrives during loading.
+      view.wrapper.getComponent(CompactNodeViewBar).vm.$emit('select', 'USV-001')
+      await nextTick()
+      expect(view.postToUnity).not.toHaveBeenCalled()
+      expect(view.setup.selectedDevice).toBe('')
+      expect(controlAlgorithmRun).not.toHaveBeenCalled()
+    },
+  )
+
+  it('shares one node snapshot and poller between detailed monitoring and bottom cards', async () => {
+    vi.mocked(fetchRuntimeNodes).mockResolvedValue([{
+      id: 1, code: 'uav-01', name: '测试无人机', type: 'UAV', status: 'ONLINE',
+      host: '192.0.2.1', port: 8765, endpoint: '192.0.2.1:8765', rosNamespace: '/uav_01',
+      lastHeartbeatAt: new Date().toISOString(), heartbeatAgeSeconds: 0,
+      source: 'ROS_GATEWAY_V1', instanceId: 'gateway-1', positionX: null, positionY: null,
+      positionZ: null, telemetryStale: false, linkQualityPercent: 100, detail: null,
+    }])
+    const view = await createView()
+    expect(fetchRuntimeNodes).toHaveBeenCalledOnce()
+    expect(view.wrapper.get('.ncp-entry[data-node="UAV-001"]').attributes('data-state')).toBe('online')
+    expect(view.wrapper.get('.cnv-card[data-node="UAV-001"]').attributes('data-state')).toBe('online')
+    expect(view.wrapper.get('.cnv-card[data-node="USV-001"]').attributes('data-state')).toBe('unknown')
+
+    vi.mocked(fetchRuntimeNodes).mockRejectedValueOnce(new Error('monitoring unavailable'))
+    await vi.advanceTimersByTimeAsync(5000)
+    await flushPromises()
+    expect(fetchRuntimeNodes).toHaveBeenCalledTimes(2)
+    expect(view.wrapper.get('.ncp-entry[data-node="UAV-001"]').attributes('data-state')).toBe('unknown')
+    expect(view.wrapper.get('.cnv-card[data-node="UAV-001"]').attributes('data-state')).toBe('unknown')
+    expect(view.postToUnity).not.toHaveBeenCalled()
+  })
+
+  it('keeps a bottom-card follow selection after a temporary command close-up', async () => {
+    const view = await createView()
+    await dispatch(view)
+    await vi.advanceTimersByTimeAsync(1000)
+    await view.wrapper.get('.cnv-card[data-node="USV-001"]').trigger('click')
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(cameraCalls(view)).toEqual([
+      ['selectDevice', { deviceCode: 'UAV-001' }],
+      ['selectDevice', { deviceCode: 'USV-001' }],
+    ])
+    expect(view.setup.cameraMode).toBe('device-follow')
+    expect(view.setup.selectedDevice).toBe('USV-001')
+    expect(controlAlgorithmRun).not.toHaveBeenCalled()
   })
 
   it('falls back from an unavailable selection to an available fleet device and excludes targets and invalid poses', async () => {

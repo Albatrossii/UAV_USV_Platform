@@ -35,6 +35,7 @@ describe('ConsoleLayout sidebar visibility', () => {
     expect(wrapper.findAll('.console-navigation a')).toHaveLength(5)
     expect(wrapper.classes()).not.toContain('sidebar-hidden')
     expect(wrapper.classes()).not.toContain('sidebar-collapsed')
+    expect(wrapper.classes()).not.toContain('workspace-navigation')
     expect(wrapper.get('.console-title h1').text()).toBe('系统总览')
     expect(wrapper.get('.console-topbar-actions').text()).toContain('页面操作')
     expect(wrapper.get('.console-workspace [data-test="content"]').text()).toBe('页面内容')
@@ -81,5 +82,104 @@ describe('ConsoleLayout sidebar visibility', () => {
     expect(wrapper.classes()).not.toContain('sidebar-collapsed')
     expect(wrapper.find('.console-sidebar').exists()).toBe(true)
     expect(localStorage.getItem(SIDEBAR_STORAGE_KEY)).toBe('true')
+  })
+
+  it('opts the shared workspaces into expandable navigation without changing their content', async () => {
+    const wrapper = await mountLayout({
+      workspaceNavigation: true,
+      immersive: true,
+      defaultSidebarCollapsed: true,
+    })
+    expect(wrapper.classes()).toContain('workspace-navigation')
+    expect(wrapper.classes()).toContain('sidebar-collapsed')
+    expect(wrapper.find('.console-topbar').exists()).toBe(false)
+    expect(wrapper.findAll('.console-nav-label').map((item) => item.text())).toEqual([
+      '系统总览', '协同态势', '光电视觉', '雷达态势', '设备管理',
+    ])
+    expect(wrapper.get('.console-sidebar-user').text()).toContain('admin')
+    expect(wrapper.get('.console-sidebar-footer button').attributes('aria-label')).toBe('退出登录')
+
+    const toggle = wrapper.get('.console-sidebar-toggle')
+    expect(toggle.attributes('aria-label')).toBe('展开菜单')
+    expect(toggle.attributes('aria-expanded')).toBe('false')
+    expect(toggle.attributes('aria-controls')).toBe(wrapper.get('.console-navigation').attributes('id'))
+
+    await toggle.trigger('click')
+    expect(wrapper.classes()).not.toContain('sidebar-collapsed')
+    expect(toggle.attributes('aria-label')).toBe('折叠菜单')
+    expect(toggle.attributes('aria-expanded')).toBe('true')
+    expect(wrapper.get('[data-test="content"]').text()).toBe('页面内容')
+  })
+
+  it('uses one saved expansion preference across workspace switches and later mounts', async () => {
+    localStorage.setItem(SIDEBAR_STORAGE_KEY, 'false')
+    const wrapper = await mountLayout({ workspaceNavigation: true, defaultSidebarCollapsed: true })
+    expect(wrapper.classes()).not.toContain('sidebar-collapsed')
+
+    await wrapper.setProps({ title: '算法仿真', eyebrow: '独立仿真', immersive: true })
+    expect(wrapper.classes()).not.toContain('sidebar-collapsed')
+    expect(localStorage.getItem(SIDEBAR_STORAGE_KEY)).toBe('false')
+
+    await wrapper.get('.console-sidebar-toggle').trigger('click')
+    expect(localStorage.getItem(SIDEBAR_STORAGE_KEY)).toBe('true')
+    wrapper.unmount()
+
+    const restored = await mountLayout({ workspaceNavigation: true, defaultSidebarCollapsed: false })
+    expect(restored.classes()).toContain('sidebar-collapsed')
+    expect(restored.get('.console-sidebar-toggle').attributes('aria-expanded')).toBe('false')
+  })
+
+  it('continues to expand navigation when browser storage is unavailable', async () => {
+    vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => { throw new Error('storage unavailable') })
+    vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('storage unavailable') })
+    const wrapper = await mountLayout({ workspaceNavigation: true, defaultSidebarCollapsed: true })
+    expect(wrapper.classes()).toContain('sidebar-collapsed')
+    await wrapper.get('.console-sidebar-toggle').trigger('click')
+    expect(wrapper.classes()).not.toContain('sidebar-collapsed')
+  })
+
+  it('pairs a burst of navigation changes with a single viewport transition', async () => {
+    vi.useFakeTimers()
+    const dispatch = vi.spyOn(window, 'dispatchEvent')
+    const wrapper = await mountLayout({ workspaceNavigation: true })
+    await wrapper.get('.console-sidebar-toggle').trigger('click')
+    await wrapper.get('.console-sidebar-toggle').trigger('click')
+
+    const events = () => dispatch.mock.calls.map(([event]) => event.type)
+      .filter((type) => type.startsWith('uav-usv:viewport-transition-'))
+    expect(events()).toEqual(['uav-usv:viewport-transition-start'])
+    await vi.advanceTimersByTimeAsync(220)
+    expect(events()).toEqual(['uav-usv:viewport-transition-start', 'uav-usv:viewport-transition-end'])
+    wrapper.unmount()
+    expect(events()).toHaveLength(2)
+  })
+
+  it('ends an active viewport transition and cancels its timer when unmounted', async () => {
+    vi.useFakeTimers()
+    const dispatch = vi.spyOn(window, 'dispatchEvent')
+    const wrapper = await mountLayout({ workspaceNavigation: true })
+    await wrapper.get('.console-sidebar-toggle').trigger('click')
+    wrapper.unmount()
+    await vi.runAllTimersAsync()
+
+    expect(dispatch.mock.calls.map(([event]) => event.type)
+      .filter((type) => type.startsWith('uav-usv:viewport-transition-'))).toEqual([
+      'uav-usv:viewport-transition-start', 'uav-usv:viewport-transition-end',
+    ])
+  })
+
+  it('does not schedule a transition timer if unmounted before the next render', async () => {
+    vi.useFakeTimers()
+    const dispatch = vi.spyOn(window, 'dispatchEvent')
+    const wrapper = await mountLayout({ workspaceNavigation: true })
+    const toggling = wrapper.get('.console-sidebar-toggle').trigger('click')
+    wrapper.unmount()
+    await toggling
+    await vi.runAllTimersAsync()
+
+    expect(dispatch.mock.calls.map(([event]) => event.type)
+      .filter((type) => type.startsWith('uav-usv:viewport-transition-'))).toEqual([
+      'uav-usv:viewport-transition-start', 'uav-usv:viewport-transition-end',
+    ])
   })
 })
