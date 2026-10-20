@@ -12,7 +12,10 @@ record IntentClassification(
         String action,
         String targetDeviceCode,
         String deviceCommandType,
-        com.fasterxml.jackson.databind.node.ArrayNode sequenceSteps) {
+        com.fasterxml.jackson.databind.node.ArrayNode sequenceSteps, Integer presetId) {
+    IntentClassification(String status, String reason, String message, String action, String targetDeviceCode, String deviceCommandType, com.fasterxml.jackson.databind.node.ArrayNode steps) {
+        this(status, reason, message, action, targetDeviceCode, deviceCommandType, steps, null);
+    }
     IntentClassification(String status, String reason, String message, String action,
             String targetDeviceCode, String deviceCommandType) {
         this(status, reason, message, action, targetDeviceCode, deviceCommandType, null);
@@ -43,6 +46,9 @@ record IntentClassification(
                     .put("action", action)
                     .set("steps", steps);
             node.putNull("confidence");
+        } else if ("ALGORITHM_PRESET".equals(action)) {
+            node.put("intent", "ALGORITHM_PRESET").put("action", action).putNull("confidence");
+            node.set("parameters", com.uavusv.platform.module.voicecontrol.AlgorithmPresets.parameters(json, presetId));
         } else if ("DEVICE_COMMAND".equals(action)) {
             node.put("intent", "SINGLE_DEVICE_CONTROL")
                     .put("action", action)

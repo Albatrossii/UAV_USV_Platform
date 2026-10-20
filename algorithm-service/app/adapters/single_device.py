@@ -108,6 +108,15 @@ class SingleDeviceControlAdapter(AlgorithmAdapter):
     def place_threat(self, x: float, y: float) -> None:
         self.base.place_threat(x, y)
 
+    def execute_preset(self, preset_id, profile):
+        if not getattr(self.base, "preset_profile", None):
+            raise ValueError("PRESET_INVALID")
+        if not self._deployment_complete:
+            raise ValueError("PRESET_DEPLOYING")
+        if self._overrides:
+            raise ValueError("PRESET_DEVICE_OVERRIDE")
+        self.base.execute_preset(preset_id, profile)
+
     def activate_capture(self, threat_code: str | None = None) -> str:
         return self.base.activate_capture(threat_code)
 
@@ -568,7 +577,8 @@ class SingleDeviceControlAdapter(AlgorithmAdapter):
             if task is None:
                 task = self._progress_fraction(metrics.get("progress"))
         deployment = self._progress_fraction(metrics.get("deploymentProgress"))
-        escort = self.code.startswith("ESCORT_GUARD")
+        command_edition = metrics.get("algorithmCommandProfile") == "escort-20261020"
+        escort = self.code.startswith("ESCORT_GUARD") and not command_edition
         assembly = self._progress_fraction(metrics.get("escortAssemblyProgress")) if escort else 0.0
         if escort and assembly is None:
             # Legacy frames can explicitly prove that no assembly obligation
@@ -585,7 +595,10 @@ class SingleDeviceControlAdapter(AlgorithmAdapter):
             components["escortAssembly"] = components["task"] = 0.0
         measured = sum(weights[key] * value for key, value in components.items())
         self._lifecycle_started = self._lifecycle_started or self.mission_active or self._simulation_elapsed_steps > 0
-        completed = frame.terminalStatus == "COMPLETED"
+        completed = frame.terminalStatus == "COMPLETED" or (
+            command_edition and metrics.get("captureComplete") is True
+            and metrics.get("deploymentState") == "COMPLETE"
+        )
         if completed:
             displayed = 1.0
         elif not self._lifecycle_started:

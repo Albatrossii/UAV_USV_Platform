@@ -162,6 +162,14 @@ public class VoiceSequenceExecutor {
                         throw VoiceFailure.conflict("SEQUENCE_POLICY_VIOLATION");
                     runtimes.checkDevice(context, target, commandType);
                 }
+                if ("ALGORITHM_PRESET".equals(frozenStep.path("action").asText())) {
+                    AlgorithmPresets.validate(context, frozenStep.path("parameters"));
+                    if (Set.of("PARKED", "DEPLOYING").contains(context.path("_deploymentState").asText())) {
+                        parent.put("sequenceStatus", "WAITING_STEP_PRECONDITION").put("updatedAt", time.stamp());
+                        store.save("voice_execution", parent);
+                        return;
+                    }
+                }
                 childId = commands.enqueueSequenceChild(parent, context, frozenStep);
                 parent.withObject("/_stepFramesAtDispatch").put(Integer.toString(index), context.path("latestFrameSequence").asLong());
                 step.put("executionId", childId)

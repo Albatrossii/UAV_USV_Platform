@@ -1,3 +1,4 @@
+import type { AlgorithmPresetParameters } from '@/services/algorithmPresets'
 export type VoiceIntent =
   | 'MISSION_START'
   | 'MISSION_PAUSE'
@@ -5,9 +6,10 @@ export type VoiceIntent =
   | 'MISSION_STOP'
   | 'SINGLE_DEVICE_CONTROL'
   | 'COMMAND_SEQUENCE'
+  | 'ALGORITHM_PRESET'
 
 export type VoiceAction = 'START' | 'PAUSE' | 'RESUME' | 'STOP'
-export type VoicePlanAction = VoiceAction | 'DEVICE_COMMAND' | 'SEQUENCE'
+export type VoicePlanAction = VoiceAction | 'DEVICE_COMMAND' | 'SEQUENCE' | 'ALGORITHM_PRESET'
 export type DeviceCommandType = 'UAV_HOVER' | 'UAV_RESUME' | 'UAV_RETURN' | 'UAV_LAND' | 'USV_HOLD' | 'USV_RESUME' | 'USV_RETURN' | 'USV_STOP'
 export type VoiceRuntimeState =
   | 'PREPARED' | 'PREVIEW' | 'RUNNING' | 'PAUSED' | 'STOPPED'
@@ -53,6 +55,7 @@ export interface VoiceFrozenPlan {
   contextVersion: number
   stateVersion: number
   action: VoicePlanAction
+  parameters?: AlgorithmPresetParameters
   targetDeviceCode?: string
   deviceCommandType?: DeviceCommandType
   steps?: VoiceSequencePlanStep[]
@@ -63,7 +66,8 @@ export interface VoiceFrozenPlan {
 export interface VoiceSequencePlanStep {
   waitForPrevious?: boolean
   index: number
-  action: VoiceAction | 'DEVICE_COMMAND' | 'WAIT'
+  action: VoiceAction | 'DEVICE_COMMAND' | 'WAIT' | 'ALGORITHM_PRESET'
+  parameters?: AlgorithmPresetParameters
   targetDeviceCode?: string
   deviceCommandType?: DeviceCommandType
   waitSeconds?: number

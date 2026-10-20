@@ -13,6 +13,35 @@ class VoiceSequenceExecutorTests extends VoiceControlTests {
     IntentService intents;
     VoiceSequenceExecutor sequences;
 
+    @Test
+    void presetAfterStartWaitsForShoreDeploymentWithoutCreatingChild() {
+        prepareSequence();
+        s.locked(() -> {
+            var context = s.get("voice_runtime_context", ref());
+            context.withArray("capabilities").add("ALGORITHM_PRESET");
+            context.put("_algorithmCommandProfile", AlgorithmPresets.VERSION).put("_deploymentState", "DEPLOYING");
+            context.putObject("_algorithmTargets").putObject("THREAT-001");
+            s.save("voice_runtime_context", context);
+            return null;
+        });
+        var steps = j.mapper.createArrayNode();
+        steps.addObject().put("index", 0).put("action", "START");
+        steps.addObject().put("index", 1).put("action", "ALGORITHM_PRESET").set("parameters", AlgorithmPresets.parameters(j, 1));
+        String id = execution(confirm(sequenceProposal(steps))).path("executionId").asText();
+        sequences.tick(); worker.tick();
+        commandResult(app.execution(app.execution(id).path("steps").path(0).path("executionId").asText()), "SUCCEEDED", 1, "RUNNING", 5);
+        sequences.tick(); sequences.tick();
+        assertTrue(app.execution(id).path("steps").path(1).path("executionId").isNull());
+        s.locked(() -> {
+            var context = s.get("voice_runtime_context", ref());
+            context.put("_deploymentState", "COMPLETE");
+            s.save("voice_runtime_context", context);
+            return null;
+        });
+        sequences.tick();
+        assertFalse(app.execution(id).path("steps").path(1).path("executionId").asText().isBlank());
+    }
+
     void prepareSequence() {
         intents = mock(IntentService.class);
         app = new VoiceCommandApplicationService(s, j, t, a, r, settings, intents);

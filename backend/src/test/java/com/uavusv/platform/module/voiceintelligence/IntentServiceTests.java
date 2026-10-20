@@ -704,6 +704,87 @@ class IntentServiceTests {
         }
     }
 
+    @Test
+    void algorithmPresetsUseAuthoritativeContextAndPreserveSequenceParameters() {
+        ObjectNode runtime = runtime("ALGORITHM_PRESET");
+        runtime.put("_algorithmCommandProfile", "escort-20261020");
+        runtime.putObject("_algorithmTargets").putObject("THREAT-001");
+        ((ObjectNode)runtime.path("_algorithmTargets")).putObject("THREAT-002");
+        when(runtimes.require(REF, 7)).thenReturn(runtime);
+        for (int preset = 0; preset <= 20; preset++) {
+            String id = java.util.UUID.randomUUID().toString();
+            var data = (ObjectNode)service.interpret(7, id, request(id, "执行"+preset+"号指令", hint())).body().get("data");
+            assertEquals("ALGORITHM_PRESET", data.path("action").asText());
+            assertEquals(preset, data.path("parameters").path("presetId").asInt());
+            assertEquals(data.path("parameters"), service.requirePresetParameters(7, id, runtime));
+        }
+        String id = java.util.UUID.randomUUID().toString();
+        var result = (ObjectNode)service.interpret(7, id, request(id, "执行十三号指令，然后开始围捕", hint())).body().get("data");
+        assertEquals("SEQUENCE", result.path("action").asText());
+        assertEquals(13, result.path("steps").get(0).path("parameters").path("presetId").asInt());
+        assertEquals(20, result.path("steps").get(1).path("parameters").path("presetId").asInt());
+        for (String text : java.util.List.of("不要追击一号敌船", "不要执行七号指令", "不要第十三号指令", "不要13号命令", "是否开始围捕？")) {
+            id = java.util.UUID.randomUUID().toString();
+            result = (ObjectNode)service.interpret(7,id,request(id,text,hint())).body().get("data");
+            assertNotEquals("CANDIDATE", result.path("status").asText());
+        }
+        ((ObjectNode)runtime.path("_algorithmTargets")).remove("THREAT-002");
+        id = java.util.UUID.randomUUID().toString();
+        result = (ObjectNode)service.interpret(7,id,request(id,"一号无人机追击二号敌船",hint())).body().get("data");
+        assertEquals("UNSUPPORTED",result.path("status").asText());
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {
+        "执行第二十一号指令", "开始执行第二十一号指令", "恢复执行九十九号命令",
+        "开始执行一个指令", "开始任务，然后执行一个指令",
+        "开始任务，然后开始执行第二十一号指令", "启动XXI", "启动13.5", "执行-13"
+    })
+    void invalidOrAmbiguousPresetWordsCannotFallBackToMissionActions(String text) {
+        assertStatus(text, "NEEDS_CLARIFICATION", "AMBIGUOUS_ACTION");
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {
+        "执行第13条指令", "执行第十三条指令", "执行第十三号指令", "执行第十三个指令",
+        "执行第XIII条指令", "执行第ⅩⅢ号指令", "执行第１３条指令", "指令xiii",
+        "请帮我执行第十三条指令吧", "开始执行第十三号指令", "执行第壹拾叁条命令"
+    })
+    void flexiblePresetLanguageUsesTheSameAuthoritativePlan(String text) {
+        ObjectNode runtime = runtime("ALGORITHM_PRESET");
+        runtime.put("_algorithmCommandProfile", "escort-20261020");
+        runtime.putObject("_algorithmTargets").putObject("THREAT-001");
+        when(runtimes.require(REF, 7)).thenReturn(runtime);
+        var data = (ObjectNode)service.interpret(7, ID, request(text, hint())).body().get("data");
+        assertEquals("CANDIDATE", data.path("status").asText());
+        assertEquals("ALGORITHM_PRESET", data.path("action").asText());
+        assertEquals(13, data.path("parameters").path("presetId").asInt());
+        assertEquals(13, service.requirePresetParameters(7, ID, runtime).path("presetId").asInt());
+    }
+
+    @Test
+    void mixedNumericWritingWorksInsideOrderedCommands() {
+        ObjectNode runtime = runtime("ALGORITHM_PRESET");
+        runtime.put("_algorithmCommandProfile", "escort-20261020");
+        runtime.putObject("_algorithmTargets").putObject("THREAT-001");
+        ((ObjectNode)runtime.path("_algorithmTargets")).putObject("THREAT-002");
+        when(runtimes.require(REF, 7)).thenReturn(runtime);
+        var data = (ObjectNode)service.interpret(7, ID,
+                request("执行第十三条指令，然后执行第ⅩⅣ个指令，再执行20号命令", hint())).body().get("data");
+        assertEquals("SEQUENCE", data.path("action").asText());
+        for (int i = 0; i < 3; i++)
+            assertEquals(new int[]{13,14,20}[i], data.path("steps").path(i).path("parameters").path("presetId").asInt());
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {
+        "不要第十三条指令", "别第XIII个命令", "取消第ⅩⅢ号指令", "不要指令XIII",
+        "不要第壹拾叁条指令", "不要第１３条指令"
+    })
+    void numericAliasesRetainNegation(String text) {
+        assertStatus(text, "NOT_ACTIONABLE", "NEGATED_ACTION");
+    }
+
     private void assertCandidate(String text, String action, String intent) {
         String id = java.util.UUID.randomUUID().toString();
         assertCandidate(service.interpret(7, id, request(id, text, null)), action, intent);

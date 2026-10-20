@@ -23,6 +23,9 @@ public final class VoiceSequencePolicy {
                 int seconds = step.path("waitSeconds").asInt();
                 if (i == 0 || seconds < 1 || seconds > 60 || !Set.of("RUNNING", "PAUSED").contains(state))
                     throw VoiceFailure.conflict("SEQUENCE_POLICY_VIOLATION");
+            } else if ("ALGORITHM_PRESET".equals(action)) {
+                if (!"RUNNING".equals(state)) throw VoiceFailure.conflict("INVALID_STATE");
+                AlgorithmPresets.validate(context, step.path("parameters"));
             } else if ("DEVICE_COMMAND".equals(action)) {
                 if (!"RUNNING".equals(state)) throw VoiceFailure.conflict("INVALID_STATE");
                 runtimes.checkSequenceTarget(context, step.path("targetDeviceCode").asText(), step.path("deviceCommandType").asText());

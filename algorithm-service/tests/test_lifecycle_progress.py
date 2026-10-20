@@ -46,6 +46,16 @@ def test_capture_uses_only_departure_and_task_weights(code):
     assert frame.metrics["progressWeights"] == {"deployment": .1, "escortAssembly": 0, "task": .9}
 
 
+def test_numbered_escort_capture_completion_does_not_close_command_session():
+    subject = adapter()
+    subject.set_mission_active(True)
+    frame = measure(subject, task=.5, assembly=None, algorithmCommandProfile="escort-20261020", deploymentState="COMPLETE")
+    assert frame.metrics["missionProgress"] == .55
+    frame = measure(subject, task=1, assembly=None, algorithmCommandProfile="escort-20261020", deploymentState="COMPLETE", captureComplete=True)
+    assert frame.metrics["missionProgress"] == 1
+    assert frame.terminalStatus is None
+
+
 @pytest.mark.parametrize("mode", ["SAFE_RELEASE", "FULL_ASSEMBLY"])
 def test_pending_departure_cannot_earn_credit_from_frozen_near_guard_or_task_preview(mode):
     subject = adapter(shoreDeploymentMode=mode)

@@ -11,6 +11,9 @@ describe('voice command safety policy', () => {
     '一号无人艇不要返回', '暂不让一号无人鸡返航', '一号无人机不再降落', '先别让一号机停止',
     '一号无人艇无须停船', '一号无人机没有要返航', '开始任务，然后一号无人机不返航',
     '一号无人机不\n返航', '暂缓一号无人机降落',
+    '不要第十三号指令', '不要13号命令', '不要执行二十号指令',
+    '不要第十三条指令', '别第XIII个命令', '取消第ⅩⅢ号指令', '不要指令XIII',
+    '不要第壹拾叁条指令', '不要第１３条指令',
   ])('detects negation before and after device noun normalization: %s', text => {
     expect(hasNegatedVoiceAction(text)).toBe(true)
     expect(hasNegatedVoiceAction(normalizeVoiceDeviceTerms(text))).toBe(true)

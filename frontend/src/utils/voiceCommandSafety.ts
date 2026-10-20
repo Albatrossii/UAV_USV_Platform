@@ -5,9 +5,9 @@ const highRisk = new Set(['UAV_RETURN', 'UAV_LAND', 'USV_RETURN', 'USV_STOP'])
 
 // Keep aligned with IntentService.NEGATED. Inspect the original utterance before
 // noun normalization or parsing so a provider cannot erase a negation.
-const negatedAction = /(?:不|没|未|别|无需|无须|禁止|取消|勿|莫|暂缓).{0,24}(?:开始|启动|执行|暂停|继续|恢复|停止|终止|结束|悬停|驻留|待命|保持|返航|返回|归队|降落|停船)/u
+const negatedAction = /(?:不|没|未|别|无需|无须|禁止|取消|勿|莫|暂缓).{0,24}(?:开始|启动|执行|运行|下达|暂停|继续|恢复|停止|终止|结束|悬停|驻留|待命|保持|返航|返回|归队|降落|停船|追击|围捕|守卫|分配|撤退|护航|第?[零〇一二两兩三四五六七八九十壹贰貳叁參肆伍陆陸柒捌玖拾IVXLCDMivxlcdm\d]+(?:号|条|个)?(?:指令|命令)|(?:指令|命令)(?:编号)?(?:为|是|:)?第?[零〇一二两兩三四五六七八九十壹贰貳叁參肆伍陆陸柒捌玖拾IVXLCDMivxlcdm\d]+)/u
 export function hasNegatedVoiceAction(text: string): boolean {
-  return negatedAction.test(text.replace(/\s+/gu, ''))
+  return negatedAction.test(text.normalize('NFKC').replace(/\s+/gu, ''))
 }
 
 /** These fields must come from the registered backend context, never a UI hint. */
@@ -30,6 +30,7 @@ export function isLocalVoiceSimulation(runtime?: VoiceAutomationRuntime | null):
 
 /** Apply to the complete frozen plan before any step is dispatched. */
 export function requiresVoiceConfirmation(command: Command, speechRuntime?: VoiceAutomationRuntime | null): boolean {
+  if (command.action === 'ALGORITHM_PRESET') return true
   if (command.action === 'SEQUENCE') return !command.steps?.length
     || command.steps.some(step => requiresVoiceConfirmation(step, speechRuntime))
   return !isLocalVoiceSimulation(speechRuntime) && (command.action === 'STOP'

@@ -142,6 +142,7 @@ public class VoiceDispatcher {
                                                 .path("stateVersion")
                                                 .equals(c.path("stateVersion")))
                                     throw VoiceFailure.conflict("CONTEXT_CHANGED");
+                                if ("ALGORITHM_PRESET".equals(e.path("action").asText())) AlgorithmPresets.validate(c, e.path("_plan").path("parameters"));
                                 r.check(
                                         c,
                                         e.path("action").asText(),
@@ -181,7 +182,9 @@ public class VoiceDispatcher {
                             cmd.put("commandSequence", sequence);
                             cmd.set("expectedStateVersion", e.path("_plan").path("stateVersion"));
                             cmd.set("action", e.path("action"));
-                            cmd.putObject("parameters");
+                            if ("ALGORITHM_PRESET".equals(e.path("action").asText())) {
+                                cmd.set("parameters", e.path("_plan").path("parameters").deepCopy());
+                            } else cmd.putObject("parameters");
                             j.validate("Command", cmd);
                             return cmd;
                         });
@@ -590,7 +593,7 @@ public class VoiceDispatcher {
         if ("SUCCEEDED".equals(status)) {
             String target =
                     switch (e.path("action").asText()) {
-                        case "START", "RESUME" -> "RUNNING";
+                        case "START", "RESUME", "ALGORITHM_PRESET" -> "RUNNING";
                         case "PAUSE" -> "PAUSED";
                         case "STOP" -> "STOPPED";
                         default -> "";

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { presetLabel } from '@/services/algorithmPresets'
 import { computed, onBeforeUnmount, onDeactivated, onMounted, ref, shallowRef, watch } from 'vue'
 import { ArrowRight, Cloud, Mic, PencilLine, Square, WandSparkles } from '@lucide/vue'
 import { createVoiceIntelligenceAdapter } from '@/services/voiceIntelligence'
@@ -32,12 +33,13 @@ const props = withDefaults(defineProps<{
   refined?: boolean
   compact?: boolean
   proposalReady?: boolean
+  algorithmPresetsEnabled?: boolean
   reviewStatus?: string
   actionDisabledReason?: (action: VoiceAction) => string
 }>(), {
   adapter: undefined, runtimeContext: null, automationRuntime: null, operatorScope: '', inputDisabled: false,
   autoExecuteSpeech: false, allowMockSubmission: false, submissionDisabled: false, actionDisabledReason: undefined,
-  refined: false, compact: false, proposalReady: false,
+  refined: false, compact: false, proposalReady: false, algorithmPresetsEnabled: false,
 })
 const emit = defineEmits<{
   candidate: [intent: VoiceIntent, interpretationId?: string]
@@ -97,7 +99,7 @@ const candidateDisabledReason = computed(() => {
   if (adapter.mode === 'MOCK' && !props.allowMockSubmission) return props.refined
     ? '当前是本地演示，不能向实际控制服务提交指令。'
     : '本地解析 MOCK 无后端来源记录，仅可与 P0 MOCK 演示'
-  if (candidate.value?.action === 'DEVICE_COMMAND') return ''
+  if (candidate.value?.action === 'DEVICE_COMMAND' || candidate.value?.action === 'ALGORITHM_PRESET') return ''
   if (candidate.value?.action === 'SEQUENCE') {
     const first = candidate.value.steps?.[0]?.action
     return first && ['START', 'PAUSE', 'RESUME', 'STOP'].includes(first) && props.actionDisabledReason
@@ -148,13 +150,17 @@ const recordingSecondsLeft = computed(() => Math.ceil(evaluateSpeechRecording({ 
 const captureNote = computed(() => stage.value === 'RECORDING' ? `说完再次点击结束；停顿不会截断 · 剩余 ${recordingSecondsLeft.value} 秒`
   : stage.value === 'TRANSCRIBING' ? '请稍候，无需重复录音'
     : permissionPending.value ? '请在浏览器中允许使用麦克风'
-      : simulationSpeechEnabled.value ? '本地仿真明确语音自动执行，支持返航、降落、停止；文字编辑后需确认'
+      : simulationSpeechEnabled.value ? '本地仿真明确语音自动执行，支持返航、降落、停止；文字编辑后需确认。编号战术指令也需确认'
         : automaticSpeech.value ? '常规明确指令自动执行；返航、降落、停止需确认' : '点击麦克风说话，核对文字后预览指令')
-const examples = [
+const examples = computed(() => props.algorithmPresetsEnabled ? [
+  { label: '开始 → 第1号指令', text: '开始任务，然后执行第一号指令。' },
+  { label: '第13号：无人机分组', text: '执行第十三号指令。' },
+  { label: '第0号：撤回护航', text: '执行第零号指令。' },
+] : [
   { label: '开始任务 → 一号机悬停', text: '开始任务，然后让一号无人机悬停。' },
   { label: '二号艇驻留', text: '二号无人艇驻留。' },
   { label: '一号机归队', text: '一号无人机安全归队。' },
-]
+])
 const waveHeights = [4, 8, 13, 8, 20, 12, 23, 15, 21, 9, 14, 7, 4]
 
 watch(draft, () => {
@@ -274,6 +280,7 @@ function safeSpeechCandidate(parsed: VoiceIntentCandidate, input: VoiceParseRequ
       && parsed.model === 'rules-sequence-v1' && !!steps
       && sequenceMatchesSpeech(input.text, steps, validDeviceTarget)
   }
+  if (parsed.action === 'ALGORITHM_PRESET') return false
   // Automatic fleet commands must be explicit; in particular an inferred STOP
   // must never broaden an ambiguous utterance into a whole-fleet shutdown.
   return props.allowedActions.includes(parsed.action) && parsed.intent === missionIntents[parsed.action]
@@ -309,7 +316,7 @@ function handleParsed(parsed: VoiceParseResult, input: VoiceParseRequest, origin
       : parsed.message
     return
   }
-  if (origin === 'manual') {
+  if (origin === 'manual' || parsed.action === 'ALGORITHM_PRESET' || parsed.steps?.some(step => step.action === 'ALGORITHM_PRESET')) {
     if (props.submissionDisabled || candidateDisabledReason.value) {
       message.value = candidateDisabledReason.value || '当前指令仍在处理，请稍后重新预览。'
     } else {
@@ -618,6 +625,13 @@ function chooseAudioFile(event: Event) {
   } }
   void runRequest()
 }
+async function presetText(text: string) {
+  if (busy.value || blocked.value || props.submissionDisabled || props.proposalReady) return
+  draft.value = text
+  await parseDraft()
+}
+defineExpose({ presetText })
+
 async function parseDraft() {
   if (busy.value || coolingDown.value || pending.value || blocked.value || stage.value === 'RECORDING' || !draft.value.trim() || textLength.value > 200
     || (props.refined && (props.submissionDisabled || props.proposalReady || automaticallySubmitted.value))) return
@@ -681,7 +695,7 @@ onBeforeUnmount(() => window.clearInterval(elapsedTimer))
         <label class="refined-section-label">
           <span>识别文字<small>{{ compact ? '编辑后需确认' : simulationSpeechEnabled ? '仿真语音自动执行 · 编辑后需确认' : automaticSpeech ? '常规语音自动执行 · 高风险与编辑后需确认' : '可编辑后再执行' }}</small></span>
           <div class="refined-transcript-box">
-            <textarea v-model="draft" rows="3" :placeholder="compact ? '如：一号无人机悬停' : '试着说：开始任务，然后让一号无人机悬停。'"
+            <textarea v-model="draft" rows="3" :placeholder="algorithmPresetsEnabled ? '如：执行第十三条指令 / 13号指令 / 指令XIII' : compact ? '如：一号无人机悬停' : '试着说：开始任务，然后让一号无人机悬停。'"
               aria-label="识别文字" :disabled="busy || !!pending || blocked || stage === 'RECORDING'" />
             <div class="refined-text-footer"><span><PencilLine :size="12" aria-hidden="true" />{{ compact ? '可直接输入' : '也可以直接输入指令' }}</span><span>{{ textLength }} / 200</span></div>
           </div>
@@ -752,7 +766,7 @@ onBeforeUnmount(() => window.clearInterval(elapsedTimer))
       <button type="button" :disabled="busy || coolingDown" @click="discardPending">放弃本页恢复（新请求可能重复计费）</button>
     </div>
     <article v-if="candidate" class="candidate">
-      <div><strong>{{ candidate.action === 'DEVICE_COMMAND' ? candidate.targetDeviceCode : candidate.action === 'SEQUENCE' ? '受控顺序指令' : candidate.action }}</strong><small>{{ candidate.action === 'DEVICE_COMMAND' ? candidate.deviceCommandType : candidate.intent }}</small></div>
+      <div><strong>{{ candidate.action === 'ALGORITHM_PRESET' ? presetLabel(candidate.parameters) : candidate.action === 'DEVICE_COMMAND' ? candidate.targetDeviceCode : candidate.action === 'SEQUENCE' ? '受控顺序指令' : candidate.action }}</strong><small>{{ candidate.action === 'DEVICE_COMMAND' ? candidate.deviceCommandType : candidate.intent }}</small></div>
       <ol v-if="candidate.action === 'SEQUENCE'" class="sequence-preview">
         <li v-for="step in candidate.steps" :key="step.index">
           {{ voiceStepLabel(step) }}

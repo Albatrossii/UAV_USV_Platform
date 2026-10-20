@@ -1,3 +1,4 @@
+import type { AlgorithmPresetParameters } from '@/services/algorithmPresets'
 import type { DeviceCommandType, VoiceAction, VoiceIntent, VoiceSequencePlanStep } from './voiceControl'
 
 export type VoiceInputStage =
@@ -57,7 +58,8 @@ export interface VoiceIntentCandidate {
   status: 'CANDIDATE'
   requestId: string
   intent: VoiceIntent
-  action: VoiceAction | 'DEVICE_COMMAND' | 'SEQUENCE'
+  action: VoiceAction | 'DEVICE_COMMAND' | 'SEQUENCE' | 'ALGORITHM_PRESET'
+  parameters?: AlgorithmPresetParameters
   targetDeviceCode?: string
   deviceCommandType?: DeviceCommandType
   steps?: VoiceSequencePlanStep[]

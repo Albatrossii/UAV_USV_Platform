@@ -153,7 +153,7 @@ public class RuntimeContextRegistry {
         var allowed =
                 switch (action) {
                     case "START" -> Set.of("PREPARED", "PREVIEW");
-                    case "PAUSE" -> Set.of("RUNNING");
+                    case "PAUSE", "ALGORITHM_PRESET" -> Set.of("RUNNING");
                     case "RESUME" -> Set.of("PAUSED");
                     case "STOP" -> Set.of("PREPARED", "PREVIEW", "RUNNING", "PAUSED");
                     default -> Set.<String>of();
@@ -255,6 +255,12 @@ public class RuntimeContextRegistry {
                         if (override.isObject()) state.setAll((ObjectNode) override);
                     }
                     c.set("_deviceStates", states);
+                    c.put("_algorithmCommandProfile", frame.path("metrics").path("algorithmCommandProfile").asText());
+                    c.put("_deploymentState", frame.path("metrics").path("deploymentState").asText());
+                    var targets = json.object();
+                    for (JsonNode target : frame.path("targets")) if (target.path("visible").asBoolean(true))
+                        targets.set(target.path("code").asText(), target.deepCopy());
+                    c.set("_algorithmTargets", targets);
                     store.save("voice_runtime_context", c);
                     return null;
                 });

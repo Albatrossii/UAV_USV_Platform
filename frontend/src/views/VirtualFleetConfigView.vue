@@ -211,7 +211,13 @@ const sceneLocked = computed(() => (
   state.mission === 'RUNNING'
   || state.mission === 'PAUSED'
 ))
-const scenarioPlan = computed(() => deriveAdaptiveScenarioPlan(state.uavCount, state.usvCount))
+const commandEdition = ref(restoredRuntime ? restoredRuntime.currentAlgorithmFrame?.metrics?.algorithmCommandProfile === 'escort-20261020' : true)
+const commandTargetCount = ref(Number(restoredRuntime?.currentAlgorithmFrame?.metrics?.threatCount ?? 2))
+const scenarioPlan = computed(() => {
+  const plan = deriveAdaptiveScenarioPlan(state.uavCount, state.usvCount)
+  return commandEdition.value && isEscortAlgorithm.value
+    ? { ...plan, protectedCount: 1, threatCount: commandTargetCount.value, targetCount: commandTargetCount.value + 1, simultaneousThreats: commandTargetCount.value } : plan
+})
 const returnInfrastructure = computed(() => buildReturnInfrastructure({
   uavCount: state.uavCount, usvCount: state.usvCount, worldHeight: scenarioPlan.value.worldHeight,
   fleetOrigin: fleetOriginEnu,
@@ -301,12 +307,17 @@ const displayMissionProgress = computed(() => {
   // The terminal state is committed only after Unity acknowledges the final
   // pose frame. Treat it as authoritative: the preceding metrics frame can
   // legitimately still contain the non-terminal 0.99 sentinel.
-  return missionCompletionCommitted.value ? 100 : Math.round(Math.min(raw, 0.99) * 1000) / 10
+  // Command-edition capture completes while the interactive runtime remains
+  // available for cancel/guard; it does not emit a terminal mission state.
+  const commandCaptureComplete = missionMetrics.value.algorithmCommandProfile === 'escort-20261020'
+    && missionMetrics.value.captureComplete === true
+    && missionMetrics.value.deploymentState === 'COMPLETE' && raw === 1
+  return missionCompletionCommitted.value || commandCaptureComplete ? 100 : Math.round(Math.min(raw, 0.99) * 1000) / 10
 })
 // The authoritative runtime includes departure and initial protection in overall
 // progress. Stage facts explain each component without weighting it a second time.
 const missionProgressDescription = computed(() => missionMetrics.value.progressCompositionVersion === 'shore-lifecycle-v1'
-  ? isEscortAlgorithm.value
+  ? isEscortAlgorithm.value && missionMetrics.value.algorithmCommandProfile !== 'escort-20261020'
     ? '全流程综合进度：出发 10% + 近卫就位 20% + 任务执行 70%；按真实执行状态推进，不按时间虚增'
     : '全流程综合进度：出发 10% + 任务执行 90%；按真实执行状态推进，不按时间虚增'
   : '算法上报的任务进度；全流程加权进度将在重新生成场景后生效')
@@ -1204,6 +1215,7 @@ function buildAlgorithmPrepareConfig(initialPoses: ScenarioInitialPose[]) {
     worldWidth: scenarioPlan.value.worldWidth,
     worldHeight: scenarioPlan.value.worldHeight,
     adaptiveMultiTarget: isEscortAlgorithm.value,
+    algorithmCommandProfile: commandEdition.value && isEscortAlgorithm.value ? 'escort-20261020' : undefined,
     singleDeviceControlEnabled: isSingleDeviceAlgorithm.value,
     startFromShore: true,
     escortStartAtBerth: isEscortAlgorithm.value,
@@ -1883,6 +1895,14 @@ watch((): WorkspaceHeaderState => ({
                   </select>
                 </label>
                 <p class="vf-description">{{ algorithmDescription }}</p>
+                <label v-if="isEscortAlgorithm">护航版本
+                  <select v-model="commandEdition" :disabled="sceneLocked" @change="state.uavCount = 3; state.usvCount = 3">
+                    <option :value="true">10月20日指令版 · 0–20</option><option :value="false">原自适应护航</option>
+                  </select>
+                </label>
+                <label v-if="isEscortAlgorithm && commandEdition">敌船数量
+                  <select v-model.number="commandTargetCount" :disabled="sceneLocked"><option :value="1">1 艘</option><option :value="2">2 艘</option></select>
+                </label>
                 <div class="vf-plan-summary">
                   <strong v-if="isEscortAlgorithm">{{ scenarioPlan.protectedCount }} 护航目标 · {{ scenarioPlan.threatCount }} 敌船</strong>
                   <strong v-else>{{ scenarioPlan.threatCount }} 艘围捕目标敌船</strong>
@@ -1893,10 +1913,10 @@ watch((): WorkspaceHeaderState => ({
                 </div>
                 <div class="vf-two-col">
                   <label>UAV 数量
-                    <input v-model.number="state.uavCount" type="number" min="1" max="3" :disabled="sceneLocked">
+                    <input v-model.number="state.uavCount" type="number" min="1" max="3" :disabled="sceneLocked || (isEscortAlgorithm && commandEdition)">
                   </label>
                   <label>USV 数量
-                    <input v-model.number="state.usvCount" type="number" min="1" max="3" :disabled="sceneLocked">
+                    <input v-model.number="state.usvCount" type="number" min="1" max="3" :disabled="sceneLocked || (isEscortAlgorithm && commandEdition)">
                   </label>
                   <label>UAV 巡航速度 m/s
                     <input v-model.number="state.uavSpeed" type="number" min="0" max="15" step="0.1" :disabled="sceneLocked">
@@ -1922,6 +1942,13 @@ watch((): WorkspaceHeaderState => ({
                 <p v-if="missionActionMessage" class="vf-action-message">{{ missionActionMessage }}</p>
               </div>
             </details>
+            <section v-if="currentAlgorithmFrame?.metrics?.algorithmCommandProfile" class="vf-description" aria-label="算法任务状态">
+              <strong>算法状态 · {{ currentAlgorithmFrame.phase }}</strong>
+              <p>{{ currentAlgorithmFrame.metrics.algorithmMessage }}</p>
+              <p v-if="currentAlgorithmFrame.metrics.operatorHold">单设备接管中，战术计算暂缓；归队后恢复。</p>
+              <p v-for="agent in currentAlgorithmFrame.agents" :key="agent.code">{{ agent.code }} · {{ ({ PURSUIT: '追击', ESCORT: '护航', GUARD: '守卫', CAPTURE: '围捕' } as Record<string,string>)[agent.role] ?? agent.role }} {{ agent.assignedTargetCode }}</p>
+              <p v-for="(target, device) in (currentAlgorithmFrame.metrics.fixedAssignments ?? {})" :key="String(device)">固定分组：{{ device }} → {{ target }}</p>
+            </section>
             <NodeCommunicationPanel
               :default-open="true"
               :device-codes="sceneDeviceCodes"

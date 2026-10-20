@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import AlgorithmPresetPanel from './AlgorithmPresetPanel.vue'
+import { presetLabel, validPreset } from '@/services/algorithmPresets'
 import { computed, onActivated, onBeforeUnmount, onDeactivated, onMounted, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { isLocalVoiceSimulation, requiresVoiceConfirmation, voiceDeviceLabel } from '@/utils/voiceCommandSafety'
@@ -151,8 +153,9 @@ const actions: Array<{ action: VoiceAction; intent: VoiceIntent; label: string }
 const stateRules: Record<VoiceAction, string[]> = {
   START: ['PREPARED', 'PREVIEW'], PAUSE: ['RUNNING'], RESUME: ['PAUSED'], STOP: ['PREPARED', 'PREVIEW', 'RUNNING', 'PAUSED'],
 }
+const presetInput = ref<InstanceType<typeof VoiceIntelligenceInput> | null>(null)
 const actionLabels: Record<string, string> = {
-  START: '开始任务', PAUSE: '暂停任务', RESUME: '继续任务', STOP: '停止任务', DEVICE_COMMAND: '单设备控制', SEQUENCE: '受控顺序指令',
+  ALGORITHM_PRESET: '算法任务指令', START: '开始任务', PAUSE: '暂停任务', RESUME: '继续任务', STOP: '停止任务', DEVICE_COMMAND: '单设备控制', SEQUENCE: '受控顺序指令',
   UAV_HOVER: '无人机悬停', UAV_RESUME: '无人机归队', UAV_RETURN: '无人机返航', UAV_LAND: '无人机降落',
   USV_HOLD: '无人艇驻留', USV_RESUME: '无人艇归队', USV_RETURN: '无人艇返航', USV_STOP: '无人艇停止',
 }
@@ -169,6 +172,12 @@ const errorLabels: Record<string, string> = {
   GENERATION_MISMATCH: '场景已重新生成，旧代次不能继续使用。',
   INVALID_REQUEST: '请求格式或版本不受支持，请刷新页面后重试。',
   PLAN_MISMATCH: '提案信息不一致，请重新获取提案。',
+  PRESET_INVALID: '算法指令编号或版本不匹配，请重新加载场景。',
+  PRESET_TARGET_MISSING: '当前场景没有对应敌船，请核对目标数量。',
+  PRESET_REJECTED: '指令未执行：请检查目标、已有分组；围捕中请先执行0撤回护航再调整分组。',
+  PRESET_CAPTURE_NOT_READY: '围捕尚未启动：请等待目标进入感知范围，或检查目标是否已捕获、围捕是否正在进行。',
+  PRESET_DEVICE_OVERRIDE: '设备正在悬停、驻留或返航接管，请先归队后再下发算法任务指令。',
+  PRESET_DEPLOYING: '正在起飞离泊，请等待出发完成后执行算法任务指令。',
   INVALID_STATE: '当前算法状态不接受该动作。',
   HEARTBEAT_STALE: '算法心跳已失效，暂时不能下发动作。',
   RUNTIME_UNAVAILABLE: '算法进程当前不可用。',
@@ -233,7 +242,7 @@ const refinedPlanSteps = computed(() => {
     index: step.index,
     label: voiceStepLabel(step),
   }))
-  return [{ index: 0, label: plan.action === 'DEVICE_COMMAND'
+  return [{ index: 0, label: plan.action === 'ALGORITHM_PRESET' ? presetLabel(plan.parameters) : plan.action === 'DEVICE_COMMAND'
     ? `${voiceDeviceLabel(plan.targetDeviceCode)} · ${actionLabels[plan.deviceCommandType ?? ''] ?? plan.deviceCommandType}`
     : actionLabels[plan.action] ?? plan.action }]
 })
@@ -251,6 +260,7 @@ const refinedConfirmReason = computed(() => {
   if (plan.explicitDeviceCodes.some(code => !props.runtimeHint.deviceCodes.includes(code))) return '目标设备已变化，请重新预览'
   if (!automaticFrozenPlanValid(plan)) return '设备类型、编号、动作或完整步骤不匹配，请重新输入明确指令'
   if (!heartbeatFresh.value) return '设备连接暂时中断，请稍后重试'
+  if (plan.action === 'ALGORITHM_PRESET') return context.value?.state === 'RUNNING' && context.value.capabilities.includes('ALGORITHM_PRESET') && heartbeatFresh.value ? '' : '请先启动指令版仿真并等待连接就绪'
   if (plan.action === 'DEVICE_COMMAND') {
     if (!context.value?.capabilities.includes('DEVICE_COMMAND') || context.value.state !== 'RUNNING') return '当前运行不接受单设备控制'
     if (!heartbeatFresh.value) return '设备连接暂时中断，请稍后重试'
@@ -258,7 +268,7 @@ const refinedConfirmReason = computed(() => {
   }
   if (plan.action === 'SEQUENCE') {
     const first = plan.steps?.[0]?.action
-    return first === 'DEVICE_COMMAND' ? context.value?.state === 'RUNNING' ? '' : '任务尚未运行'
+    return first === 'DEVICE_COMMAND' || first === 'ALGORITHM_PRESET' ? context.value?.state === 'RUNNING' ? '' : '任务尚未运行'
       : first && first !== 'WAIT' ? disabledReason(first, true) : '顺序指令不能以等待开始'
   }
   return disabledReason(plan.action, true)
@@ -421,7 +431,7 @@ async function prepareRefinedCandidate(intent: VoiceIntent, interpretationId?: s
     if (revision !== refinedDraftRevision.value || operator !== operatorScope.value) return
     const previousId = proposal.value?.proposalId
     await propose(intent, interpretationId)
-    const expectedAction = intent === 'SINGLE_DEVICE_CONTROL' ? 'DEVICE_COMMAND'
+    const expectedAction = intent === 'ALGORITHM_PRESET' ? 'ALGORITHM_PRESET' : intent === 'SINGLE_DEVICE_CONTROL' ? 'DEVICE_COMMAND'
       : intent === 'COMMAND_SEQUENCE' ? 'SEQUENCE' : intent.replace('MISSION_', '')
     const frozen = proposal.value
     if (revision !== refinedDraftRevision.value || operator !== operatorScope.value) return
@@ -443,7 +453,7 @@ async function prepareRefinedCandidate(intent: VoiceIntent, interpretationId?: s
 
 async function propose(intent: VoiceIntent, interpretationId?: string, automaticVoice = false) {
   await store.propose(intent, interpretationId)
-  const expectedAction = intent === 'SINGLE_DEVICE_CONTROL'
+  const expectedAction = intent === 'ALGORITHM_PRESET' ? 'ALGORITHM_PRESET' : intent === 'SINGLE_DEVICE_CONTROL'
     ? 'DEVICE_COMMAND'
     : intent === 'COMMAND_SEQUENCE' ? 'SEQUENCE' : intent.replace('MISSION_', '')
   const proposalMatchesVoice = Boolean(interpretationId
@@ -506,11 +516,13 @@ function automaticFrozenPlanValid(plan: VoiceFrozenPlan) {
   if (!members.length || plan.explicitDeviceCodes.length !== members.length
     || new Set(plan.explicitDeviceCodes).size !== members.length
     || plan.explicitDeviceCodes.some(code => !members.includes(code))) return false
+  if (plan.action === 'ALGORITHM_PRESET') return !!context.value?.capabilities.includes('ALGORITHM_PRESET') && validPreset(plan.parameters)
   if (plan.action !== 'SEQUENCE') return ['START', 'PAUSE', 'RESUME', 'STOP'].includes(plan.action)
   const steps = plan.steps
   if (!steps || !sequenceStateValid(steps, context.value?.state ?? '')) return false
   return steps.every((step, index) => step.index === index && (step.action === 'DEVICE_COMMAND'
     ? !!context.value?.capabilities.includes('DEVICE_COMMAND') && automaticDeviceTargetValid(step.targetDeviceCode, step.deviceCommandType)
+    : step.action === 'ALGORITHM_PRESET' ? !!context.value?.capabilities.includes('ALGORITHM_PRESET') && validPreset(step.parameters)
     : step.action === 'WAIT' ? index > 0 && Number.isInteger(step.waitSeconds) && step.waitSeconds! >= 1 && step.waitSeconds! <= 60
       : ['START', 'PAUSE', 'RESUME', 'STOP'].includes(step.action) && !step.targetDeviceCode && !step.deviceCommandType))
 }
@@ -605,7 +617,7 @@ async function handleRefinedAutomaticVoiceCandidate(
     return Number.isFinite(received) && Date.now() - received <= 5000
   }
   const action = intent === 'COMMAND_SEQUENCE' ? sequenceFirstAction === 'DEVICE_COMMAND' ? null : sequenceFirstAction as VoiceAction
-    : intent === 'SINGLE_DEVICE_CONTROL' ? null : intent.replace('MISSION_', '') as VoiceAction
+    : intent === 'ALGORITHM_PRESET' || intent === 'SINGLE_DEVICE_CONTROL' ? null : intent.replace('MISSION_', '') as VoiceAction
   // Match the backend/manual RESUME policy: display evidence has a short TTL,
   // but a live paused local runner can resume while Unity catches up. Recheck
   // the current context after proposal creation, not a captured readiness flag.
@@ -1181,12 +1193,17 @@ onBeforeUnmount(() => {
       <p v-else-if="responseUnknown" class="refined-notice" role="alert">上次请求结果尚未确认。请核对结果，不要重复下发指令。</p>
       <p v-else-if="!recoveryAvailable" class="refined-notice" role="alert">无法读取或保存指令恢复信息，已暂停下发。请检查浏览器存储后重新核对。</p>
 
+      <AlgorithmPresetPanel v-if="context?.capabilities.includes('ALGORITHM_PRESET')"
+        :disabled="!!activeProposal || refinedSubmissionDisabled || responseUnknown || runtimeEnded"
+        @select="presetInput?.presetText($event)" />
       <LocalAsrInput v-if="asrOnly" :operator-scope="operatorScope" :disabled="authStore.user?.role !== 'ADMIN' || authStore.loading" />
       <VoiceIntelligenceInput
         v-else-if="voiceP1PreparationEnabled"
+        ref="presetInput"
         refined
         :compact="compact"
         :proposal-ready="refinedProposalReady"
+        :algorithm-presets-enabled="!!context?.capabilities.includes('ALGORITHM_PRESET')"
         :review-status="refinedReviewStatus"
         :allowed-actions="allowedIntelligenceActions"
         :device-codes="runtimeHint.deviceCodes"
@@ -1228,7 +1245,7 @@ onBeforeUnmount(() => {
         <ol v-if="execution.action === 'SEQUENCE' && execution.steps" class="refined-execution-steps">
           <li v-for="step in execution.steps" :key="step.index"><span>{{ voiceStepLabel(step) }}</span><small>{{ sequenceStepHint(execution, step) ?? executionLabels[step.state] ?? step.state }}</small></li>
         </ol>
-        <p v-else>{{ execution.action === 'DEVICE_COMMAND' ? `${voiceDeviceLabel(proposal?.plan.targetDeviceCode)} · ${actionLabels[proposal?.plan.deviceCommandType ?? ''] ?? '单设备控制'}` : actionLabels[execution.action] }}</p>
+        <p v-else>{{ execution.action === 'ALGORITHM_PRESET' ? presetLabel(proposal?.plan.parameters) : execution.action === 'DEVICE_COMMAND' ? `${voiceDeviceLabel(proposal?.plan.targetDeviceCode)} · ${actionLabels[proposal?.plan.deviceCommandType ?? ''] ?? '单设备控制'}` : actionLabels[execution.action] }}</p>
         <p v-if="sequenceNotice" class="refined-notice">{{ sequenceNotice }}</p>
         <p v-if="execution.errorCode" class="refined-notice">{{ errorLabels[execution.errorCode] ?? execution.errorCode }}</p>
         <small v-if="execution.presentationStatus !== 'NOT_REQUIRED'">{{ presentationLabels[execution.presentationStatus] }}</small>
@@ -1242,7 +1259,7 @@ onBeforeUnmount(() => {
         <button v-if="!runtimeEnded && context && !presentationBridgeReady && helloAttempts >= 30" class="refined-recovery" type="button" :disabled="loading || responseUnknown" @click="takePresentationBinding">恢复画面连接</button>
       </div>
     </div>
-    <p class="refined-footer">{{ autoExecuteSimulationVoice ? '本地仿真语音自动执行 · 支持 2–4 步 · 文字编辑后需确认' : '先核对设备编号与动作，再确认执行' }}</p>
+    <p class="refined-footer">{{ context?.capabilities.includes('ALGORITHM_PRESET') ? '编号战术指令需确认 · 支持 2–4 步 · 其他明确语音沿用自动执行' : autoExecuteSimulationVoice ? '本地仿真语音自动执行 · 支持 2–4 步 · 文字编辑后需确认' : '先核对设备编号与动作，再确认执行' }}</p>
   </section>
   <section v-else class="voice-p0">
     <header class="voice-head">
@@ -1320,7 +1337,7 @@ onBeforeUnmount(() => {
     </label>
 
     <article v-if="execution" class="result" :class="execution.outcome.toLowerCase()">
-      <div><strong>{{ executionLabels[execution.state] ?? execution.state }}</strong><span>{{ execution.action === 'DEVICE_COMMAND' ? `${proposal?.plan.targetDeviceCode ?? ''} · ${actionLabels[proposal?.plan.deviceCommandType ?? ''] ?? '单设备控制'}` : actionLabels[execution.action] }}</span></div>
+      <div><strong>{{ executionLabels[execution.state] ?? execution.state }}</strong><span>{{ execution.action === 'ALGORITHM_PRESET' ? presetLabel(proposal?.plan.parameters) : execution.action === 'DEVICE_COMMAND' ? `${proposal?.plan.targetDeviceCode ?? ''} · ${actionLabels[proposal?.plan.deviceCommandType ?? ''] ?? '单设备控制'}` : actionLabels[execution.action] }}</span></div>
       <ol v-if="execution.action === 'SEQUENCE' && execution.steps" class="sequence-steps">
         <li v-for="step in execution.steps" :key="step.index" :class="step.state.toLowerCase()">
           <span>{{ voiceStepLabel(step) }}</span>

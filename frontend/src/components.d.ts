@@ -12,6 +12,7 @@ export {}
 declare module 'vue' {
   export interface GlobalComponents {
     AlgorithmManagerDialog: typeof import('./components/mission/AlgorithmManagerDialog.vue')['default']
+    AlgorithmPresetPanel: typeof import('./components/voice/AlgorithmPresetPanel.vue')['default']
     CompactNodeViewBar: typeof import('./components/monitoring/CompactNodeViewBar.vue')['default']
     ConsoleLayout: typeof import('./components/layout/ConsoleLayout.vue')['default']
     ConsoleNavigationRail: typeof import('./components/layout/ConsoleNavigationRail.vue')['default']

@@ -72,6 +72,32 @@ function mountPanel(presentationStatus: VoiceExecution['presentationStatus']) {
 }
 
 describe('VoiceP0ControlPanel presentation recovery UI', () => {
+  it.each([false, true])('allows confirmation for valid numbered plans (sequence=%s)', async sequence => {
+    const wrapper = mountPanel('NOT_REQUIRED')
+    const store = useVoiceControlStore()
+    store.contexts = [{ ...context, state: sequence ? 'PREPARED' : 'RUNNING', capabilities: [...context.capabilities, 'ALGORITHM_PRESET'] }]
+    store.execution = null
+    const parameters = { presetId: 1, presetVersion: 'escort-20261020' as const }
+    store.proposal = {
+      proposalId: '99999999-9999-4999-8999-999999999999', status: 'AWAITING_CONFIRMATION',
+      planVersion: 1, planHash: 'a'.repeat(64), requiresConfirmation: true,
+      createdAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 30000).toISOString(), executionId: null,
+      plan: { runtimeRef: context.runtimeRef, runtimeGeneration: context.runtimeGeneration,
+        contextVersion: context.contextVersion, stateVersion: context.stateVersion,
+        action: sequence ? 'SEQUENCE' : 'ALGORITHM_PRESET', explicitDeviceCodes: ['UAV-001', 'USV-001'], policyVersion: 'voice-p0.v1',
+        ...(sequence ? { steps: [{ index: 0, action: 'START' as const }, { index: 1, action: 'ALGORITHM_PRESET' as const, parameters }] } : { parameters }),
+      },
+    }
+    await nextTick()
+    wrapper.vm.$.setupState.refinedAcceptedProposalId = store.proposal.proposalId
+    wrapper.vm.$.setupState.refinedAcceptedRevision = wrapper.vm.$.setupState.refinedDraftRevision
+    expect(wrapper.vm.$.setupState.refinedConfirmReason).toBe('')
+    store.contexts = [{ ...context, capabilities: [...context.capabilities] }]
+    await nextTick()
+    expect(wrapper.vm.$.setupState.refinedConfirmReason).not.toBe('')
+    wrapper.unmount()
+  })
+
   it('shows the frozen sequence in confirmation and reports each step state', async () => {
     const wrapper = mountPanel('NOT_REQUIRED')
     const store = useVoiceControlStore()

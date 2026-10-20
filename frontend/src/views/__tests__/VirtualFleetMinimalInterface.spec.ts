@@ -171,6 +171,27 @@ describe('VirtualFleetConfigView minimal simulation interface', () => {
     expect(wrapper.get('option[value="GB_SFLA_CS"]').text()).toBe('GB-SFLA-CS 协同围捕')
   })
 
+  it.each([
+    [true, 'COMPLETE', 1, '100%'],
+    [false, 'COMPLETE', 1, '99%'],
+    [true, 'DEPLOYING', 1, '99%'],
+    [true, 'COMPLETE', .55, '55%'],
+  ])('shows command capture progress without terminating controls: %s %s %s', async (complete, deployment, progress, expected) => {
+    const { wrapper, setup } = await createView()
+    setup.state.algorithm = 'ESCORT_GUARD'
+    setup.currentAlgorithmFrame = {
+      ...frame(), algorithmCode: 'ESCORT_GUARD', metrics: {
+        algorithmCommandProfile: 'escort-20261020', captureComplete: complete,
+        deploymentState: deployment, missionProgress: progress,
+      },
+    }
+    await flushPromises()
+    const progressLabel = wrapper.findAll('span').find(span => span.text().startsWith('综合进度'))
+    expect(progressLabel?.text().replace(/\s/g, '')).toBe(`综合进度${expected}`)
+    expect(setup.state.mission).toBe('RUNNING')
+    expect(controlAlgorithmRun).not.toHaveBeenCalled()
+  })
+
   it('uses the shared outer shell without adding or removing task-console content', async () => {
     const { wrapper, setup, postToUnity } = await createView(true)
     expect(wrapper.findComponent(ConsoleLayout).exists()).toBe(false)
@@ -204,6 +225,8 @@ describe('VirtualFleetConfigView minimal simulation interface', () => {
 
   it('keeps entered parameters and input elements when folding the scenario or the whole sidebar', async () => {
     const { wrapper, setup } = await createView()
+    ;(setup as unknown as { commandEdition: boolean }).commandEdition = false
+    await flushPromises()
     setup.state.mission = 'STOPPED'
     await flushPromises()
     await wrapper.get(`${scenarioSelector} > summary`).trigger('click')
@@ -379,6 +402,8 @@ describe('VirtualFleetConfigView minimal simulation interface', () => {
 
   it('preserves control disabled conditions and resets the scene without resetting configuration', async () => {
     const { wrapper, setup, postToUnity } = await createView()
+    ;(setup as unknown as { commandEdition: boolean }).commandEdition = false
+    await flushPromises()
     const inputs = wrapper.findAll('.vf-scenario-body input')
     expect(inputs.every(input => (input.element as HTMLInputElement).disabled)).toBe(true)
     expect((wrapper.get('.vf-scenario-body select').element as HTMLSelectElement).disabled).toBe(true)
@@ -406,6 +431,8 @@ describe('VirtualFleetConfigView minimal simulation interface', () => {
 
   it('uses configuration only before generation and keeps actual scene devices separate from targets', async () => {
     const { wrapper, setup } = await createView()
+    ;(setup as unknown as { commandEdition: boolean }).commandEdition = false
+    await flushPromises()
     const panel = wrapper.getComponent({ name: 'NodeCommunicationPanel' })
     const compactNodes = wrapper.getComponent(CompactNodeViewBar)
     expect(panel.props('deviceCodes')).toEqual(['UAV-001', 'UAV-002', 'UAV-003', 'USV-001', 'USV-002', 'USV-003'])

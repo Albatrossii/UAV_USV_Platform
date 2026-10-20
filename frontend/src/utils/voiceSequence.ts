@@ -1,3 +1,4 @@
+import { presetLabel } from '@/services/algorithmPresets'
 import type { VoiceExecution, VoiceSequenceExecutionStep, VoiceSequencePlanStep, VoiceRuntimeContext } from '@/types/voiceControl'
 import { normalizeVoiceDeviceTerms } from './voiceTranscriptNormalization'
 import { voiceDeviceLabel } from './voiceCommandSafety'
@@ -51,7 +52,7 @@ export const voiceActionLabels: Record<string, string> = {
   USV_HOLD: '无人艇驻留', USV_RESUME: '无人艇归队', USV_RETURN: '无人艇返航', USV_STOP: '无人艇停止',
 }
 export function voiceStepLabel(step: VoiceSequencePlanStep) {
-  return step.action === 'WAIT' ? `等待 ${step.waitSeconds} 秒`
+  return step.action === 'ALGORITHM_PRESET' ? presetLabel(step.parameters) : step.action === 'WAIT' ? `等待 ${step.waitSeconds} 秒`
     : step.action === 'DEVICE_COMMAND' ? `${voiceDeviceLabel(step.targetDeviceCode)} · ${voiceActionLabels[step.deviceCommandType ?? ''] ?? step.deviceCommandType}`
       : voiceActionLabels[step.action] ?? step.action
 }
@@ -121,7 +122,7 @@ export function sequenceStateValid(steps: VoiceSequencePlanStep[], initialState:
     if (step.index !== index) return false
     if (step.action === 'WAIT') return index > 0 && ['RUNNING', 'PAUSED'].includes(state)
       && Number.isInteger(step.waitSeconds) && step.waitSeconds! >= 1 && step.waitSeconds! <= 60
-    if (step.action === 'DEVICE_COMMAND') return state === 'RUNNING'
+    if (step.action === 'DEVICE_COMMAND' || step.action === 'ALGORITHM_PRESET') return state === 'RUNNING'
     const allowed: Record<string, string[]> = { START: ['PREPARED', 'PREVIEW'], PAUSE: ['RUNNING'], RESUME: ['PAUSED'], STOP: ['PREPARED', 'PREVIEW', 'RUNNING', 'PAUSED'] }
     if (!allowed[step.action]?.includes(state)) return false
     state = step.action === 'PAUSE' ? 'PAUSED' : step.action === 'STOP' ? 'STOPPED' : 'RUNNING'

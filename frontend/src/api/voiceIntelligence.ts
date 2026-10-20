@@ -1,3 +1,4 @@
+import { validPreset } from '@/services/algorithmPresets'
 import { fetchCsrfToken } from './auth'
 import { ApiClientError, http } from './http'
 import type { ApiResponse } from '@/types/api'
@@ -85,6 +86,8 @@ function isTranscript(value: unknown): value is VoiceTranscript {
 function isCandidate(value: unknown): value is VoiceIntentCandidate {
   if (!commonResult(value)) return false
   const item = value as unknown as Record<string, unknown>
+  if (item.action === 'ALGORITHM_PRESET') return hasOnlyKeys(item, ['status', 'requestId', 'intent', 'action', 'parameters', 'normalizedText', 'confidence', 'provider', 'model'])
+    && item.status === 'CANDIDATE' && item.intent === 'ALGORITHM_PRESET' && item.confidence === null && validPreset(item.parameters)
   return hasOnlyKeys(item, [
     'status', 'requestId', 'intent', 'action', 'normalizedText', 'confidence', 'provider', 'model',
   ]) && item.status === 'CANDIDATE' && typeof item.action === 'string' && actions.has(item.action)
@@ -109,6 +112,7 @@ function isCandidate(value: unknown): value is VoiceIntentCandidate {
         if (!step || step.index !== index) return false
         if ('waitForPrevious' in step && (index === 0 || step.waitForPrevious !== true)) return false
         const orderKeys = 'waitForPrevious' in step ? ['waitForPrevious'] : []
+        if (step.action === 'ALGORITHM_PRESET') return hasOnlyKeys(step, ['index', 'action', 'parameters', ...orderKeys]) && validPreset(step.parameters)
         if (step.action === 'WAIT') return index > 0 && hasOnlyKeys(step, ['index', 'action', 'waitSeconds', ...orderKeys])
           && Number.isInteger(step.waitSeconds) && Number(step.waitSeconds) >= 1 && Number(step.waitSeconds) <= 60
         if (typeof step.action === 'string' && actions.has(step.action)) return hasOnlyKeys(step, ['index', 'action', ...orderKeys])

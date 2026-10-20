@@ -15,6 +15,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
 
+from app.adapters.command_escort import CommandEscortAdapter
 from app.adapters import (
     AdaptiveCaptureAdapter,
     AdaptiveEscortAdapter,
@@ -89,8 +90,13 @@ def _command_shape_error(command: dict) -> str | None:
         return "commandSequence must be a positive integer"
     if not _is_contract_int(command.get("expectedStateVersion"), 0):
         return "expectedStateVersion must be a non-negative integer"
-    if command.get("action") not in {"START", "PAUSE", "RESUME", "STOP"}:
+    if command.get("action") not in {"START", "PAUSE", "RESUME", "STOP", "ALGORITHM_PRESET"}:
         return "unsupported action"
+    if command.get("action") == "ALGORITHM_PRESET":
+        p = command.get("parameters")
+        if not isinstance(p, dict) or set(p) != {"presetId", "presetVersion"} or type(p["presetId"]) is not int or not 0 <= p["presetId"] <= 20 or p["presetVersion"] != "escort-20261020":
+            return "invalid algorithm preset"
+        return None
     if command.get("parameters") != {}:
         return "parameters must be an empty object in P0"
     return None
@@ -211,6 +217,8 @@ def v1_main(args: argparse.Namespace, adapter, config: dict) -> int:
     capabilities = ["START", "PAUSE", "RESUME", "STOP"]
     if hasattr(adapter, "control_device"):
         capabilities.append("DEVICE_COMMAND")
+    if getattr(getattr(adapter, "base", adapter), "preset_profile", None):
+        capabilities.append("ALGORITHM_PRESET")
     emit_v1({"runtimeRef": runtime_ref, "runtimeGeneration": generation,
              "kind": "RUNTIME_READY", "adapterId": adapter.code,
              "capabilities": capabilities,
@@ -313,7 +321,8 @@ def v1_main(args: argparse.Namespace, adapter, config: dict) -> int:
                     command_sequence += 1
                     action = command["action"]
                     allowed = {"START": {"PREPARED", "PREVIEW"}, "PAUSE": {"RUNNING"},
-                               "RESUME": {"PAUSED"}, "STOP": {"PREPARED", "PREVIEW", "RUNNING", "PAUSED"}}[action]
+                               "RESUME": {"PAUSED"}, "STOP": {"PREPARED", "PREVIEW", "RUNNING", "PAUSED"},
+                               "ALGORITHM_PRESET": {"RUNNING"}}[action]
                     if state not in allowed:
                         result(command, "REJECTED", "INVALID_STATE")
                     elif command["expectedStateVersion"] != state_version:
@@ -321,7 +330,9 @@ def v1_main(args: argparse.Namespace, adapter, config: dict) -> int:
                     else:
                         result(command, "ACCEPTED")
                         try:
-                            if action in {"START", "RESUME"}:
+                            if action == "ALGORITHM_PRESET":
+                                adapter.execute_preset(command["parameters"]["presetId"], command["parameters"]["presetVersion"])
+                            elif action in {"START", "RESUME"}:
                                 adapter.set_mission_active(True)
                                 state = "RUNNING"
                             elif action == "PAUSE":
@@ -329,11 +340,11 @@ def v1_main(args: argparse.Namespace, adapter, config: dict) -> int:
                                 state = "PAUSED"
                             else:
                                 state = "STOPPED"
-                        except ValueError:
+                        except ValueError as error:
                             # Adapter business rejection is a failed command, not
                             # process death. Do not expose exception details or
                             # invent a successful state/version transition.
-                            result(command, "FAILED", "ADAPTER_ERROR")
+                            result(command, "FAILED", str(error) if str(error) in {"PRESET_INVALID", "PRESET_REJECTED", "PRESET_CAPTURE_NOT_READY", "PRESET_DEVICE_OVERRIDE", "PRESET_DEPLOYING"} else "ADAPTER_ERROR")
                         else:
                             result(command, "SUCCEEDED")
         if input_closed.is_set() and commands.empty():
@@ -428,7 +439,11 @@ def build_adapter(algorithm: str, run_id: int, config: dict):
             # The legacy vendor controller has no executed-pose handoff. Its
             # separate compatibility path retains the original assembly gate.
             planner_config["initialPoses"] = target_poses
-    if base_algorithm == "GB_SFLA_CS":
+    if config.get("algorithmCommandProfile") == "escort-20261020":
+        if base_algorithm != "ESCORT_GUARD":
+            raise ValueError("Command profile requires ESCORT_GUARD")
+        adapter = CommandEscortAdapter(run_id, planner_config)
+    elif base_algorithm == "GB_SFLA_CS":
         adapter = (AdaptiveCaptureAdapter(run_id, planner_config)
                    if int(config.get("targetCount", 1)) > 1 else CaptureAdapter(run_id, planner_config))
     elif bool(config.get("adaptiveMultiTarget", False)):

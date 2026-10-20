@@ -36,6 +36,9 @@ public class VoiceController {
         return response(r.status(), r.data());
     }
 
+    @GetMapping("/algorithm-presets")
+    public ResponseEntity<ObjectNode> presets() { return response(200, AlgorithmPresets.catalog(json)); }
+
     @GetMapping("/contexts")
     public ResponseEntity<ObjectNode> contexts() {
         return response(200, app.contexts());

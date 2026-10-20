@@ -124,7 +124,8 @@ public class VoiceCommandApplicationService {
                     String intent = body.path("intent").asText();
                     boolean targeted = "SINGLE_DEVICE_CONTROL".equals(intent);
                     boolean sequence = "COMMAND_SEQUENCE".equals(intent);
-                    String action = targeted ? "DEVICE_COMMAND" : sequence ? "SEQUENCE" : intent.substring(8);
+                    String action = targeted ? "DEVICE_COMMAND" : sequence ? "SEQUENCE" : "ALGORITHM_PRESET".equals(intent) ? intent : intent.substring(8);
+                    ObjectNode presetParameters = null;
                     IntentService.TargetedCandidate target = null;
                     com.fasterxml.jackson.databind.node.ArrayNode sequenceSteps = null;
                     if (interpretationId != null) {
@@ -135,7 +136,12 @@ public class VoiceCommandApplicationService {
                             throw VoiceFailure.conflict(e.code);
                         }
                     }
-                    if (targeted) {
+                    if ("ALGORITHM_PRESET".equals(action)) {
+                        if (intents == null || interpretationId == null) throw VoiceFailure.conflict("VOICE_INTERPRETATION_INVALID");
+                        presetParameters = intents.requirePresetParameters(u, interpretationId, c);
+                        AlgorithmPresets.validate(c, presetParameters);
+                        r.check(c, action, true);
+                    } else if (targeted) {
                         if (intents == null || interpretationId == null)
                             throw VoiceFailure.conflict("VOICE_INTERPRETATION_INVALID");
                         try {
@@ -161,6 +167,7 @@ public class VoiceCommandApplicationService {
                             : targeted
                             ? newProposal(c, u, action, target.deviceCode(), target.commandType())
                             : newProposal(c, u, action);
+                    if (presetParameters != null) attachPreset(p, presetParameters);
                     if (interpretationId != null) p.put("interpretationId", interpretationId);
                     s.proposal(p);
                     s.remember(u, "propose", key, hash, p.path("_id").asText());
@@ -205,6 +212,7 @@ public class VoiceCommandApplicationService {
                         invalidate(p);
                         throw VoiceFailure.conflict("CONTEXT_CHANGED");
                     }
+                    if ("ALGORITHM_PRESET".equals(plan.path("action").asText())) AlgorithmPresets.validate(c, plan.path("parameters"));
                     if (targeted)
                         r.checkDevice(c, plan.path("targetDeviceCode").asText(), plan.path("deviceCommandType").asText());
                     else if (sequence) {
@@ -409,12 +417,18 @@ public class VoiceCommandApplicationService {
                         frozenStep.path("targetDeviceCode").asText(),
                         frozenStep.path("deviceCommandType").asText())
                 : newProposal(c, parent.path("_owner").asLong(), action);
+        if ("ALGORITHM_PRESET".equals(action)) attachPreset(child, frozenStep.path("parameters"));
         child.put("_source", "SEQUENCE_CHILD")
                 .put("_parentExecutionId", parent.path("executionId").asText())
                 .put("status", "CONFIRMED");
         s.proposal(child);
         enqueue(child, c, false);
         return child.path("executionId").asText();
+    }
+
+    private void attachPreset(ObjectNode proposal, JsonNode parameters) {
+        ((ObjectNode)proposal.path("plan")).set("parameters", parameters.deepCopy());
+        proposal.put("planHash", j.hash(proposal.path("plan")));
     }
 
     private ObjectNode combined(ObjectNode p) {

@@ -29,7 +29,8 @@
             "MISSION_RESUME",
             "MISSION_STOP",
             "SINGLE_DEVICE_CONTROL",
-            "COMMAND_SEQUENCE"
+            "COMMAND_SEQUENCE",
+            "ALGORITHM_PRESET"
           ]
         }
       },
@@ -64,7 +65,9 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "waitForPrevious": { "type": "boolean" },
+        "waitForPrevious": {
+          "type": "boolean"
+        },
         "index": {
           "type": "integer",
           "minimum": 0,
@@ -78,7 +81,8 @@
             "RESUME",
             "STOP",
             "DEVICE_COMMAND",
-            "WAIT"
+            "WAIT",
+            "ALGORITHM_PRESET"
           ]
         },
         "targetDeviceCode": {
@@ -104,6 +108,9 @@
           "type": "integer",
           "minimum": 1,
           "maximum": 60
+        },
+        "parameters": {
+          "$ref": "#/definitions/AlgorithmPresetParameters"
         }
       },
       "required": [
@@ -139,6 +146,25 @@
               "waitSeconds"
             ]
           }
+        },
+        {
+          "if": {
+            "properties": {
+              "action": {
+                "const": "ALGORITHM_PRESET"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "parameters"
+            ],
+            "properties": {
+              "parameters": {
+                "$ref": "#/definitions/AlgorithmPresetParameters"
+              }
+            }
+          }
         }
       ]
     },
@@ -146,7 +172,9 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "waitForPrevious": { "type": "boolean" },
+        "waitForPrevious": {
+          "type": "boolean"
+        },
         "index": {
           "type": "integer",
           "minimum": 0,
@@ -160,7 +188,8 @@
             "RESUME",
             "STOP",
             "DEVICE_COMMAND",
-            "WAIT"
+            "WAIT",
+            "ALGORITHM_PRESET"
           ]
         },
         "targetDeviceCode": {
@@ -231,6 +260,9 @@
           "type": "integer",
           "minimum": 1,
           "maximum": 60
+        },
+        "parameters": {
+          "$ref": "#/definitions/AlgorithmPresetParameters"
         }
       },
       "required": [
@@ -253,6 +285,25 @@
             "required": [
               "waitSeconds"
             ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "action": {
+                "const": "ALGORITHM_PRESET"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "parameters"
+            ],
+            "properties": {
+              "parameters": {
+                "$ref": "#/definitions/AlgorithmPresetParameters"
+              }
+            }
           }
         }
       ]
@@ -287,7 +338,8 @@
             "RESUME",
             "STOP",
             "DEVICE_COMMAND",
-            "SEQUENCE"
+            "SEQUENCE",
+            "ALGORITHM_PRESET"
           ]
         },
         "targetDeviceCode": {
@@ -331,6 +383,9 @@
           },
           "minItems": 2,
           "maxItems": 4
+        },
+        "parameters": {
+          "$ref": "#/definitions/AlgorithmPresetParameters"
         }
       },
       "required": [
@@ -376,6 +431,25 @@
             "required": [
               "steps"
             ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "action": {
+                "const": "ALGORITHM_PRESET"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "parameters"
+            ],
+            "properties": {
+              "parameters": {
+                "$ref": "#/definitions/AlgorithmPresetParameters"
+              }
+            }
           }
         }
       ]
@@ -495,6 +569,10 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
+        "interpretationId": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
         "proposalId": {
           "type": "string",
           "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
@@ -614,7 +692,8 @@
             "RESUME",
             "STOP",
             "DEVICE_COMMAND",
-            "SEQUENCE"
+            "SEQUENCE",
+            "ALGORITHM_PRESET"
           ]
         },
         "state": {
@@ -962,14 +1041,12 @@
             "START",
             "PAUSE",
             "RESUME",
-            "STOP"
+            "STOP",
+            "ALGORITHM_PRESET"
           ]
         },
         "parameters": {
-          "type": "object",
-          "additionalProperties": false,
-          "properties": {},
-          "required": []
+          "type": "object"
         }
       },
       "required": [
@@ -982,6 +1059,36 @@
         "expectedStateVersion",
         "action",
         "parameters"
+      ],
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "action": {
+                "const": "ALGORITHM_PRESET"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "parameters"
+            ],
+            "properties": {
+              "parameters": {
+                "$ref": "#/definitions/AlgorithmPresetParameters"
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "parameters": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {}
+              }
+            }
+          }
+        }
       ]
     },
     "CommandResult": {
@@ -1723,6 +1830,24 @@
             }
           }
         }
+      ]
+    },
+    "AlgorithmPresetParameters": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "presetId": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 20
+        },
+        "presetVersion": {
+          "const": "escort-20261020"
+        }
+      },
+      "required": [
+        "presetId",
+        "presetVersion"
       ]
     }
   }

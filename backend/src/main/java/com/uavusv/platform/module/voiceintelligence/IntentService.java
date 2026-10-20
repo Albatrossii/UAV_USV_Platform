@@ -3,6 +3,7 @@ package com.uavusv.platform.module.voiceintelligence;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.uavusv.platform.module.voicecontrol.RuntimeContextRegistry;
+import com.uavusv.platform.module.voicecontrol.AlgorithmPresets;
 import com.uavusv.platform.module.voicecontrol.VoiceAccess;
 import com.uavusv.platform.module.voicecontrol.VoiceJson;
 
@@ -66,7 +67,7 @@ public class IntentService {
                     Map.entry("请立即停止任务", "STOP"));
     // Keep aligned with the browser's automatic-execution guard after whitespace normalization.
     private static final Pattern NEGATED =
-            Pattern.compile("(?:不|没|未|别|无需|无须|禁止|取消|勿|莫|暂缓).{0,24}(?:开始|启动|执行|暂停|继续|恢复|停止|终止|结束|悬停|驻留|待命|保持|返航|返回|归队|降落|停船)");
+            Pattern.compile("(?:不|没|未|别|无需|无须|禁止|取消|勿|莫|暂缓).{0,24}(?:开始|启动|执行|运行|下达|暂停|继续|恢复|停止|终止|结束|悬停|驻留|待命|保持|返航|返回|归队|降落|停船|追击|围捕|守卫|分配|撤退|护航|第?[零〇一二两兩三四五六七八九十壹贰貳叁參肆伍陆陸柒捌玖拾IVXLCDMivxlcdm\\d]+(?:号|条|个)?(?:指令|命令)|(?:指令|命令)(?:编号)?(?:为|是|:)?第?[零〇一二两兩三四五六七八九十壹贰貳叁參肆伍陆陸柒捌玖拾IVXLCDMivxlcdm\\d]+)");
     private static final Pattern UNSUPPORTED = Pattern.compile("攻击|打击|开火|围捕|包围|撤退|返航");
     private static final Pattern TARGETED =
             Pattern.compile(
@@ -221,7 +222,7 @@ public class IntentService {
         boolean localLlm = "local-llm".equals(settings.getIntentProvider())
                 && !exactCommand
                 && parsed.action() != null
-                && !Set.of("DEVICE_COMMAND", "SEQUENCE").contains(parsed.action());
+                && !Set.of("DEVICE_COMMAND", "SEQUENCE", "ALGORITHM_PRESET").contains(parsed.action());
         boolean sequence = "SEQUENCE".equals(parsed.action());
         ObjectNode data =
                 parsed.data(
@@ -368,8 +369,16 @@ public class IntentService {
         if (UNRESOLVED_USV_NOUN.matcher(text).find())
             return new IntentClassification(
                     "NEEDS_CLARIFICATION", "AMBIGUOUS_TARGET", "请明确一个无人艇编号和单一设备动作。", null);
+        IntentClassification preset = parsePreset(text, runtime);
+        if (preset != null) return preset;
         IntentClassification sequence = parseSequence(text, allowed, runtime);
         if (sequence != null) return sequence;
+        // An unrecognized numbered command must never fall through to a
+        // mission action merely because its wording contains "start/resume".
+        if (Pattern.compile("指令|命令").matcher(text).find()
+                || (!TARGETED.matcher(text).find() && AlgorithmPresets.looksNumbered(text)))
+            return new IntentClassification("NEEDS_CLARIFICATION", "AMBIGUOUS_ACTION",
+                    "请明确一个0–20的指令编号；支持“第十三条指令”“13号指令”或“指令XIII”。当前文字未生成执行计划。", null);
         if (TARGETED.matcher(text).find()
                 || (DEVICE_CUE.matcher(text).find()
                         && Pattern.compile("悬停|驻留|待命|保持|返航|返回|归队|继续|停止|降落|停船").matcher(text).find()))
@@ -432,6 +441,25 @@ public class IntentService {
         return parsed;
     }
 
+    public ObjectNode requirePresetParameters(long user, String id, ObjectNode runtime) {
+        requireCandidate(user, id, "ALGORITHM_PRESET", runtime);
+        Entry entry;
+        synchronized (this) { entry = entries.get(new Key(user, id)); }
+        if (entry == null || entry.runtimeRef == null) throw new AsrFailure(409, "VOICE_INTERPRETATION_INVALID");
+        return ((ObjectNode)((ObjectNode)entry.outcome.body().get("data")).path("parameters")).deepCopy();
+    }
+
+    private IntentClassification parsePreset(String text, ObjectNode runtime) {
+        Integer id = AlgorithmPresets.parse(text);
+        if (id == null) return null;
+        if (runtime == null) return new IntentClassification("UNSUPPORTED", "UNSUPPORTED_CAPABILITY", "请先生成10月20日指令版护航场景。", null);
+        try { AlgorithmPresets.validate(runtime, AlgorithmPresets.parameters(json, id)); }
+        catch (com.uavusv.platform.module.voicecontrol.VoiceFailure error) {
+            return new IntentClassification("UNSUPPORTED", "UNSUPPORTED_CAPABILITY", "当前算法不支持该指令，或对应敌船尚未生成。", null);
+        }
+        return new IntentClassification("CANDIDATE", null, null, "ALGORITHM_PRESET", null, null, null, id);
+    }
+
     private IntentClassification parseSequence(String text, JsonNode allowed, ObjectNode runtime) {
         boolean explicitlyOrdered = text.matches("^(?:请)?先.*");
         String separated = text;
@@ -462,6 +490,13 @@ public class IntentService {
                     if (steps.size() == 1 || seconds < 1 || seconds > 60)
                         return new IntentClassification("NEEDS_CLARIFICATION", "AMBIGUOUS_ACTION", "等待须放在动作之后，时长为 1–60 秒。", null);
                     step.put("action", "WAIT").put("waitSeconds", seconds);
+                    continue;
+                }
+                IntentClassification preset = parsePreset(clause, runtime);
+                if (preset != null) {
+                    if (!"CANDIDATE".equals(preset.status())) return preset;
+                    step.put("action", "ALGORITHM_PRESET").set("parameters", AlgorithmPresets.parameters(json, preset.presetId()));
+                    lastTarget = null;
                     continue;
                 }
                 if (lastTarget != null && clause.matches("(?:它)?(?:悬停|驻留|待命|返航|返回|归队|继续|停止|降落|停船)"))
@@ -620,7 +655,8 @@ public class IntentService {
     }
 
     private static String normalize(String text) {
-        String normalized = text.trim().replaceAll("\\s+", "");
+        String normalized = java.text.Normalizer.normalize(text, java.text.Normalizer.Form.NFKC)
+                .trim().replaceAll("\\s+", "");
         normalized = CONTEXTUAL_BOAT_CLAUSE.matcher(normalized).replaceAll("$1$2无人艇$3");
         // Match before trimming final punctuation, so questions cannot become commands.
         normalized = CONTEXTUAL_USV_HOLD.matcher(normalized).replaceFirst("$1无人艇驻留$2");
