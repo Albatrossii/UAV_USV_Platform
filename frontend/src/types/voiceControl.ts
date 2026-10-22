@@ -99,6 +99,13 @@ export interface VoicePlanGuardRequest {
   expectedPlanHash: string
 }
 
+export interface PresetExecution {
+  commandId: string
+  presetId: number
+  status: 'WAITING_DEPLOYMENT' | 'WAITING_EXECUTION' | 'WAITING_DEVICE' | 'EXECUTED' | 'FAILED' | 'SUPERSEDED' | 'CANCELLED'
+  errorCode: string | null
+}
+
 export interface VoiceExecution {
   executionId: string
   proposalId: string
@@ -111,6 +118,7 @@ export interface VoiceExecution {
   errorCode: string | null
   timedOutAt: string | null
   presentationStatus: VoicePresentationStatus
+  presetExecution?: PresetExecution
   currentStepIndex?: number
   sequenceStatus?: 'EXECUTING_START' | 'WAITING_STEP_PRECONDITION' | 'EXECUTING_DEVICE_COMMAND' | 'SUCCEEDED' | 'FAILED'
   steps?: VoiceSequenceExecutionStep[]

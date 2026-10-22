@@ -1,11 +1,12 @@
 <script setup lang="ts">
-import { presetLabel } from '@/services/algorithmPresets'
+import { presetLabel, presetMatchesText, repairAlgorithmSpeech } from '@/services/algorithmPresets'
 import { computed, onBeforeUnmount, onDeactivated, onMounted, ref, shallowRef, watch } from 'vue'
 import { ArrowRight, Cloud, Mic, PencilLine, Square, WandSparkles } from '@lucide/vue'
 import { createVoiceIntelligenceAdapter } from '@/services/voiceIntelligence'
 import { voiceRecoveryInfo } from '@/services/voiceIntelligenceRecovery'
 import { normalizeVoiceAudioType, VOICE_AUDIO_MAX_BYTES } from '@/api/voiceIntelligence'
 import { evaluateSpeechRecording, SPEECH_RECORDING_HINT, SPEECH_RECORDING_MAX_MS } from '@/utils/speechRecordingPolicy'
+import { monitorMicrophoneLevel } from '@/utils/microphoneLevel'
 import { normalizeVoiceDeviceTerms, repairContextualUsvHold } from '@/utils/voiceTranscriptNormalization'
 import { sequenceMatchesSpeech, splitVoiceSequence, voiceStepLabel } from '@/utils/voiceSequence'
 import { hasNegatedVoiceAction, isLocalVoiceSimulation, requiresVoiceConfirmation, voiceDeviceLabel, type VoiceAutomationRuntime } from '@/utils/voiceCommandSafety'
@@ -28,6 +29,7 @@ const props = withDefaults(defineProps<{
   operatorScope?: string
   inputDisabled?: boolean
   autoExecuteSpeech?: boolean
+  directExecuteInput?: boolean
   allowMockSubmission?: boolean
   submissionDisabled?: boolean
   refined?: boolean
@@ -44,6 +46,7 @@ const props = withDefaults(defineProps<{
 const emit = defineEmits<{
   candidate: [intent: VoiceIntent, interpretationId?: string]
   voiceCandidate: [intent: VoiceIntent, interpretationId: string, timing: { startedAt: number; asrRequestMs: number; parseMs: number; sequenceFirstAction?: string }]
+  executeCandidate: [intent: VoiceIntent, interpretationId: string, sequenceFirstAction?: string]
   draftChange: []
   interpretation: [event: { text: string; origin: string; result: VoiceParseResult }]
 }>()
@@ -64,6 +67,9 @@ type Pending = { kind: 'audio'; input: VoiceAudioInput; autoExecute?: boolean }
 // Keep the exact original body and key in memory for explicit recovery.
 const pending = shallowRef<Pending | null>(null)
 const automaticallySubmitted = ref(false)
+// A speech result is handled automatically. Manual execution belongs to an
+// explicitly edited/typed draft, not a second confirmation of the recording.
+const automaticSpeechDraft = ref(false)
 const emittedSpeechRequests = new Set<string>()
 const failed = ref(false)
 const retryable = ref(false)
@@ -78,6 +84,16 @@ let cooldownTimer: number | undefined
 let recordingTimer: number | undefined
 let stream: MediaStream | null = null
 let recorder: MediaRecorder | null = null
+let stopLevelMonitor: (() => void) | undefined
+const microphoneLevel = ref<number | null>(null)
+const microphoneName = ref('')
+const microphoneDevices = ref<MediaDeviceInfo[]>([])
+const selectedMicrophone = ref('')
+const microphoneProcessing = ref(true)
+const microphoneDeviceMessage = ref('')
+const microphoneTest = ref(false)
+const microphoneTestUrl = ref('')
+let microphoneDeviceEpoch = 0
 let controller: AbortController | null = null
 let epoch = 0
 const recoveryLabel = computed(() => rateLimited.value
@@ -142,7 +158,7 @@ const speechSource = computed(() => {
   return { label: '平台语音识别', detail: adapter.name === 'unconfigured' ? '待配置' : '录音后确认来源' }
 })
 const captureTitle = computed(() => permissionPending.value ? '正在请求麦克风权限'
-  : stage.value === 'RECORDING' ? '正在聆听你的指令'
+  : stage.value === 'RECORDING' ? microphoneTest.value ? '正在测试麦克风' : '正在聆听你的指令'
     : stage.value === 'TRANSCRIBING' ? '正在转换为文字'
       : stage.value === 'PARSING' ? '正在理解指令'
         : draft.value.trim() ? '文字已就绪' : '点击录音')
@@ -150,20 +166,22 @@ const recordingSecondsLeft = computed(() => Math.ceil(evaluateSpeechRecording({ 
 const captureNote = computed(() => stage.value === 'RECORDING' ? `说完再次点击结束；停顿不会截断 · 剩余 ${recordingSecondsLeft.value} 秒`
   : stage.value === 'TRANSCRIBING' ? '请稍候，无需重复录音'
     : permissionPending.value ? '请在浏览器中允许使用麦克风'
-      : simulationSpeechEnabled.value ? '本地仿真明确语音自动执行，支持返航、降落、停止；文字编辑后需确认。编号战术指令也需确认'
+      : simulationSpeechEnabled.value ? '说完点击结束，自动执行'
         : automaticSpeech.value ? '常规明确指令自动执行；返航、降落、停止需确认' : '点击麦克风说话，核对文字后预览指令')
 const examples = computed(() => props.algorithmPresetsEnabled ? [
-  { label: '开始 → 第1号指令', text: '开始任务，然后执行第一号指令。' },
-  { label: '第13号：无人机分组', text: '执行第十三号指令。' },
-  { label: '第0号：撤回护航', text: '执行第零号指令。' },
+  { label: '开始围捕', text: '开始围捕。' },
+  { label: '无人机分组', text: '将一二三号无人机分配给一号敌船。' },
+  { label: '恢复护航', text: '恢复护航。' },
 ] : [
   { label: '开始任务 → 一号机悬停', text: '开始任务，然后让一号无人机悬停。' },
   { label: '二号艇驻留', text: '二号无人艇驻留。' },
   { label: '一号机归队', text: '一号无人机安全归队。' },
 ])
-const waveHeights = [4, 8, 13, 8, 20, 12, 23, 15, 21, 9, 14, 7, 4]
+const microphoneStatus = computed(() => microphoneLevel.value === null ? '音量检测不可用'
+  : microphoneLevel.value < 20 ? '输入很弱，请检查麦克风' : '已采到声音')
 
 watch(draft, () => {
+  if (!busy.value && !pending.value && stage.value !== 'RECORDING') automaticSpeechDraft.value = false
   automaticallySubmitted.value = false
   emit('draftChange')
   result.value = null
@@ -177,18 +195,39 @@ watch(draft, () => {
 
 function stopCapture() {
   window.clearTimeout(recordingTimer)
+  stopLevelMonitor?.()
+  stopLevelMonitor = undefined
   const previous = recorder
   recorder = null
   if (previous?.state === 'recording') previous.stop()
   stream?.getTracks().forEach(track => track.stop())
   stream = null
 }
+function clearMicrophoneTest() {
+  if (microphoneTestUrl.value) URL.revokeObjectURL(microphoneTestUrl.value)
+  microphoneTestUrl.value = ''
+}
+async function refreshMicrophones() {
+  const ticket = ++microphoneDeviceEpoch
+  if (!navigator.mediaDevices?.enumerateDevices) return
+  try {
+    const devices = await navigator.mediaDevices.enumerateDevices()
+    if (ticket !== microphoneDeviceEpoch) return
+    microphoneDevices.value = devices.filter(device => device.kind === 'audioinput'
+      && device.deviceId && !['default', 'communications'].includes(device.deviceId))
+    microphoneDeviceMessage.value = ''
+  } catch {
+    if (ticket === microphoneDeviceEpoch) microphoneDeviceMessage.value = '无法读取设备列表，可先点击测试授予麦克风权限。'
+  }
+}
 function resetInput() {
+  automaticSpeechDraft.value = false
   emit('draftChange')
   epoch++
   controller?.abort()
   controller = null
   stopCapture()
+  clearMicrophoneTest()
   permissionPending.value = false
   window.clearTimeout(cooldownTimer)
   coolingDown.value = false
@@ -244,7 +283,7 @@ const missionIntents: Record<VoiceAction, VoiceIntent> = {
 const deviceCommands = new Set(['UAV_HOVER', 'UAV_RESUME', 'UAV_RETURN', 'UAV_LAND', 'USV_HOLD', 'USV_RESUME', 'USV_RETURN', 'USV_STOP'])
 const taskClause = /(?:开始|启动|执行|暂停|继续|恢复|停止|终止|结束)(?:执行|当前|运行)?任务/u
 function normalizedSpeech(text: string) {
-  return normalizeVoiceDeviceTerms(text.trim().replace(/\s+/gu, '')).replace(/[。！？!?，,]+$/, '')
+  return normalizeVoiceDeviceTerms(repairAlgorithmSpeech(text)).replace(/[。！？!?，,]+$/, '')
 }
 function validDeviceTarget(target: string | undefined, command: string | undefined, text: string) {
   if (!target || !command || !props.deviceCodes.includes(target) || !deviceCommands.has(command)
@@ -280,7 +319,9 @@ function safeSpeechCandidate(parsed: VoiceIntentCandidate, input: VoiceParseRequ
       && parsed.model === 'rules-sequence-v1' && !!steps
       && sequenceMatchesSpeech(input.text, steps, validDeviceTarget)
   }
-  if (parsed.action === 'ALGORITHM_PRESET') return false
+  if (parsed.action === 'ALGORITHM_PRESET') return parsed.intent === 'ALGORITHM_PRESET'
+    && parsed.provider === 'local-rules' && parsed.model === 'rules-v1'
+    && presetMatchesText(input.text, parsed.parameters)
   // Automatic fleet commands must be explicit; in particular an inferred STOP
   // must never broaden an ambiguous utterance into a whole-fleet shutdown.
   return props.allowedActions.includes(parsed.action) && parsed.intent === missionIntents[parsed.action]
@@ -316,10 +357,17 @@ function handleParsed(parsed: VoiceParseResult, input: VoiceParseRequest, origin
       : parsed.message
     return
   }
-  if (origin === 'manual' || parsed.action === 'ALGORITHM_PRESET' || parsed.steps?.some(step => step.action === 'ALGORITHM_PRESET')) {
+  if (origin === 'manual') {
     if (props.submissionDisabled || candidateDisabledReason.value) {
       message.value = candidateDisabledReason.value || '当前指令仍在处理，请稍后重新预览。'
     } else {
+      if (props.directExecuteInput && simulationSpeechRuntime.value && adapter.mode === 'BACKEND') {
+        result.value = null
+        automaticallySubmitted.value = true
+        message.value = '正在执行…'
+        emit('executeCandidate', parsed.intent, parsed.requestId, parsed.steps?.[0]?.action)
+        return
+      }
       message.value = props.refined ? '请核对下方设备与动作，确认后执行。' : '请核对识别文字与动作，再生成待确认提案。'
       if (props.refined) submitCandidate()
     }
@@ -347,6 +395,8 @@ function handleParsed(parsed: VoiceParseResult, input: VoiceParseRequest, origin
         : repairedDevice !== input.text
           ? `已按设备指令上下文纠错为“${normalizedSpeech(repairedDevice)}”；正在校验并提交至 ${voiceDeviceLabel(parsed.targetDeviceCode)}。`
         : `单设备指令已识别，正在校验并提交至 ${voiceDeviceLabel(parsed.targetDeviceCode)}。`
+      : parsed.action === 'ALGORITHM_PRESET' && repairAlgorithmSpeech(input.text) !== input.text
+        ? `已按口令纠正为“${repairAlgorithmSpeech(input.text).replace(/[。！!，,]+$/u, '')}”，正在执行。`
       : parsed.action === 'SEQUENCE' ? '多步指令已识别：不同设备可并行；明确先后、等待、同设备冲突和任务级动作按顺序执行。失败后不再下发剩余动作。'
         : '明确口令已识别，正在自动提交仿真动作并等待回执。'
     emit('voiceCandidate', parsed.intent, parsed.requestId, {
@@ -360,7 +410,7 @@ function handleParsed(parsed: VoiceParseResult, input: VoiceParseRequest, origin
     message.value = parsed.intent === 'MISSION_STOP' && !exactFastPath.value
       ? '语音识别对应停止任务，但不是明确停止口令；已阻止自动执行，请核对或修改文字。'
       : candidateDisabledReason.value || (props.submissionDisabled ? '当前指令仍在处理，请稍后重新输入。'
-        : '未通过自动执行校验，请核对目标、动作和识别文字后手动预览。')
+        : '未匹配到明确指令，请重新说出设备、动作和目标。')
   }
 }
 
@@ -402,6 +452,7 @@ async function runRequest() {
         return
       }
       const recordingWasCutOff = current.autoExecute === false
+      automaticSpeechDraft.value = !!simulationSpeechRuntime.value && transcriptIsRealAsr && !recordingWasCutOff
       if (recordingWasCutOff) speechFallbackAvailable.value = true
       message.value = recordingWasCutOff
         ? '已达到录音时长上限，指令可能未说完；请核对文字后预览确认，不会自动执行。'
@@ -492,6 +543,7 @@ function discardPending() {
   message.value = '已清除本页请求；后续操作将作为新请求，可能产生新的调用费用。'
 }
 function switchToText() {
+  automaticSpeechDraft.value = false
   epoch++
   controller?.abort()
   controller = null
@@ -501,14 +553,14 @@ function switchToText() {
   retryable.value = false
   rateLimited.value = false
   stage.value = draft.value.trim() ? 'READY_TO_PARSE' : 'IDLE'
-  message.value = '请在上方输入任务指令，核对后再解析。'
+  message.value = '修改文字后点击执行。'
 }
 
 function preferredAudioType() {
   return ['audio/webm;codecs=opus', 'audio/ogg;codecs=opus', 'audio/mp4', 'audio/webm']
     .find(type => MediaRecorder.isTypeSupported(type)) ?? ''
 }
-async function startRecording() {
+async function startRecording(testOnly = false) {
   if (blocked.value || props.submissionDisabled || busy.value || coolingDown.value || pending.value || recorder) return
   emit('draftChange')
   automaticallySubmitted.value = false
@@ -518,15 +570,28 @@ async function startRecording() {
   speechFallbackAvailable.value = false
   permissionPending.value = true
   result.value = null
+  microphoneTest.value = testOnly
+  clearMicrophoneTest()
   try {
     if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined') {
       throw new Error('当前浏览器不支持录音，请使用 HTTPS / localhost 或改用文字。')
     }
     const acquired = await navigator.mediaDevices.getUserMedia({
-      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+      audio: {
+        ...(selectedMicrophone.value ? { deviceId: { exact: selectedMicrophone.value } } : {}),
+        echoCancellation: microphoneProcessing.value,
+        noiseSuppression: microphoneProcessing.value,
+        autoGainControl: microphoneProcessing.value,
+      },
     })
     if (ticket !== epoch || blocked.value || props.submissionDisabled) { acquired.getTracks().forEach(track => track.stop()); return }
     stream = acquired
+    microphoneName.value = acquired.getAudioTracks?.()[0]?.label || '默认麦克风'
+    void refreshMicrophones()
+    microphoneLevel.value = null
+    stopLevelMonitor = monitorMicrophoneLevel(acquired, level => {
+      if (ticket === epoch) microphoneLevel.value = level
+    })
     const mimeType = preferredAudioType()
     const active = mimeType ? new MediaRecorder(acquired, { mimeType }) : new MediaRecorder(acquired)
     recorder = active
@@ -542,6 +607,8 @@ async function startRecording() {
     active.addEventListener('stop', () => {
       acquired.getTracks().forEach(track => track.stop())
       if (ticket !== epoch) return
+      stopLevelMonitor?.()
+      stopLevelMonitor = undefined
       window.clearTimeout(recordingTimer)
       if (recorder === active) recorder = null
       if (stream === acquired) stream = null
@@ -555,11 +622,18 @@ async function startRecording() {
         message.value = size === 0 ? '音频为空，请重新录音。' : '音频超过 5 MiB，请缩短录音。'
         return
       }
+      const audio = new Blob(chunks, { type: active.mimeType || 'audio/webm' })
+      if (testOnly) {
+        microphoneTestUrl.value = URL.createObjectURL(audio)
+        stage.value = 'READY_TO_PARSE'
+        message.value = '测试录音已完成，请播放检查声音。未上传、未执行指令。'
+        return
+      }
       audioPipelineStartedAt = Date.now()
       audioRequestElapsedMs = 0
       parseElapsedMs = 0
       pending.value = { kind: 'audio', autoExecute: !stoppedAtLimit, input: {
-        audio: new Blob(chunks, { type: active.mimeType || 'audio/webm' }),
+        audio,
         requestId: crypto.randomUUID(), locale: 'zh-CN',
       } }
       void runRequest()
@@ -588,7 +662,10 @@ async function startRecording() {
     stopCapture()
     stage.value = 'ERROR'
     message.value = error instanceof DOMException && error.name === 'NotAllowedError'
-      ? '麦克风权限被拒绝，请授权或使用文字。' : error instanceof Error ? error.message : '无法录音。'
+      ? '麦克风权限被拒绝，请授权或使用文字。'
+      : error instanceof DOMException && ['NotFoundError', 'OverconstrainedError'].includes(error.name)
+        ? '所选麦克风不可用，请刷新设备列表并重新选择。'
+        : error instanceof Error ? error.message : '无法录音。'
   } finally {
     if (ticket === epoch) permissionPending.value = false
   }
@@ -657,6 +734,7 @@ function submitCandidate() {
 onBeforeUnmount(resetInput)
 onDeactivated(resetInput)
 onMounted(() => {
+  void refreshMicrophones()
   elapsedTimer = window.setInterval(() => {
     if (coolingDown.value) cooldownSeconds.value = Math.max(0, Math.ceil((cooldownUntil - Date.now()) / 1000))
     if (['RECORDING', 'TRANSCRIBING', 'PARSING'].includes(stage.value)) {
@@ -665,12 +743,13 @@ onMounted(() => {
   }, 250)
 })
 onBeforeUnmount(() => window.clearInterval(elapsedTimer))
+onBeforeUnmount(() => { microphoneDeviceEpoch++ })
 </script>
 
 <template>
   <section class="intelligence-input" :class="{ 'is-refined': refined, 'is-compact': compact }" aria-label="语音与文本指令输入">
     <template v-if="refined">
-      <div class="refined-provider" aria-live="polite">
+      <div v-if="!compact" class="refined-provider" aria-live="polite">
         <span><Cloud :size="15" aria-hidden="true" />{{ speechSource.label }}</span>
         <small>{{ speechSource.detail }}</small>
       </div>
@@ -687,21 +766,47 @@ onBeforeUnmount(() => window.clearInterval(elapsedTimer))
           <strong class="refined-capture-title">{{ captureTitle }}</strong>
           <p class="refined-capture-note">{{ captureNote }}</p>
         </div>
-        <div v-if="stage === 'RECORDING'" class="refined-wave" aria-hidden="true">
-          <i v-for="(height, index) in waveHeights" :key="index" :style="{ height: `${height}px`, animationDelay: `${index * -.08}s` }" />
+        <div v-if="stage === 'RECORDING'" class="refined-audio-level">
+          <small :title="microphoneName">{{ microphoneName }}</small>
+          <meter v-if="microphoneLevel !== null" min="0" max="100" :value="microphoneLevel" aria-label="麦克风输入音量" />
+          <span>{{ microphoneStatus }}</span>
         </div>
       </section>
+      <details class="microphone-settings">
+        <summary>麦克风设置与测试</summary>
+        <label>输入设备
+          <select v-model="selectedMicrophone" aria-label="录音输入设备"
+            :disabled="busy || stage === 'RECORDING' || !!pending">
+            <option value="">系统默认</option>
+            <option v-if="selectedMicrophone && !microphoneDevices.some(device => device.deviceId === selectedMicrophone)"
+              :value="selectedMicrophone" disabled>所选设备已不可用</option>
+            <option v-for="(device, index) in microphoneDevices" :key="device.deviceId" :value="device.deviceId">
+              {{ device.label || `麦克风 ${index + 1}` }}
+            </option>
+          </select>
+        </label>
+        <label class="microphone-processing"><input v-model="microphoneProcessing" type="checkbox"
+          :disabled="busy || stage === 'RECORDING' || !!pending" />降噪与回声消除</label>
+        <div class="microphone-test-actions">
+          <button type="button" :disabled="busy || stage === 'RECORDING'" @click="refreshMicrophones">刷新设备</button>
+          <button type="button" :disabled="busy || !!pending || blocked || submissionDisabled || coolingDown || stage === 'RECORDING'"
+            @click="startRecording(true)">仅录音测试</button>
+        </div>
+        <p v-if="microphoneDeviceMessage">{{ microphoneDeviceMessage }}</p>
+        <p v-if="stage === 'RECORDING' && microphoneTest">说完点击上方结束，仅在本页回放。</p>
+        <audio v-if="microphoneTestUrl" :src="microphoneTestUrl" controls aria-label="麦克风测试回放" />
+      </details>
       <section class="refined-composer">
         <label class="refined-section-label">
-          <span>识别文字<small>{{ compact ? '编辑后需确认' : simulationSpeechEnabled ? '仿真语音自动执行 · 编辑后需确认' : automaticSpeech ? '常规语音自动执行 · 高风险与编辑后需确认' : '可编辑后再执行' }}</small></span>
+          <span>识别文字<small v-if="!compact">{{ directExecuteInput ? '可编辑' : simulationSpeechEnabled ? '仿真语音自动执行 · 编辑后需确认' : automaticSpeech ? '常规语音自动执行 · 高风险与编辑后需确认' : '可编辑后再执行' }}</small></span>
           <div class="refined-transcript-box">
-            <textarea v-model="draft" rows="3" :placeholder="algorithmPresetsEnabled ? '如：执行第十三条指令 / 13号指令 / 指令XIII' : compact ? '如：一号无人机悬停' : '试着说：开始任务，然后让一号无人机悬停。'"
+            <textarea v-model="draft" rows="3" :placeholder="algorithmPresetsEnabled ? '如：开始围捕 / 一号无人机追击二号敌船' : compact ? '如：一号无人机悬停' : '试着说：开始任务，然后让一号无人机悬停。'"
               aria-label="识别文字" :disabled="busy || !!pending || blocked || stage === 'RECORDING'" />
             <div class="refined-text-footer"><span><PencilLine :size="12" aria-hidden="true" />{{ compact ? '可直接输入' : '也可以直接输入指令' }}</span><span>{{ textLength }} / 200</span></div>
           </div>
         </label>
         <p v-if="textLength > 200" class="refined-error" role="alert">识别文字共 {{ textLength }} 字，请编辑至 200 字以内；文字未截断。</p>
-        <div class="refined-examples" aria-label="示例指令">
+        <div v-if="!compact" class="refined-examples" aria-label="示例指令">
           <button v-for="example in examples" :key="example.text" type="button"
             :disabled="busy || !!pending || blocked || stage === 'RECORDING'" @click="chooseExample(example.text)">{{ example.label }}</button>
         </div>
@@ -721,10 +826,10 @@ onBeforeUnmount(() => window.clearInterval(elapsedTimer))
         </template>
       </div>
       <slot />
-      <div v-if="!proposalReady && !automaticallySubmitted" class="refined-action-area">
+      <div v-if="!proposalReady && !automaticallySubmitted && !automaticSpeechDraft && (!compact || draft.trim())" class="refined-action-area">
         <button class="refined-preview" type="button"
           :disabled="busy || coolingDown || !!pending || blocked || submissionDisabled || stage === 'RECORDING' || !draft.trim() || textLength > 200" @click="parseDraft">
-          <span>{{ stage === 'PARSING' ? '正在预览…' : '预览指令' }}</span><ArrowRight :size="17" aria-hidden="true" />
+          <span>{{ stage === 'PARSING' ? '正在处理…' : directExecuteInput ? '执行' : '预览指令' }}</span><ArrowRight :size="17" aria-hidden="true" />
         </button>
       </div>
     </template>
@@ -736,7 +841,7 @@ onBeforeUnmount(() => window.clearInterval(elapsedTimer))
     <textarea v-model="draft" rows="3" placeholder="录音未能明确识别时，可在此修改指令后重试" :disabled="busy || !!pending || blocked || stage === 'RECORDING'" />
     <p v-if="textLength > 200" role="alert">识别文字共 {{ textLength }} 字，请编辑至 200 字以内再解析；文字未截断。</p>
     <div class="controls">
-      <button v-if="stage !== 'RECORDING'" type="button" :disabled="busy || coolingDown || !!pending || blocked || submissionDisabled" @click="startRecording">
+      <button v-if="stage !== 'RECORDING'" type="button" :disabled="busy || coolingDown || !!pending || blocked || submissionDisabled" @click="startRecording()">
         <Mic :size="13" />开始录音
       </button>
       <button v-else class="recording" type="button" @click="stopRecording"><Square :size="12" />停止录音</button>
@@ -804,9 +909,19 @@ textarea:focus { outline:1px solid #58bfb3; border-color:#58bfb3; }.controls but
 .refined-mic { position:relative; display:grid; place-items:center; width:76px; height:76px; padding:0; border:1px solid #a3ecd9; border-radius:50%; background:#73e2cd; color:#06291f; box-shadow:0 0 24px #73e2cd14; cursor:pointer; transition:transform .2s,background .2s; }
 .refined-mic:hover:not(:disabled) { transform:scale(1.045); background:#91edd8; }.refined-mic:disabled { opacity:.45; cursor:not-allowed; }
 .refined-capture-title { display:block; margin:0; color:#eff8f5; font-size:15px; font-weight:500; }.refined-capture-note { margin:5px 0 0; color:#8fa8ac; font-size:11px; line-height:1.6; }
-.refined-wave { display:flex; height:23px; justify-content:center; align-items:center; gap:4px; margin-top:12px; color:#73e2cd; }.refined-wave i { width:3px; min-height:3px; border-radius:3px; background:currentColor; animation:refined-wave .6s ease-in-out infinite alternate; }
+.refined-audio-level { grid-column:1 / -1; display:grid; gap:4px; width:100%; margin-top:8px; color:#8fa8ac; font-size:11px; }
+.refined-audio-level small { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.refined-audio-level meter { width:100%; height:8px; accent-color:#73e2cd; }
+.microphone-settings { margin:8px 0; color:#8fa8ac; font-size:11px; }
+.microphone-settings summary { cursor:pointer; }
+.microphone-settings label { display:block; margin-top:8px; }
+.microphone-settings select { display:block; width:100%; margin-top:4px; background:#10282e; color:#dcece8; border:1px solid #315359; border-radius:5px; padding:5px; }
+.microphone-settings .microphone-processing { display:flex; align-items:center; gap:5px; }
+.microphone-test-actions { display:flex; gap:6px; margin-top:8px; }
+.microphone-test-actions button { background:#10282e; color:#dcece8; border:1px solid #315359; border-radius:5px; padding:5px; cursor:pointer; }
+.microphone-test-actions button:disabled { opacity:.5; cursor:default; }
+.microphone-settings audio { width:100%; height:32px; margin-top:8px; }
 .recording .refined-mic-orbit { border-color:#73e2cd; }.recording .refined-mic { background:#d4f4e9; }
-@keyframes refined-wave { from { transform:scaleY(.35); } to { transform:scaleY(1); } }
 .refined-section-label { display:block; margin:0; color:#d8e7e5; font-size:12px; }.refined-section-label > span { display:flex; justify-content:space-between; align-items:center; gap:8px; margin-bottom:9px; }.refined-section-label small { color:#8fa8ac; font-size:10px; }
 .refined-transcript-box { border:1px solid #345158; border-radius:10px; background:#08181e; transition:border-color .2s; }.refined-transcript-box:focus-within { border-color:#73e2cd; }
 .refined-transcript-box textarea { display:block; width:100%; min-height:99px; max-height:180px; padding:13px 14px 6px; border:0; border-radius:10px; outline:none; resize:vertical; color:#e5f1ee; background:transparent; font-family:inherit; font-size:14px; line-height:1.7; }.refined-transcript-box textarea::placeholder { color:#78959c; }.refined-transcript-box textarea:disabled { opacity:.55; }
@@ -828,8 +943,6 @@ textarea:focus { outline:1px solid #58bfb3; border-color:#58bfb3; }.controls but
 .is-compact .refined-capture-copy { min-width:0; padding-top:1px; }
 .is-compact .refined-capture-title { font-size:12px; line-height:1.5; overflow-wrap:anywhere; }
 .is-compact .refined-capture-note { margin-top:3px; font-size:10px; line-height:1.6; overflow-wrap:anywhere; }
-.is-compact .refined-wave { grid-column:2; justify-content:flex-start; height:16px; margin:0; }
-.is-compact .refined-wave i { max-height:16px; }
 .is-compact .refined-section-label { font-size:11px; }
 .is-compact .refined-section-label > span { flex-wrap:wrap; gap:3px 7px; margin-bottom:6px; }
 .is-compact .refined-section-label small { font-size:9px; }
@@ -843,5 +956,5 @@ textarea:focus { outline:1px solid #58bfb3; border-color:#58bfb3; }.controls but
 .is-compact .refined-recovery button { min-width:0; max-width:100%; text-align:left; overflow-wrap:anywhere; }
 .is-compact .refined-action-area { margin-top:0; }
 .is-compact .refined-preview { min-height:36px; padding:8px; font-size:12px; border-radius:7px; }
-@media (prefers-reduced-motion:reduce) { .refined-wave i { animation:none; }.refined-mic { transition:none; } }
+@media (prefers-reduced-motion:reduce) { .refined-mic { transition:none; } }
 </style>

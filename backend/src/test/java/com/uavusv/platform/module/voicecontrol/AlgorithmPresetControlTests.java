@@ -8,6 +8,44 @@ import org.junit.jupiter.api.Test;
 
 class AlgorithmPresetControlTests extends VoiceControlTests {
     @Test
+    void departureAcknowledgementReleasesChannelAndTracksExecutionByCommand() {
+        freezesPresetDispatchesVersionedParametersAndAcceptsRunningReceipt();
+        // Store a real preset execution fixture, then supply its independent
+        // authoritative progress (transport success must not mean it started).
+        var id = s.jdbc.queryForObject("SELECT id FROM voice_execution", String.class);
+        var e = s.get("voice_execution", id);
+        var pending = j.object().put("commandId", e.path("commandId").asText())
+                .put("presetId", 1).put("status", "WAITING_DEPLOYMENT").putNull("errorCode");
+        e.set("presetExecution", pending);
+        s.save("voice_execution", e);
+        j.validate("Execution", app.execution(id));
+        assertEquals("WAITING_DEPLOYMENT", app.execution(id).path("presetExecution").path("status").asText());
+        var pause = execution(confirm(proposal("PAUSE")));
+        worker.tick();
+        assertEquals("DISPATCHED", app.execution(pause.path("executionId").asText()).path("state").asText());
+        assertEquals("PAUSE", sent.get(1).path("action").asText());
+        var frame = j.object().put("sequence", 2);
+        frame.putArray("agents").addObject().put("deviceCode", "UAV-001");
+        frame.putObject("metrics").putObject("presetCommands")
+                .set(e.path("commandId").asText(), pending.deepCopy().put("status", "EXECUTED"));
+        r.frame(ref(), gen(), frame);
+        assertEquals("EXECUTED", app.execution(id).path("presetExecution").path("status").asText());
+        j.validate("Execution", app.execution(id));
+    }
+
+    @Test
+    void stoppedRunCancelsWaitingPresetOutcome() {
+        freezesPresetDispatchesVersionedParametersAndAcceptsRunningReceipt();
+        var id = s.jdbc.queryForObject("SELECT id FROM voice_execution", String.class);
+        var e = s.get("voice_execution", id);
+        e.putObject("presetExecution").put("commandId", e.path("commandId").asText())
+                .put("presetId", 1).put("status", "WAITING_DEPLOYMENT").putNull("errorCode");
+        s.save("voice_execution", e);
+        heartbeat("STOPPED", 5, 2);
+        assertEquals("CANCELLED", app.execution(id).path("presetExecution").path("status").asText());
+    }
+
+    @Test
     void freezesPresetDispatchesVersionedParametersAndAcceptsRunningReceipt() {
         s.locked(() -> {
             var context = s.get("voice_runtime_context", ref());
@@ -36,8 +74,12 @@ class AlgorithmPresetControlTests extends VoiceControlTests {
         receipt.put("eventSequence", 1).put("status", "SUCCEEDED").put("runtimeState", "RUNNING")
                 .put("stateVersion", 4).put("lastFrameSequence", 1).putNull("errorCode");
         receipt.putArray("affectedDeviceCodes").add("UAV-001").add("USV-001");
+        receipt.putObject("presetExecution").put("commandId", e.path("commandId").asText())
+                .put("presetId", 1).put("status", "WAITING_DEPLOYMENT").putNull("errorCode");
+        j.validate("CommandResult", receipt);
         worker.receive(ref(), gen(), receipt);
         assertEquals("SUCCEEDED", app.execution(e.path("executionId").asText()).path("state").asText());
+        assertEquals("WAITING_DEPLOYMENT", app.execution(e.path("executionId").asText()).path("presetExecution").path("status").asText());
         assertEquals("RUNNING", app.context(ref()).path("state").asText());
     }
 

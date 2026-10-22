@@ -168,26 +168,30 @@ describe('VirtualFleetConfigView minimal simulation interface', () => {
   it('preserves the original algorithm display names and protocol codes', async () => {
     const { wrapper } = await createView()
     expect(wrapper.get('option[value="ESCORT_GUARD"]').text()).toBe('智能粒球仿真护航')
+    expect(wrapper.text()).not.toContain('护航版本')
+    expect(wrapper.text()).not.toContain('原自适应护航')
     expect(wrapper.get('option[value="GB_SFLA_CS"]').text()).toBe('GB-SFLA-CS 协同围捕')
   })
 
-  it.each([
-    [true, 'COMPLETE', 1, '100%'],
-    [false, 'COMPLETE', 1, '99%'],
-    [true, 'DEPLOYING', 1, '99%'],
-    [true, 'COMPLETE', .55, '55%'],
-  ])('shows command capture progress without terminating controls: %s %s %s', async (complete, deployment, progress, expected) => {
+  it.each(['ESCORT', 'GUARD', 'PURSUIT', 'CAPTURE'])('keeps actual command state %s without a synthetic timeline', async mode => {
     const { wrapper, setup } = await createView()
     setup.state.algorithm = 'ESCORT_GUARD'
     setup.currentAlgorithmFrame = {
-      ...frame(), algorithmCode: 'ESCORT_GUARD', metrics: {
-        algorithmCommandProfile: 'escort-20261020', captureComplete: complete,
-        deploymentState: deployment, missionProgress: progress,
+      ...frame(), algorithmCode: 'ESCORT_GUARD', phase: '算法原生中文阶段',
+      metrics: {
+        algorithmCommandProfile: 'escort-20261020', algorithmMode: mode,
+        captureComplete: mode === 'CAPTURE', deploymentState: 'COMPLETE',
+        missionProgress: 1, taskProgress: 1, simulationElapsedSeconds: 1551,
+        capturedThreatCount: 2,
       },
     }
     await flushPromises()
-    const progressLabel = wrapper.findAll('span').find(span => span.text().startsWith('综合进度'))
-    expect(progressLabel?.text().replace(/\s/g, '')).toBe(`综合进度${expected}`)
+    const status = wrapper.get('.vf-live-strip').text()
+    expect(status).toContain('算法原生中文阶段')
+    expect(status).toContain('已捕获 2/')
+    expect(status).not.toMatch(/综合进度|任务进度|仿真时长|%/)
+    expect(wrapper.find('.vf-phase-stepper').exists()).toBe(false)
+    expect(wrapper.find('.vf-command-bar').exists()).toBe(false)
     expect(setup.state.mission).toBe('RUNNING')
     expect(controlAlgorithmRun).not.toHaveBeenCalled()
   })
@@ -225,7 +229,6 @@ describe('VirtualFleetConfigView minimal simulation interface', () => {
 
   it('keeps entered parameters and input elements when folding the scenario or the whole sidebar', async () => {
     const { wrapper, setup } = await createView()
-    ;(setup as unknown as { commandEdition: boolean }).commandEdition = false
     await flushPromises()
     setup.state.mission = 'STOPPED'
     await flushPromises()
@@ -238,7 +241,7 @@ describe('VirtualFleetConfigView minimal simulation interface', () => {
     const summary = wrapper.get(`${scenarioSelector} > summary`)
     await summary.trigger('click')
     expect(details.open).toBe(false)
-    expect(summary.text()).toContain('2 UAV · 1 USV')
+    expect(summary.text()).toContain('3 UAV · 3 USV')
     await wrapper.get('button[title="收起总控"]').trigger('click')
     expect(wrapper.get('.vf-config-drawer').classes()).toContain('collapsed')
     await wrapper.get('button[aria-label="展开总控"]').trigger('click')
@@ -246,7 +249,7 @@ describe('VirtualFleetConfigView minimal simulation interface', () => {
     await summary.trigger('click')
     expect(details.open).toBe(true)
     expect(wrapper.findAll('.vf-scenario-body input').map(input => input.element)).toEqual(originalInputs)
-    expect(setup.state).toMatchObject({ algorithm: 'ESCORT_GUARD', uavCount: 2, usvCount: 1, uavSpeed: 7.5, usvSpeed: 2.5 })
+    expect(setup.state).toMatchObject({ algorithm: 'ESCORT_GUARD', uavCount: 3, usvCount: 3, uavSpeed: 7.5, usvSpeed: 2.5 })
   })
 
   it('folds voice and scenario modules independently without changing the running mission', async () => {
@@ -402,7 +405,6 @@ describe('VirtualFleetConfigView minimal simulation interface', () => {
 
   it('preserves control disabled conditions and resets the scene without resetting configuration', async () => {
     const { wrapper, setup, postToUnity } = await createView()
-    ;(setup as unknown as { commandEdition: boolean }).commandEdition = false
     await flushPromises()
     const inputs = wrapper.findAll('.vf-scenario-body input')
     expect(inputs.every(input => (input.element as HTMLInputElement).disabled)).toBe(true)
@@ -423,7 +425,8 @@ describe('VirtualFleetConfigView minimal simulation interface', () => {
     expect(setup.state).toMatchObject({ algorithm: 'ESCORT_GUARD', uavCount: 2, usvCount: 1, uavSpeed: 6.5, usvSpeed: 2.2, mission: 'STOPPED', sequence: 0 })
     expect(setup.initialScenarioPoses).toEqual([])
     expect(setup.selectedDevice).toBe('')
-    expect(inputs.every(input => !(input.element as HTMLInputElement).disabled)).toBe(true)
+    expect(inputs.slice(0, 2).every(input => (input.element as HTMLInputElement).disabled)).toBe(true)
+    expect(inputs.slice(2).every(input => !(input.element as HTMLInputElement).disabled)).toBe(true)
     setup.scenarioLoading = true
     await flushPromises()
     expect((wrapper.get('.vf-actions .primary').element as HTMLButtonElement).disabled).toBe(true)
@@ -431,7 +434,6 @@ describe('VirtualFleetConfigView minimal simulation interface', () => {
 
   it('uses configuration only before generation and keeps actual scene devices separate from targets', async () => {
     const { wrapper, setup } = await createView()
-    ;(setup as unknown as { commandEdition: boolean }).commandEdition = false
     await flushPromises()
     const panel = wrapper.getComponent({ name: 'NodeCommunicationPanel' })
     const compactNodes = wrapper.getComponent(CompactNodeViewBar)
@@ -533,7 +535,7 @@ describe('VirtualFleetConfigView minimal simulation interface', () => {
     await flushPromises()
     expect(setup.state.sequence).toBe(1)
     expect(setup.currentAlgorithmFrame?.sequence).toBe(1)
-    expect(wrapper.get('.vf-live-strip').text()).toContain('25%')
+    expect(wrapper.get('.vf-live-strip').text()).toContain('协同追击')
     expect(postToUnity).toHaveBeenCalledWith('applyPoseBatch', expect.objectContaining({ runId: 7001 }))
     await setup.applyAlgorithmFrame(frame(2, 'COMPLETED'))
     await flushPromises()

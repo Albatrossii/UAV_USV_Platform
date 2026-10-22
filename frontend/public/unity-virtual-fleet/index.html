@@ -503,7 +503,14 @@
             message: String(payload.message || payload.detail || ''),
           });
         }
-        if (type === 'selectdevice' || type === 'focusdevice') {
+          if (type === 'focuscommand' || type === 'restorecommandcamera') {
+            return sendPlatformBridge('ReceiveFromVue', {
+              type: type === 'focuscommand' ? 'focusCommand' : 'restoreCommandCamera',
+              requestId: message.requestId || '',
+              payload: { deviceCodes: Array.isArray(payload.deviceCodes) ? payload.deviceCodes : [] },
+            });
+          }
+          if (type === 'selectdevice' || type === 'focusdevice') {
           // SendMessage broadcasts a method name to every component on the
           // GameObject. Both bridge components expose SelectDevice, and one
           // also overloads it; direct dispatch can select correctly and then

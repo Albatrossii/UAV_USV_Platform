@@ -783,6 +783,9 @@
           },
           "minItems": 2,
           "maxItems": 4
+        },
+        "presetExecution": {
+          "$ref": "#/definitions/PresetExecution"
         }
       },
       "required": [
@@ -1172,6 +1175,9 @@
           },
           "uniqueItems": true,
           "maxItems": 200
+        },
+        "presetExecution": {
+          "$ref": "#/definitions/PresetExecution"
         }
       },
       "required": [
@@ -1848,6 +1854,48 @@
       "required": [
         "presetId",
         "presetVersion"
+      ]
+    },
+    "PresetExecution": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "commandId": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "presetId": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 20
+        },
+        "status": {
+          "enum": [
+            "WAITING_DEPLOYMENT",
+            "WAITING_EXECUTION",
+            "WAITING_DEVICE",
+            "EXECUTED",
+            "FAILED",
+            "SUPERSEDED",
+            "CANCELLED"
+          ]
+        },
+        "errorCode": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "commandId",
+        "presetId",
+        "status",
+        "errorCode"
       ]
     }
   }

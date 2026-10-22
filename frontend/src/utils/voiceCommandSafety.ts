@@ -30,7 +30,7 @@ export function isLocalVoiceSimulation(runtime?: VoiceAutomationRuntime | null):
 
 /** Apply to the complete frozen plan before any step is dispatched. */
 export function requiresVoiceConfirmation(command: Command, speechRuntime?: VoiceAutomationRuntime | null): boolean {
-  if (command.action === 'ALGORITHM_PRESET') return true
+  if (command.action === 'ALGORITHM_PRESET') return !isLocalVoiceSimulation(speechRuntime)
   if (command.action === 'SEQUENCE') return !command.steps?.length
     || command.steps.some(step => requiresVoiceConfirmation(step, speechRuntime))
   return !isLocalVoiceSimulation(speechRuntime) && (command.action === 'STOP'

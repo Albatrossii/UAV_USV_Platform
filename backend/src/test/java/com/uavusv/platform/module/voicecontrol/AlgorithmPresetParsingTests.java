@@ -7,6 +7,90 @@ import org.junit.jupiter.params.provider.ValueSource;
 
 class AlgorithmPresetParsingTests {
     @ParameterizedTest
+    @ValueSource(strings = {"的船", "的穿", "的喘", "地船", "底川", "敌穿", "滴船", "d穿", "D船", "di喘", "di chuan", "ＤＩＣＨＵＡＮ", "敌chuan", "机船"})
+    void phoneticTargetSlotPreservesAllEighteenDeviceAndGroupMappings(String noun) {
+        for (int id=1; id<=18; id++) {
+            String text = AlgorithmPresets.label(id).replace("敌船", noun) + "。";
+            assertEquals(AlgorithmPresets.label(id) + "。", AlgorithmPresets.normalizeAlgorithmSpeech(text));
+            assertEquals(id, AlgorithmPresets.parse(text), text);
+        }
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"不要一号无人机追击一号d穿", "一号无人机追击一号d穿吗？", "如果一号无人机追击一号d穿",
+        "一号无人机追击一号d穿然后停止", "一号无人机追击一号d穿或者二号敌船",
+        "一号无人机追击三号d穿", "四号无人机追击一号d穿", "一号无人机追击d穿",
+        "一号无人机追击一号客船", "一号无人机追击一号货船", "一号无人机追击一号护航船",
+        "一号无人机追击一号地图", "一号无人机追击一号d", "一号无人鸡追击一号d穿",
+        "将一二三号无人艇分配给三号d穿", "不要将一二三号无人艇分配给二号d穿"})
+    void phoneticTargetDoesNotGuessUnresolvedMeaning(String text) {
+        assertEquals(java.text.Normalizer.normalize(text, java.text.Normalizer.Form.NFKC), AlgorithmPresets.normalizeAlgorithmSpeech(text));
+        assertNull(AlgorithmPresets.parse(text));
+    }
+
+    @Test
+    void confirmedOneAircraftPhraseDoesNotGeneralizeCountsToIds() {
+        assertEquals(1, AlgorithmPresets.parse("让一架无人机追击一号敌船。"));
+        assertEquals(1, AlgorithmPresets.parse("请让一架无人机追击一号敌船！"));
+        for (String text : new String[]{"任选一架无人机追击一号敌船", "让两架无人机追击一号敌船",
+                "不要让一架无人机追击一号敌船", "让一架无人机追击一号敌船吗？",
+                "如果让一架无人机追击一号敌船", "让一架无人机追击一号敌船然后停止"}) {
+            assertNull(AlgorithmPresets.parse(text));
+            assertEquals(java.text.Normalizer.normalize(text, java.text.Normalizer.Form.NFKC), AlgorithmPresets.normalizeAlgorithmSpeech(text));
+        }
+    }
+    @Test
+    void bindingRepairsKeepTheExactGroupAndTarget() {
+        for (int id=13; id<=18; id++) for (String noun : new String[]{"机船", "的船", "的穿", "的喘"}) {
+            assertEquals(id, AlgorithmPresets.parse(AlgorithmPresets.label(id).replace("敌船", noun)+"。"));
+        }
+        for (String text : new String[]{"不要将一二三号无人艇分配给二号的穿", "将一二三号无人艇分配给二号的穿吗？",
+                "将一二三号无人艇分配给三号的穿", "将一二三号无人艇分配给二号的穿然后停止"}) {
+            assertNull(AlgorithmPresets.parse(text));
+        }
+    }
+    @Test
+    void guardHomophoneOnlyRepairsTheCompleteCommand() {
+        for (String text : new String[]{"恢复首位。", "请恢复首位！", "恢复守卫"}) {
+            assertEquals(19, AlgorithmPresets.parse(text));
+        }
+        for (String text : new String[]{"不要恢复首位", "恢复首位吗？", "如果恢复首位", "恢复首位然后停止", "恢复首位或者围捕"}) {
+            assertNull(AlgorithmPresets.parse(text));
+            assertEquals(java.text.Normalizer.normalize(text, java.text.Normalizer.Form.NFKC), AlgorithmPresets.normalizeAlgorithmSpeech(text));
+        }
+    }
+    @Test
+    void chaseHomophonesKeepEveryDeviceAndTargetNumber() {
+        int[][] air = {{1,7},{9,3},{5,11}};
+        int[][] sea = {{2,8},{10,4},{12,6}};
+        for (int unit=1; unit<=3; unit++) for (int target=1; target<=2; target++) {
+            for (String noun : new String[]{"的船", "的穿", "的喘", "机船"}) {
+                assertEquals(air[unit-1][target-1], AlgorithmPresets.parse(unit+"号无人机追击"+target+"号"+noun+"。"));
+                assertEquals(sea[unit-1][target-1], AlgorithmPresets.parse(unit+"号无人艇追击"+target+"号"+noun+"。"));
+            }
+        }
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {
+        "执行围捕观察全过程。", "执行围捕，观察全过程。", "请开始围捕，查看整个过程",
+        "启动围捕；然后观看全程", "围捕并观察一下全过程"
+    })
+    void captureAllowsAnExplicitViewingDescription(String text) {
+        assertEquals(20, AlgorithmPresets.parse(text));
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {
+        "观察围捕全过程", "不要执行围捕，观察全过程", "如果执行围捕，观察全过程",
+        "执行围捕，观察全过程吗？", "执行围捕，停止任务", "执行围捕，观察全过程后停止",
+        "执行围捕，观察全过程，不要开始", "执行围捕观察不明目标"
+    })
+    void viewingDescriptionCannotHideOtherInstructions(String text) {
+        assertNull(AlgorithmPresets.parse(text));
+    }
+
+    @ParameterizedTest
     @ValueSource(strings = {
         "执行第13条指令", "执行第十三条指令", "第十三号指令", "第十三个指令",
         "执行十三条指令", "13", "十三", "XIII", "xiii", "ⅩⅢ", "ⅹⅲ",

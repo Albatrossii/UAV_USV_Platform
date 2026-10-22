@@ -14,7 +14,7 @@ import type { UnityPresentationOutgoing } from '@/types/voiceControl'
 
 const RUNTIME_SCOPE = 'VIRTUAL_FLEET' as const
 const RUNTIME_INSTANCE_ID = 'virtual-fleet-unity-01'
-const WEBGL_SOURCE = '/unity-virtual-fleet/index.html?embedded=1&build=20261016-tight-all-nodes'
+const WEBGL_SOURCE = '/unity-virtual-fleet/index.html?embedded=1&build=20261021-command-camera'
 
 const emit = defineEmits<{
   unityReady: []

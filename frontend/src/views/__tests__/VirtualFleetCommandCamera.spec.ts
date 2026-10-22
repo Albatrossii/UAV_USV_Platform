@@ -152,7 +152,7 @@ async function createView() {
 
 type View = Awaited<ReturnType<typeof createView>>
 function cameraCalls(view: View) {
-  return view.postToUnity.mock.calls.filter(([type]) => type === 'setCameraMode' || type === 'selectDevice')
+  return view.postToUnity.mock.calls.filter(([type]) => ['setCameraMode', 'selectDevice', 'focusCommand', 'restoreCommandCamera'].includes(type))
 }
 async function dispatch(view: View, target = 'UAV-001') {
   const dispatched = execution()
@@ -162,6 +162,26 @@ async function dispatch(view: View, target = 'UAV-001') {
 }
 
 describe('VirtualFleetConfigView single-device command camera', () => {
+  it('focuses a chase preset and restores the original follow view after five seconds', async () => {
+    const view = await createView()
+    await view.wrapper.get('select[aria-label="跟随目标"]').setValue('USV-001')
+    view.postToUnity.mockClear()
+    const receipt = { ...execution('SUCCEEDED'), action: 'ALGORITHM_PRESET' as const }
+    const frozen = proposal('UAV-001')
+    view.store.proposal = { ...frozen, status: 'CONFIRMED', executionId: receipt.executionId,
+      plan: { ...frozen.plan, action: 'ALGORITHM_PRESET', parameters: { presetId: 1, presetVersion: 'escort-20261020' } } }
+    view.store.execution = receipt
+    await nextTick()
+    expect(cameraCalls(view)).toEqual([['focusCommand', { deviceCodes: ['UAV-001'] }]])
+    expect(view.setup.cameraFollowDevice).toBe('UAV-001')
+    await vi.advanceTimersByTimeAsync(4999)
+    expect(cameraCalls(view)).toHaveLength(1)
+    await vi.advanceTimersByTimeAsync(1)
+    expect(cameraCalls(view)[1]).toEqual(['restoreCommandCamera', { deviceCodes: [] }])
+    expect(view.setup.cameraMode).toBe('device-follow')
+    expect(view.setup.cameraFollowDevice).toBe('USV-001')
+  })
+
   beforeEach(() => {
     vi.useFakeTimers()
     vi.setSystemTime(new Date('2026-10-09T09:00:00.000Z'))
@@ -345,7 +365,7 @@ describe('VirtualFleetConfigView single-device command camera', () => {
     await view.wrapper.get('.cnv-card[data-node="USV-001"]').trigger('click')
     await vi.advanceTimersByTimeAsync(5000)
     expect(cameraCalls(view)).toEqual([
-      ['selectDevice', { deviceCode: 'UAV-001' }],
+      ['focusCommand', { deviceCodes: ['UAV-001'] }],
       ['selectDevice', { deviceCode: 'USV-001' }],
     ])
     expect(view.setup.cameraMode).toBe('device-follow')
@@ -408,15 +428,15 @@ describe('VirtualFleetConfigView single-device command camera', () => {
     const view = await createView()
     await dispatch(view, target)
     expect(cameraCalls(view)).toEqual([
-      ['selectDevice', { deviceCode: target }],
+      ['focusCommand', { deviceCodes: [target] }],
     ])
     expect(view.setup.selectedDevice).toBe(target)
-    await vi.advanceTimersByTimeAsync(2499)
+    await vi.advanceTimersByTimeAsync(4999)
     expect(cameraCalls(view)).toHaveLength(1)
     await vi.advanceTimersByTimeAsync(1)
     expect(cameraCalls(view)).toEqual([
-      ['selectDevice', { deviceCode: target }],
-      ['setCameraMode', { mode: 'overview' }],
+      ['focusCommand', { deviceCodes: [target] }],
+      ['restoreCommandCamera', { deviceCodes: [] }],
     ])
     expect(view.setup.cameraMode).toBe('overview')
     expect(view.postToUnity.mock.calls.some(([type, payload]) => type === 'toggleTrajectory' && payload.visible === true)).toBe(false)
@@ -428,10 +448,10 @@ describe('VirtualFleetConfigView single-device command camera', () => {
     await vi.advanceTimersByTimeAsync(1000)
     view.store.execution = { ...view.store.execution!, state: 'ACCEPTED', updatedAt: new Date().toISOString() }
     await nextTick()
-    await vi.advanceTimersByTimeAsync(1500)
+    await vi.advanceTimersByTimeAsync(4000)
     expect(cameraCalls(view)).toEqual([
-      ['selectDevice', { deviceCode: 'UAV-001' }],
-      ['setCameraMode', { mode: 'overview' }],
+      ['focusCommand', { deviceCodes: ['UAV-001'] }],
+      ['restoreCommandCamera', { deviceCodes: [] }],
     ])
   })
 
@@ -471,9 +491,9 @@ describe('VirtualFleetConfigView single-device command camera', () => {
     view.store.execution.steps![1]!.executionId = 'device-step'
     view.store.execution.currentStepIndex = 1
     await nextTick()
-    expect(cameraCalls(view)).toEqual([['selectDevice', { deviceCode: 'USV-001' }]])
-    await vi.advanceTimersByTimeAsync(2500)
-    expect(cameraCalls(view)[1]).toEqual(['setCameraMode', { mode: 'overview' }])
+    expect(cameraCalls(view)).toEqual([['focusCommand', { deviceCodes: ['USV-001'] }]])
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(cameraCalls(view)[1]).toEqual(['restoreCommandCamera', { deviceCodes: [] }])
   })
 
   it('keeps the timer running when Unity acknowledges the automatic camera request', async () => {
@@ -486,8 +506,8 @@ describe('VirtualFleetConfigView single-device command camera', () => {
       payload: { mode: 'device-follow', deviceCode: 'UAV-001', success: true },
     })
     await nextTick()
-    await vi.advanceTimersByTimeAsync(2500)
-    expect(cameraCalls(view)[1]).toEqual(['setCameraMode', { mode: 'overview' }])
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(cameraCalls(view)[1]).toEqual(['restoreCommandCamera', { deviceCodes: [] }])
   })
 
   it('cancels the timer when the user changes the camera directly inside Unity', async () => {
@@ -503,7 +523,7 @@ describe('VirtualFleetConfigView single-device command camera', () => {
       payload: { mode: 'device-follow', deviceCode: 'UAV-001', success: true },
     })
     await vi.advanceTimersByTimeAsync(5000)
-    expect(cameraCalls(view)).toEqual([['selectDevice', { deviceCode: 'UAV-001' }]])
+    expect(cameraCalls(view)).toEqual([['focusCommand', { deviceCodes: ['UAV-001'] }]])
     expect(view.setup.selectedDevice).toBe('USV-001')
   })
 
@@ -539,7 +559,7 @@ describe('VirtualFleetConfigView single-device command camera', () => {
     await vi.advanceTimersByTimeAsync(1000)
     await view.wrapper.get('button[aria-label="跟随设备"]').trigger('click')
     expect(cameraCalls(view)).toEqual([
-      ['selectDevice', { deviceCode: 'UAV-001' }],
+      ['focusCommand', { deviceCodes: ['UAV-001'] }],
       ['selectDevice', { deviceCode: 'UAV-001' }],
     ])
     await vi.advanceTimersByTimeAsync(5000)

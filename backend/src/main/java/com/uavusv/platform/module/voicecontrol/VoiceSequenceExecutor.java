@@ -206,6 +206,24 @@ public class VoiceSequenceExecutor {
             fail(parent, parentState, child.path("errorCode").asText("SEQUENCE_STEP_FAILED"));
             return;
         }
+        // A scheduling acknowledgement is not tactical execution: ordered
+        // sequences must wait for this command's own authoritative outcome.
+        if (child.has("presetExecution")) {
+            var actual = context.path("_presetCommands").path(child.path("commandId").asText());
+            if (!actual.isObject()) actual = child.path("presetExecution");
+            String presetStatus = actual.path("status").asText();
+            if (presetStatus.startsWith("WAITING_")) {
+                step.put("state", "EXECUTING");
+                parent.put("sequenceStatus", "WAITING_STEP_PRECONDITION");
+                store.save("voice_execution", parent);
+                return;
+            }
+            if (!"EXECUTED".equals(presetStatus)) {
+                step.put("state", "FAILED");
+                fail(parent, "FAILED", actual.path("errorCode").asText("PRESET_" + presetStatus));
+                return;
+            }
+        }
         // A successful command receipt is not an arrival receipt. Movement
         // commands wait for a newer authoritative frame before continuing.
         if ("DEVICE_COMMAND".equals(frozenStep.path("action").asText())

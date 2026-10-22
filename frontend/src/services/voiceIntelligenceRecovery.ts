@@ -15,7 +15,7 @@ const messages: Record<string, string> = {
   VOICE_AUDIO_FORMAT_UNSUPPORTED: '音频格式或文件内容无效，请使用Chrome/Edge录制的WebM/Opus或有效MP3。',
   VOICE_AUDIO_CONVERTER_UNAVAILABLE: '后端音频转换工具未就绪，请联系管理员配置 FFmpeg 后再录音。',
   VOICE_AUDIO_TOO_LONG: '音频超过 60 秒，请缩短后重试。',
-  VOICE_NO_SPEECH: '未识别到语音，请重新录音。',
+  VOICE_NO_SPEECH: '未识别到语音。请检查麦克风输入，录音时确认音量条有变化，说完后再次点击结束。',
   VOICE_RATE_LIMITED: '识别请求受限：可能是上一条仍在处理、短时间请求过多或语音服务繁忙。请等待倒计时后重试原请求；不会自动重发。若持续受限，可明确重新发起识别，或检查其他页面及服务配额。',
   VOICE_BUDGET_EXCEEDED: '本阶段调用预算已耗尽，请联系管理员。',
   VOICE_UPLOAD_TIMEOUT: '上传超时，请使用原请求恢复查询。',

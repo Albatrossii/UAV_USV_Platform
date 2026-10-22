@@ -1,4 +1,4 @@
-import { presetLabel } from '@/services/algorithmPresets'
+import { presetLabel, presetMatchesText } from '@/services/algorithmPresets'
 import type { VoiceExecution, VoiceSequenceExecutionStep, VoiceSequencePlanStep, VoiceRuntimeContext } from '@/types/voiceControl'
 import { normalizeVoiceDeviceTerms } from './voiceTranscriptNormalization'
 import { voiceDeviceLabel } from './voiceCommandSafety'
@@ -35,6 +35,7 @@ export function sequenceMatchesSpeech(text: string, steps: VoiceSequencePlanStep
     }
     if (step.action !== 'DEVICE_COMMAND') {
       lastTarget = undefined
+      if (step.action === 'ALGORITHM_PRESET') return presetMatchesText(clause, step.parameters)
       return missionVoiceActions[clause] === step.action
     }
     if (lastTarget && /^(?:它)?(?:悬停|驻留|待命|返航|返回|归队|继续|停止|降落|停船)$/u.test(clause)) clause = lastTarget + clause.replace(/^它/u, '')

@@ -1,4 +1,5 @@
 import type { VoiceExecution, VoiceExecutionState, VoiceProposal, VoiceRuntimeContext } from '@/types/voiceControl'
+import { presetDeviceCodes } from '@/services/algorithmPresets'
 
 export interface SingleDeviceCameraObservation {
   proposal: VoiceProposal | null
@@ -12,6 +13,7 @@ export interface SingleDeviceCameraObservation {
 
 export interface SingleDeviceCameraDirectorOptions {
   focus: (deviceCode: string) => void
+  focusGroup?: (deviceCodes: string[]) => void
   overview: () => void
   focusDurationMs?: number
   onFocusChange?: (active: boolean) => void
@@ -51,15 +53,21 @@ function executionMatchesPlan(input: SingleDeviceCameraObservation) {
     && execution.runtimeGeneration === context.runtimeGeneration)
 }
 
-function dispatchedDevice(input: SingleDeviceCameraObservation): { target: string; key: string; startedAt: string } | null {
+function dispatchedDevice(input: SingleDeviceCameraObservation): { target: string; targets?: string[]; key: string; startedAt: string } | null {
   const { proposal, execution } = input
   if (!proposal || !execution || !dispatchedStates.has(execution.state)) return null
   let target: string | undefined
+  let targets: string[] | undefined
   let key = executionKey(execution)
   let startedAt = execution.createdAt
   if (execution.action === 'DEVICE_COMMAND') {
     target = proposal.plan.targetDeviceCode
     if (!proposal.plan.deviceCommandType) return null
+  } else if (execution.action === 'ALGORITHM_PRESET') {
+    if (!['ACCEPTED', 'EXECUTING', 'SUCCEEDED'].includes(execution.state)
+      || ['FAILED', 'SUPERSEDED', 'CANCELLED'].includes(execution.presetExecution?.status ?? '')) return null
+    targets = presetDeviceCodes(proposal.plan.parameters)
+    target = targets[0]
   } else if (execution.action === 'SEQUENCE') {
     const planSteps = proposal.plan.steps
     const steps = execution.steps
@@ -70,6 +78,7 @@ function dispatchedDevice(input: SingleDeviceCameraObservation): { target: strin
         || step.action !== plan.action || step.targetDeviceCode !== plan.targetDeviceCode
         || step.deviceCommandType !== plan.deviceCommandType || step.waitSeconds !== plan.waitSeconds
         || Boolean(step.waitForPrevious) !== Boolean(plan.waitForPrevious)
+        || JSON.stringify(step.parameters) !== JSON.stringify(plan.parameters)
     })) return null
     // Each dispatched device step has its own camera identity. A later WAIT
     // must not replay an earlier focus, and a long sequence can focus a fresh
@@ -77,18 +86,23 @@ function dispatchedDevice(input: SingleDeviceCameraObservation): { target: strin
     let index = steps.length - 1
     while (index >= 0 && (steps[index]!.state === 'PENDING' || steps[index]!.state === 'QUEUED')) index--
     const device = steps[index]
-    if (!device || device.action !== 'DEVICE_COMMAND' || !device.executionId
-      || !device.deviceCommandType || device.state === 'PENDING' || !dispatchedStates.has(device.state)
+    if (!device || !['DEVICE_COMMAND', 'ALGORITHM_PRESET'].includes(device.action) || !device.executionId
+      || (device.action === 'DEVICE_COMMAND' && !device.deviceCommandType) || device.state === 'PENDING' || !dispatchedStates.has(device.state)
       || steps.slice(0, index).some(step => step.state !== 'SUCCEEDED')) return null
     target = device.targetDeviceCode
+    if (device.action === 'ALGORITHM_PRESET') {
+      targets = presetDeviceCodes(device.parameters)
+      target = targets[0]
+    }
     key = JSON.stringify([key, index, device.executionId])
     startedAt = device.startedAt ?? execution.createdAt
   }
   return target && input.deviceCodes.includes(target) && proposal.plan.explicitDeviceCodes.includes(target)
-    ? { target, key, startedAt } : null
+    && (!targets || targets.every(code => input.deviceCodes.includes(code) && proposal.plan.explicitDeviceCodes.includes(code)))
+    ? { target, targets, key, startedAt } : null
 }
 
-/** Briefly identify a dispatched device, then return to the fleet overview.
+/** Briefly identify dispatched devices, then invoke the caller's camera restoration.
  * Cancellation deliberately does not move the camera: manual navigation wins.
  */
 export function createSingleDeviceCameraDirector(options: SingleDeviceCameraDirectorOptions) {
@@ -163,7 +177,8 @@ export function createSingleDeviceCameraDirector(options: SingleDeviceCameraDire
     stopFocus()
     active = { executionKey: device.key, deviceCode: device.target }
     options.onFocusChange?.(true)
-    options.focus(device.target)
+    if (device.targets && device.targets.length > 1 && options.focusGroup) options.focusGroup(device.targets)
+    else options.focus(device.target)
     timer = setTimeout(() => {
       timer = null
       if (!active || disposed) return

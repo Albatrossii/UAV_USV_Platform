@@ -220,6 +220,52 @@ async function pendingPresentationProbe() {
 }
 
 describe('VoiceP0ControlPanel refined controls', () => {
+  it('reports binding as saved configuration rather than a started maneuver', async () => {
+    const { wrapper, store } = await panel()
+    store.execution = { ...receipt(), action: 'ALGORITHM_PRESET', presetExecution: {
+      commandId: receipt().commandId, presetId: 14, status: 'EXECUTED', errorCode: null,
+    } }
+    await nextTick()
+    expect(wrapper.get('.refined-result-head').text()).toBe('编组已保存 · 围捕时使用')
+    expect(wrapper.get('.refined-result-head').text()).not.toContain('算法已启动')
+  })
+  it('shows scheduled departure separately from success and follows its own authoritative result', async () => {
+    const { wrapper, store } = await panel()
+    store.execution = { ...receipt(), action: 'ALGORITHM_PRESET', presetExecution: {
+      commandId: receipt().commandId, presetId: 1, status: 'WAITING_DEPLOYMENT', errorCode: null,
+    } }
+    await nextTick()
+    expect(wrapper.get('.refined-result-head').text()).toBe('已接收 · 出发完成后自动执行')
+    expect(wrapper.get('.refined-result-head').text()).not.toContain('成功')
+    await wrapper.setProps({ frame: { runId: Number(runtime().algorithmRunId), sequence: 20, metrics: {
+      presetCommands: { [receipt().commandId]: { ...store.execution.presetExecution, status: 'EXECUTED' } },
+    } } as unknown as AlgorithmRuntimeFrame })
+    expect(wrapper.get('.refined-result-head').text()).toBe('算法已启动')
+    // A different run's frame must never complete this command.
+    await wrapper.setProps({ frame: { runId: 999, sequence: 21, metrics: {} } as AlgorithmRuntimeFrame })
+    expect(wrapper.get('.refined-result-head').text()).toContain('出发完成后')
+    store.contexts[0]!.state = 'PAUSED'
+    await nextTick()
+    expect(wrapper.get('.refined-result-head').text()).toContain('恢复仿真后')
+    store.contexts[0]!.state = 'STOPPED'
+    await nextTick()
+    expect(wrapper.get('.refined-result-head').text()).toBe('待执行指令已取消')
+  })
+
+  it('shows deferred rejection and replacement without a false success message', async () => {
+    const { wrapper, store } = await panel()
+    store.execution = { ...receipt(), action: 'ALGORITHM_PRESET', presetExecution: {
+      commandId: receipt().commandId, presetId: 20, status: 'FAILED', errorCode: 'PRESET_CAPTURE_NOT_READY',
+    } }
+    await nextTick()
+    expect(wrapper.get('.refined-result-head').text()).toBe('指令未能启动')
+    expect(wrapper.get('.refined-result').classes()).toContain('failed')
+    store.execution.presetExecution!.status = 'SUPERSEDED'
+    store.execution.presetExecution!.errorCode = null
+    await nextTick()
+    expect(wrapper.get('.refined-result-head').text()).toBe('已被新指令替换')
+  })
+
   it('establishes the Unity presentation binding when mounted into an already ready scene', async () => {
     vi.stubEnv('VITE_VOICE_UNITY_PRESENTATION_V1', 'true')
     const result = createPanel(true, true)
@@ -428,7 +474,7 @@ describe('VoiceP0ControlPanel refined controls', () => {
     expect(wrapper.find('h2').exists()).toBe(false)
     expect(wrapper.text()).not.toContain('一句话，调度海空设备')
     expect(wrapper.get('.refined-capture-title').text()).toBe('点击录音')
-    expect(wrapper.text()).toContain('支持返航、降落、停止；文字编辑后需确认')
+    expect(wrapper.text()).toContain('说完点击结束，自动执行')
     useAuthStore().user = { username: 'viewer', role: 'VIEWER' }
     store.responseUnknown = true
     await nextTick()
@@ -476,7 +522,7 @@ describe('VoiceP0ControlPanel refined controls', () => {
     expect(store.confirm).toHaveBeenCalledOnce()
     expect(wrapper.find('.refined-confirm').exists()).toBe(false)
     expect(wrapper.get('.refined-result').text()).toContain('算法执行成功')
-    expect(wrapper.text()).toContain('语音自动执行')
+    expect(wrapper.text()).toContain('说完点击结束，自动执行')
   })
 
   it('separates a previous receipt from a new draft without erasing execution state', async () => {
@@ -599,6 +645,58 @@ describe('VoiceP0ControlPanel refined controls', () => {
     expect(wrapper.find('.refined-confirm').exists()).toBe(false)
     expect(wrapper.text()).not.toContain('高风险')
     expect(wrapper.text()).toContain('语音指令已自动下发')
+  })
+
+  it.each(['speech', 'execute-click'] as const)('executes a preset using its own capability exactly once (%s)', async source => {
+    const { wrapper, store, input } = await panel()
+    store.contexts = [{ ...store.context!, capabilities: ['ALGORITHM_PRESET'] }]
+    store.propose = vi.fn().mockImplementation(async (_intent, id) => {
+      const frozen = frozenProposal(id)
+      store.proposal = { ...frozen, plan: {
+        ...frozen.plan, action: 'ALGORITHM_PRESET', targetDeviceCode: undefined, deviceCommandType: undefined,
+        explicitDeviceCodes: [...wrapper.props('runtimeHint').deviceCodes],
+        parameters: { presetId: 13, presetVersion: 'escort-20261020' },
+      } }
+    })
+    store.confirm = vi.fn().mockImplementation(async () => {
+      store.proposal = { ...store.proposal!, status: 'CONFIRMED' }
+      store.execution = { ...receipt(), action: 'ALGORITHM_PRESET' }
+    })
+    await flushPromises()
+    const dispatch = async () => {
+      if (source === 'speech') await voice(input, 'ALGORITHM_PRESET')
+      else { input.vm.$emit('executeCandidate', 'ALGORITHM_PRESET', interpretationId); await flushPromises() }
+    }
+    await dispatch()
+    expect(store.confirm).toHaveBeenCalledOnce()
+    expect(wrapper.find('.refined-confirm').exists()).toBe(false)
+    await dispatch()
+    expect(store.confirm).toHaveBeenCalledOnce()
+  })
+
+  it('automatically confirms a preset-first 13→14→20 sequence without treating it as START', async () => {
+    const { wrapper, store, input } = await panel()
+    store.contexts = [{ ...store.context!, capabilities: ['ALGORITHM_PRESET', 'SEQUENCE'] }]
+    store.propose = vi.fn().mockImplementation(async (_intent, id) => {
+      const frozen = frozenProposal(id)
+      store.proposal = { ...frozen, plan: {
+        ...frozen.plan, action: 'SEQUENCE', targetDeviceCode: undefined, deviceCommandType: undefined,
+        explicitDeviceCodes: [...wrapper.props('runtimeHint').deviceCodes],
+        steps: [13, 14, 20].map((presetId, index) => ({
+          index, action: 'ALGORITHM_PRESET', parameters: { presetId, presetVersion: 'escort-20261020' },
+        })),
+      } }
+    })
+    store.confirm = vi.fn().mockImplementation(async () => {
+      store.proposal = { ...store.proposal!, status: 'CONFIRMED' }
+      store.execution = { ...receipt(), action: 'SEQUENCE' }
+    })
+    await flushPromises()
+    input.vm.$emit('voiceCandidate', 'COMMAND_SEQUENCE', interpretationId,
+      { startedAt: Date.now(), asrRequestMs: 100, parseMs: 10, sequenceFirstAction: 'ALGORITHM_PRESET' })
+    await flushPromises()
+    expect(store.confirm).toHaveBeenCalledOnce()
+    expect(wrapper.find('.refined-confirm').exists()).toBe(false)
   })
 
   it('still requires a click for manually previewed return text in the simulation', async () => {

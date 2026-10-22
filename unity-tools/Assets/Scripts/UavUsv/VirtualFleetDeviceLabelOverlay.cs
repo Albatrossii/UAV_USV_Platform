@@ -6,7 +6,7 @@ using UnityEngine;
 namespace UavUsv
 {
     /// <summary>
-    /// Draws stable UAV/USV identifiers above the runtime fleet. The labels are
+    /// Draws stable identifiers above UAVs, USVs, escort and threat vessels. The labels are
     /// intentionally presentation-only: they never change fleet state or poses.
     /// </summary>
     [DisallowMultipleComponent]
@@ -93,6 +93,7 @@ namespace UavUsv
                 return;
             AddTargets(fleetManager.Uavs);
             AddTargets(fleetManager.Usvs);
+            AddTargets(fleetManager.Targets);
         }
 
         private void AddTargets(IReadOnlyList<VirtualFleetDeviceState> states)

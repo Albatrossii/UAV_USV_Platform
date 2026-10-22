@@ -67,6 +67,43 @@ function rig(focusDurationMs?: number) {
 }
 
 describe('single device command camera director', () => {
+  it('focuses an accepted chase node for five seconds, then restores only once', () => {
+    const focus = vi.fn(), overview = vi.fn()
+    const director = createSingleDeviceCameraDirector({ focus, overview, focusDurationMs: 5000 })
+    const observation = input()
+    observation.proposal!.plan.action = 'ALGORITHM_PRESET'
+    observation.proposal!.plan.parameters = { presetId: 1, presetVersion: 'escort-20261020' }
+    observation.execution!.action = 'ALGORITHM_PRESET'
+    observation.execution!.state = 'SUCCEEDED'
+    observation.execution!.presetExecution = { commandId: observation.execution!.commandId, presetId: 1, status: 'WAITING_DEPLOYMENT', errorCode: null }
+    director.observe(observation)
+    expect(focus).toHaveBeenCalledExactlyOnceWith('UAV-001')
+    vi.advanceTimersByTime(4999)
+    expect(overview).not.toHaveBeenCalled()
+    observation.execution!.presetExecution.status = 'EXECUTED'
+    director.observe(observation)
+    vi.advanceTimersByTime(1)
+    expect(overview).toHaveBeenCalledTimes(1)
+    expect(focus).toHaveBeenCalledTimes(1)
+  })
+
+  it('frames all members named by a grouping command, ignoring receipt-wide membership', () => {
+    const focus = vi.fn(), focusGroup = vi.fn(), overview = vi.fn()
+    const director = createSingleDeviceCameraDirector({ focus, focusGroup, overview, focusDurationMs: 5000 })
+    const observation = input()
+    observation.deviceCodes = ['UAV-001', 'UAV-002', 'UAV-003', 'USV-001', 'USV-002', 'USV-003']
+    observation.proposal!.plan.explicitDeviceCodes = observation.deviceCodes
+    observation.proposal!.plan.action = 'ALGORITHM_PRESET'
+    observation.proposal!.plan.parameters = { presetId: 13, presetVersion: 'escort-20261020' }
+    observation.execution!.action = 'ALGORITHM_PRESET'
+    observation.execution!.state = 'SUCCEEDED'
+    director.observe(observation)
+    expect(focusGroup).toHaveBeenCalledExactlyOnceWith(['UAV-001', 'UAV-002', 'UAV-003'])
+    director.cancel()
+    vi.advanceTimersByTime(5000)
+    expect(overview).not.toHaveBeenCalled()
+  })
+
   beforeEach(() => {
     vi.useFakeTimers()
     vi.setSystemTime(new Date('2026-10-09T09:00:00.000Z'))

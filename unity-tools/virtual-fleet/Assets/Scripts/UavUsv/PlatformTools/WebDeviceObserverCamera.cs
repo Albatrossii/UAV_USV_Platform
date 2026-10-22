@@ -67,6 +67,74 @@ namespace UavUsv.PlatformTools
         private float interactionDistance;
         private float lastPrimaryClickAt = -10f;
         private float lastInteractionAt = -10f;
+        private CameraBookmark commandBookmark;
+        private readonly List<Transform> commandSubjects = new List<Transform>();
+        private sealed class CameraBookmark
+        {
+            public ObservationMode mode, interactionMode;
+            public Transform subject;
+            public string deviceCode;
+            public Vector3 focusOffset, overviewFocus;
+            public float yaw, pitch, roll, distance, overviewDistance;
+            public bool overviewInitialized;
+        }
+
+        public bool FocusCommand(string[] deviceCodes)
+        {
+            if (deviceCodes == null || deviceCodes.Length == 0) return false;
+            RefreshSceneTargets(true);
+            var subjects = new List<Transform>();
+            foreach (string code in deviceCodes)
+            {
+                Transform subject = FindSceneDevice(NormalizeDeviceCode(code));
+                if (!subject || !subject.gameObject.activeInHierarchy) return false;
+                if (!subjects.Contains(subject)) subjects.Add(subject);
+            }
+            // Repeated commands replace the close-up, not the original bookmark.
+            if (commandBookmark == null) commandBookmark = new CameraBookmark {
+                mode = mode, subject = selectedSubject, deviceCode = CurrentDeviceCode,
+                interactionMode = interactionMode, focusOffset = interactionFocusOffset,
+                yaw = interactionYaw, pitch = interactionPitch, roll = interactionRoll,
+                distance = interactionDistance, overviewFocus = overviewFocus,
+                overviewDistance = overviewDistance, overviewInitialized = overviewFrameInitialized
+            };
+            commandSubjects.Clear();
+            commandSubjects.AddRange(subjects);
+            selectedSubject = subjects.Count == 1 ? subjects[0] : null;
+            CurrentDeviceCode = selectedSubject ? CanonicalDeviceCode(selectedSubject) : string.Empty;
+            mode = selectedSubject ? ObservationMode.Device : ObservationMode.Overview;
+            overviewFrameInitialized = false;
+            ResetCameraInteraction();
+            ActivateObserver();
+            BeginOverviewTransition();
+            return true;
+        }
+
+        public void RestoreCommandCamera()
+        {
+            if (commandBookmark == null) return; // User interaction has priority.
+            CameraBookmark saved = commandBookmark;
+            commandBookmark = null;
+            commandSubjects.Clear();
+            mode = saved.mode == ObservationMode.None ? ObservationMode.Overview : saved.mode;
+            selectedSubject = saved.subject;
+            CurrentDeviceCode = saved.deviceCode;
+            interactionMode = saved.interactionMode;
+            interactionFocusOffset = saved.focusOffset;
+            interactionYaw = saved.yaw; interactionPitch = saved.pitch; interactionRoll = saved.roll;
+            interactionDistance = saved.distance;
+            lastInteractionAt = Time.unscaledTime;
+            overviewFocus = saved.overviewFocus; overviewDistance = saved.overviewDistance;
+            overviewFrameInitialized = saved.overviewInitialized;
+            ActivateObserver();
+            BeginOverviewTransition();
+        }
+
+        private void CancelCommandCamera()
+        {
+            commandBookmark = null;
+            commandSubjects.Clear();
+        }
 
         private const int MaxTrailPoints = 180;
         private const float TrailSampleSeconds = .2f;
@@ -93,6 +161,7 @@ namespace UavUsv.PlatformTools
             out string profile,
             out string error)
         {
+            CancelCommandCamera();
             RefreshSceneTargets(true);
             string normalized = NormalizeDeviceCode(requestedCode);
             Transform match = null;
@@ -168,8 +237,10 @@ namespace UavUsv.PlatformTools
 
         public void SetOverview()
         {
+            bool hadCommandSubjects = commandSubjects.Count > 0;
+            CancelCommandCamera();
             // Repeated bridge updates must not restart an in-flight pullback.
-            if (mode == ObservationMode.Overview && interactionMode == ObservationMode.None)
+            if (!hadCommandSubjects && mode == ObservationMode.Overview && interactionMode == ObservationMode.None)
                 return;
 
             bool shouldTransition = mode != ObservationMode.None && hasRenderedObserverFrame;
@@ -188,6 +259,7 @@ namespace UavUsv.PlatformTools
 
         public void SetLighthouse()
         {
+            CancelCommandCamera();
             CancelOverviewTransition();
             RefreshSceneTargets(true);
             selectedSubject = null;
@@ -200,6 +272,7 @@ namespace UavUsv.PlatformTools
 
         public void ReleaseToOriginalCamera()
         {
+            CancelCommandCamera();
             CancelOverviewTransition();
             mode = ObservationMode.None;
             ResetCameraInteraction();
@@ -298,12 +371,11 @@ namespace UavUsv.PlatformTools
             float rotationT = 1f - Mathf.Exp(-4.8f * Time.unscaledDeltaTime);
             float fovT = 1f - Mathf.Exp(-3.5f * Time.unscaledDeltaTime);
             hasRenderedObserverFrame = true;
+            if (ApplyOverviewTransition(desiredPosition, desiredRotation, desiredFieldOfView, Time.unscaledTime))
+                return;
             if ((mode == ObservationMode.Overview || mode == ObservationMode.Lighthouse) &&
                 interactionMode == ObservationMode.None)
             {
-                if (ApplyOverviewTransition(
-                        desiredPosition, desiredRotation, desiredFieldOfView, Time.unscaledTime))
-                    return;
                 // Fleet views already smooth their focus and distance together.
                 // A second positional/rotational lag would break the fitted frustum.
                 transform.SetPositionAndRotation(desiredPosition, desiredRotation);
@@ -383,6 +455,7 @@ namespace UavUsv.PlatformTools
             }
             if (reset)
             {
+                commandBookmark = null;
                 ResetCameraInteractionToAutomatic();
                 return;
             }
@@ -394,7 +467,10 @@ namespace UavUsv.PlatformTools
                                          !Input.GetMouseButtonDown(0)) ||
                                         Mathf.Abs(scroll) > .001f;
             if (interactionRequested)
+            {
+                commandBookmark = null;
                 lastInteractionAt = Time.unscaledTime;
+            }
             else if (interactionMode == mode &&
                      Time.unscaledTime - lastInteractionAt >= 2.5f)
             {
@@ -773,6 +849,7 @@ namespace UavUsv.PlatformTools
             foreach (Transform subject in sceneTargets)
             {
                 if (!subject || !subject.gameObject.activeInHierarchy) continue;
+                if (commandSubjects.Count > 0 && !commandSubjects.Contains(subject)) continue;
                 AddFramingPoints(subject);
             }
             Vector2 lower = Vector2.one * float.NegativeInfinity;

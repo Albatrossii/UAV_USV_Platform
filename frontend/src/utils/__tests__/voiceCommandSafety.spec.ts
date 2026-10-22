@@ -46,6 +46,15 @@ describe('voice command safety policy', () => {
     ] }, simulation)).toBe(false)
     expect(requiresVoiceConfirmation({ action: 'SEQUENCE' }, simulation)).toBe(true)
   })
+  it('automates presets only in a registered local simulation, including whole sequences', () => {
+    const preset = { action: 'ALGORITHM_PRESET' }
+    expect(requiresVoiceConfirmation(preset, simulation)).toBe(false)
+    expect(requiresVoiceConfirmation(preset)).toBe(true)
+    expect(requiresVoiceConfirmation({ action: 'SEQUENCE', steps: [
+      { index: 0, action: 'ALGORITHM_PRESET', parameters: { presetId: 13, presetVersion: 'escort-20261020' } },
+      { index: 1, action: 'ALGORITHM_PRESET', parameters: { presetId: 20, presetVersion: 'escort-20261020' } },
+    ] }, simulation)).toBe(false)
+  })
   it.each([
     { runtimeRef: '' }, { runtimeGeneration: '' }, { runtimeScope: 'GATEWAY' },
     { runtimeKind: 'GATEWAY' }, { executionBackend: 'REAL_DEVICE' }, { protocolVersion: 'legacy' },

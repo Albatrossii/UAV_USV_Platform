@@ -453,6 +453,15 @@ public class VoiceCommandApplicationService {
         }
         var v = RuntimeContextRegistry.publicView(e);
         var c = s.get("voice_runtime_context", e.path("runtimeRef").asText());
+        if (v.has("presetExecution") && c != null) {
+            var actual = c.path("_presetCommands").path(e.path("commandId").asText());
+            if (actual.isObject() && e.path("runtimeGeneration").equals(c.path("runtimeGeneration")))
+                v.set("presetExecution", actual.deepCopy());
+            if (v.path("presetExecution").path("status").asText().startsWith("WAITING_")
+                    && (java.util.Set.of("STOPPED", "CANCELLED", "FAILED", "LOST", "COMPLETED").contains(c.path("state").asText())
+                        || !e.path("runtimeGeneration").equals(c.path("runtimeGeneration"))))
+                ((ObjectNode)v.path("presetExecution")).put("status", "CANCELLED");
+        }
         if ("REPORTED_APPLIED".equals(v.path("presentationStatus").asText())
                 && (!r.freshScene(c) || !e.path("_presentationBinding").equals(c.path("_binding"))))
             v.put("presentationStatus", "STALE");

@@ -257,6 +257,7 @@ public class RuntimeContextRegistry {
                     c.set("_deviceStates", states);
                     c.put("_algorithmCommandProfile", frame.path("metrics").path("algorithmCommandProfile").asText());
                     c.put("_deploymentState", frame.path("metrics").path("deploymentState").asText());
+                    c.set("_presetCommands", frame.path("metrics").path("presetCommands").deepCopy());
                     var targets = json.object();
                     for (JsonNode target : frame.path("targets")) if (target.path("visible").asBoolean(true))
                         targets.set(target.path("code").asText(), target.deepCopy());

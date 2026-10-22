@@ -39,6 +39,27 @@ public final class AlgorithmPresets {
         "XI", "XII", "XIII", "XIV", "XV", "XVI", "XVII", "XVIII", "XIX", "XX"
     };
     private AlgorithmPresets() {}
+    // Syllable families, not an edit-distance match against the whole command.
+    // Keep aligned with frontend algorithmPresets.ts; never repair unit IDs/types.
+    private static final String ENEMY_VESSEL_SPEECH =
+            "(?:(?:[敌的地底低滴迪笛狄堤帝弟递抵谛]|[dD](?:[iI])?)(?:[船穿川传傳喘串]|[cC][hH][uU][aA][nN])|机船)";
+    private static final Pattern CHASE_SPEECH = Pattern.compile(
+            "^((?:请)?(?:让)?第?[一二三123]号(?:无人机|无人艇)追击第?[一二12]号)" + ENEMY_VESSEL_SPEECH + "([。！!，,]*)$");
+    private static final Pattern BINDING_SPEECH = Pattern.compile(
+            "^((?:请)?将(?:一二三号无人[机艇]|一二号无人机和一号无人艇|二三号无人艇和三号无人机)分配给[一二]号)" + ENEMY_VESSEL_SPEECH + "([。！!，,]*)$");
+
+    /** Resolve a phonetic target noun only inside a complete numbered chase. */
+    public static String normalizeChaseSpeech(String text) {
+        // User-confirmed complete ASR phrase, not a general count-to-identity conversion.
+        String normalized = Normalizer.normalize(text, Normalizer.Form.NFKC).replaceAll("\\s+", "")
+                .replaceFirst("^(?:请)?让一架无人机追击一号敌船([。！!，,]*)$", "一号无人机追击一号敌船$1");
+        return CHASE_SPEECH.matcher(normalized).replaceFirst("$1敌船$2");
+    }
+    /** Observed whole-command homophone; never rewrite a question or a longer clause. */
+    public static String normalizeAlgorithmSpeech(String text) {
+        return BINDING_SPEECH.matcher(normalizeChaseSpeech(text)).replaceFirst("$1敌船$2")
+                .replaceFirst("^(请)?恢复首位([。！!，,]*)$", "$1恢复守卫$2");
+    }
     public static String label(int id) { return LABELS[id]; }
     public static ObjectNode parameters(VoiceJson json, int id) {
         return json.object().put("presetId", id).put("presetVersion", VERSION);
@@ -52,13 +73,18 @@ public final class AlgorithmPresets {
     }
     public static Integer parse(String raw) {
         if (raw == null) return null;
-        String text = Normalizer.normalize(raw, Normalizer.Form.NFKC).replaceAll("\\s+", "")
+        String text = normalizeAlgorithmSpeech(Normalizer.normalize(raw, Normalizer.Form.NFKC).replaceAll("\\s+", ""))
                 .replaceAll("[。!，,]+$", "").replaceFirst("^(?:请)?(?:让)?", "");
         for (int i=0;i<LABELS.length;i++) if (text.equals(LABELS[i].replace("，", ""))
                 || text.equals(Normalizer.normalize(LABELS[i], Normalizer.Form.NFKC))) return i;
         if (Set.of("恢复护航", "全体撤退", "撤回护航").contains(text)) return 0;
         if (Set.of("恢复守卫", "自动守卫", "形成守卫阵型").contains(text)) return 19;
         if (Set.of("启动围捕", "执行围捕").contains(text)) return 20;
+        // A bounded viewing request describes the capture, not another
+        // actuator command. Match the entire utterance; never drop arbitrary
+        // trailing clauses, conditions, negations or additional actions.
+        if (text.matches("^(?:启动|执行|开始)?围捕[,;。]?(?:并|然后)?(?:观察|查看|观看)(?:一下)?(?:全过程|整个过程|全程)$"))
+            return 20;
         String numbered = text.replaceFirst("^(?:麻烦|劳驾)?(?:请)?(?:帮我|帮忙)?(?:现在|立即|马上)?(?:开始执行|执行|运行|启动|下达)?", "")
                 .replaceFirst("(?:一下)?(?:吧)?$", "");
         Matcher number = NUMBER_FIRST.matcher(numbered);

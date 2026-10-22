@@ -293,7 +293,52 @@ namespace UavUsv.Editor.Tools
                     }
                 }, ref passed);
 
-                Debug.Log("[WebCameraTransitionValidation] PASS " + passed + "/20 deterministic cases; transition duration=" + Duration + "s.");
+                Case("command focus restores original manual overview after replacement", fixture =>
+                {
+                    string code = fixture.CreateUniqueUav();
+                    fixture.SetMode("mode", "Overview");
+                    fixture.SetMode("interactionMode", "Overview");
+                    fixture.Set("interactionYaw", 73f);
+                    fixture.Set("interactionPitch", 48f);
+                    fixture.Set("interactionDistance", 175f);
+                    Require(fixture.Observer.FocusCommand(new[] {code}), "Focus rejected");
+                    Require(fixture.Observer.FocusCommand(new[] {code}), "Replacement focus rejected");
+                    fixture.Observer.RestoreCommandCamera();
+                    Require(fixture.Observer.CurrentModeName == "overview", "Original view was lost");
+                    Near(fixture.Get<float>("interactionYaw"), 73f, "Original yaw");
+                    Near(fixture.Get<float>("interactionPitch"), 48f, "Original pitch");
+                    Near(fixture.Get<float>("interactionDistance"), 175f, "Original zoom");
+                    Require(fixture.Active, "Restore must transition smoothly");
+                }, ref passed);
+                Case("manual navigation prevents old command restore", fixture =>
+                {
+                    string code = fixture.CreateUniqueUav();
+                    fixture.SetMode("mode", "Overview");
+                    Require(fixture.Observer.FocusCommand(new[] {code}), "Focus rejected");
+                    fixture.Observer.TrySelectDevice(code, out _, out _, out _);
+                    fixture.Observer.RestoreCommandCamera();
+                    Require(fixture.Observer.CurrentModeName == "device-follow", "Manual follow was overwritten");
+                }, ref passed);
+                Case("missing command target cannot alter the camera", fixture =>
+                {
+                    Require(!fixture.Observer.FocusCommand(new[] {"UAV-missing"}), "Missing target accepted");
+                    fixture.Observer.RestoreCommandCamera();
+                    fixture.AssertPose(StartPosition, StartRotation, StartFov);
+                }, ref passed);
+                Case("multiple addressed nodes are framed together and cleared on restore", fixture =>
+                {
+                    string first = fixture.CreateUniqueUav();
+                    fixture.Device.transform.parent = fixture.Root.transform;
+                    string second = fixture.CreateUniqueUav();
+                    fixture.Device.transform.parent = fixture.Root.transform;
+                    fixture.SetMode("mode", "Overview");
+                    Require(fixture.Observer.FocusCommand(new[] {first, second}), "Group focus rejected");
+                    Require(fixture.Get<IList>("commandSubjects").Count == 2, "Group membership changed");
+                    Require(fixture.Observer.CurrentModeName == "overview", "Group must be framed together");
+                    fixture.Observer.RestoreCommandCamera();
+                    Require(fixture.Get<IList>("commandSubjects").Count == 0, "Temporary group survived restore");
+                }, ref passed);
+                Debug.Log("[WebCameraTransitionValidation] PASS " + passed + "/24 deterministic cases; transition duration=" + Duration + "s.");
             }
             finally
             {

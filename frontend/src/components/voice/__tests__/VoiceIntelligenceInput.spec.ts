@@ -648,10 +648,11 @@ describe('VoiceIntelligenceInput refined mode', () => {
     }
     vi.stubGlobal('MediaRecorder', Recorder)
     vi.stubGlobal('AudioContext', class {
+      state = 'running'
       resume = vi.fn().mockResolvedValue(undefined)
       close = vi.fn().mockResolvedValue(undefined)
-      createAnalyser = () => ({ fftSize: 1024, getFloatTimeDomainData: vi.fn() })
-      createMediaStreamSource = () => ({ connect: vi.fn() })
+      createAnalyser = () => ({ fftSize: 1024, getFloatTimeDomainData: vi.fn(), disconnect: vi.fn() })
+      createMediaStreamSource = () => ({ connect: vi.fn(), disconnect: vi.fn() })
     })
     return { getUserMedia, stopTrack }
   }
@@ -723,7 +724,7 @@ describe('VoiceIntelligenceInput refined mode', () => {
     expect(wrapper.find('input[type="file"]').exists()).toBe(false)
     expect(wrapper.find('.result-details').exists()).toBe(false)
     expect(wrapper.find('.candidate').exists()).toBe(false)
-    expect(wrapper.find('.refined-wave').exists()).toBe(false)
+    expect(wrapper.find('.refined-audio-level').exists()).toBe(false)
     expect(wrapper.findAll('.refined-examples button')).toHaveLength(3)
     expect(wrapper.get('.frozen-plan').exists()).toBe(true)
     expect(wrapper.get('.refined-preview').text()).toBe('预览指令')
@@ -732,16 +733,17 @@ describe('VoiceIntelligenceInput refined mode', () => {
     wrapper.unmount()
   })
 
-  it('keeps examples, editable text, preview and safety scope in compact mode', async () => {
+  it('keeps editable text while removing idle buttons and examples in compact mode', async () => {
     const wrapper = mountRefined()
     try {
       await wrapper.setProps({ compact: true })
       expect(wrapper.classes()).toContain('is-compact')
       expect(wrapper.get('.refined-capture-title').text()).toBe('点击录音')
-      expect(wrapper.get('.refined-capture-note').text()).toContain('支持返航、降落、停止；文字编辑后需确认')
+      expect(wrapper.get('.refined-capture-note').text()).toContain('说完点击结束，自动执行')
       expect(wrapper.get('textarea').attributes('placeholder')).toBe('如：一号无人机悬停')
-      expect(wrapper.findAll('.refined-examples button')).toHaveLength(3)
-      await wrapper.findAll('.refined-examples button')[0]!.trigger('click')
+      expect(wrapper.findAll('.refined-examples button')).toHaveLength(0)
+      expect(wrapper.find('.refined-preview').exists()).toBe(false)
+      await wrapper.get('textarea').setValue('开始任务，然后让一号无人机悬停。')
       expect((wrapper.get('textarea').element as HTMLTextAreaElement).value).toBe('开始任务，然后让一号无人机悬停。')
       expect(wrapper.get('.refined-capture-title').text()).toBe('文字已就绪')
       await wrapper.get('textarea').setValue('一号无人机悬停')
@@ -768,7 +770,7 @@ describe('VoiceIntelligenceInput refined mode', () => {
       await flushPromises()
       expect(wrapper.get('.refined-capture-title').text()).toBe('正在聆听你的指令')
       expect(wrapper.get('.refined-capture-note').text()).toContain('停顿不会截断')
-      expect(wrapper.find('.refined-wave').exists()).toBe(true)
+      expect(wrapper.find('.refined-audio-level').exists()).toBe(true)
       await wrapper.get('button[aria-label="停止录音"]').trigger('click')
       await flushPromises()
       expect(wrapper.get('.refined-capture-title').text()).toBe('正在转换为文字')
@@ -798,7 +800,7 @@ describe('VoiceIntelligenceInput refined mode', () => {
     const wrapper = mountRefined({ name: 'platform-backend', mode: 'BACKEND', parse, transcribe })
     await wrapper.get('button[aria-label="开始录音"]').trigger('click')
     await flushPromises()
-    expect(wrapper.find('.refined-wave').exists()).toBe(true)
+    expect(wrapper.find('.refined-audio-level').exists()).toBe(true)
     expect(wrapper.emitted('draftChange')).toHaveLength(1)
     await wrapper.get('button[aria-label="停止录音"]').trigger('click')
     await flushPromises()
@@ -807,7 +809,7 @@ describe('VoiceIntelligenceInput refined mode', () => {
     else expect(parse).toHaveBeenCalledOnce()
     expect(stopTrack).toHaveBeenCalled()
     expect(wrapper.get('.refined-provider').text()).toContain(label)
-    expect(wrapper.find('.refined-wave').exists()).toBe(false)
+    expect(wrapper.find('.refined-audio-level').exists()).toBe(false)
     expect((wrapper.get('textarea').element as HTMLTextAreaElement).value).toBe('一号无人机悬停')
     expect((wrapper.get('textarea').element as HTMLTextAreaElement).disabled).toBe(false)
     if (provider === 'test-fixture') {
@@ -839,7 +841,7 @@ describe('VoiceIntelligenceInput refined mode', () => {
     expect(wrapper.find('.refined-preview').exists()).toBe(false)
     await flushPromises()
     expect(wrapper.emitted('voiceCandidate')).toHaveLength(1)
-    expect(wrapper.text()).toContain('本地仿真明确语音自动执行')
+    expect(wrapper.text()).toContain('说完点击结束，自动执行')
     expect(wrapper.text()).not.toContain('返航、降落、停止需确认')
     wrapper.unmount()
   })
@@ -957,7 +959,7 @@ describe('VoiceIntelligenceInput refined mode', () => {
   it('keeps simulation policy copy consistent when an ended run has no parser context', async () => {
     const wrapper = mountRefined()
     await wrapper.setProps({ runtimeContext: null, submissionDisabled: true })
-    expect(wrapper.text()).toContain('本地仿真明确语音自动执行')
+    expect(wrapper.text()).toContain('说完点击结束，自动执行')
     expect(wrapper.text()).toContain('仿真语音自动执行 · 编辑后需确认')
     expect(wrapper.text()).not.toContain('高风险')
     expect(wrapper.text()).not.toContain('返航、降落、停止需确认')
@@ -1287,6 +1289,8 @@ describe('VoiceIntelligenceInput refined mode', () => {
     await recordSpeech(wrapper)
     expect(wrapper.emitted('voiceCandidate')).toBeUndefined()
     expect(wrapper.emitted('candidate')).toBeUndefined()
+    expect(wrapper.find('.refined-preview').exists()).toBe(false)
+    await wrapper.get('textarea').setValue('三号无人机悬停')
     expect(wrapper.find('.refined-preview').exists()).toBe(true)
     wrapper.unmount()
   })
@@ -1596,7 +1600,7 @@ describe('VoiceIntelligenceInput refined mode', () => {
     await flushPromises()
     expect(wrapper.text()).toContain('麦克风权限被拒绝')
     expect((wrapper.get('textarea').element as HTMLTextAreaElement).disabled).toBe(false)
-    expect(wrapper.find('.refined-wave').exists()).toBe(false)
+    expect(wrapper.find('.refined-audio-level').exists()).toBe(false)
     wrapper.unmount()
   })
 })

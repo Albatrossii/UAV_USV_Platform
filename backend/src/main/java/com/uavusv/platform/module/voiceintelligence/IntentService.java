@@ -379,6 +379,9 @@ public class IntentService {
                 || (!TARGETED.matcher(text).find() && AlgorithmPresets.looksNumbered(text)))
             return new IntentClassification("NEEDS_CLARIFICATION", "AMBIGUOUS_ACTION",
                     "请明确一个0–20的指令编号；支持“第十三条指令”“13号指令”或“指令XIII”。当前文字未生成执行计划。", null);
+        if (text.contains("追击"))
+            return new IntentClassification("NEEDS_CLARIFICATION", "AMBIGUOUS_ACTION",
+                    "请明确追击设备和敌船，例如“一号无人机追击一号敌船”。", null);
         if (TARGETED.matcher(text).find()
                 || (DEVICE_CUE.matcher(text).find()
                         && Pattern.compile("悬停|驻留|待命|保持|返航|返回|归队|继续|停止|降落|停船").matcher(text).find()))
@@ -657,6 +660,9 @@ public class IntentService {
     private static String normalize(String text) {
         String normalized = java.text.Normalizer.normalize(text, java.text.Normalizer.Form.NFKC)
                 .trim().replaceAll("\\s+", "");
+        // Resolve the confirmed chase-context ASR error before the generic
+        // “一号机” alias can turn “一号机船” into a second UAV identifier.
+        normalized = AlgorithmPresets.normalizeAlgorithmSpeech(normalized);
         normalized = CONTEXTUAL_BOAT_CLAUSE.matcher(normalized).replaceAll("$1$2无人艇$3");
         // Match before trimming final punctuation, so questions cannot become commands.
         normalized = CONTEXTUAL_USV_HOLD.matcher(normalized).replaceFirst("$1无人艇驻留$2");

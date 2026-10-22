@@ -583,6 +583,13 @@ public class VoiceDispatcher {
             return;
         }
         String status = event.path("status").asText();
+        if (event.has("presetExecution")) {
+            if (!"ALGORITHM_PRESET".equals(e.path("action").asText())
+                    || !"SUCCEEDED".equals(status)
+                    || !event.path("commandId").equals(event.path("presetExecution").path("commandId"))
+                    || !e.path("_plan").path("parameters").path("presetId").equals(event.path("presetExecution").path("presetId")))
+                throw VoiceFailure.bad();
+        }
         Set<String> expected = new HashSet<>();
         e.path("_plan").path("explicitDeviceCodes").forEach(x -> expected.add(x.asText()));
         Set<String> actual = new HashSet<>();
@@ -642,6 +649,7 @@ public class VoiceDispatcher {
             e.put("_presentationDeadlineAt", succeededAt.plusSeconds(30).toString());
         }
         e.put("_resultFrame", event.path("lastFrameSequence").asLong()).put("updatedAt", t.stamp());
+        if (event.has("presetExecution")) e.set("presetExecution", event.path("presetExecution").deepCopy());
         s.save("voice_execution", e);
         var ch = r.channel(c.path("_id").asText());
         if (ch != null && !"LOST".equals(c.path("state").asText()))

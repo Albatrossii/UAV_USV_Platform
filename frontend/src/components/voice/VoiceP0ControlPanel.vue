@@ -1,6 +1,5 @@
 <script setup lang="ts">
-import AlgorithmPresetPanel from './AlgorithmPresetPanel.vue'
-import { presetLabel, validPreset } from '@/services/algorithmPresets'
+import { loadAlgorithmPresets, presetLabel, validPreset } from '@/services/algorithmPresets'
 import { computed, onActivated, onBeforeUnmount, onDeactivated, onMounted, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { isLocalVoiceSimulation, requiresVoiceConfirmation, voiceDeviceLabel } from '@/utils/voiceCommandSafety'
@@ -14,6 +13,7 @@ import {
 import { useVoiceControlStore } from '@/stores/voiceControl'
 import { useAuthStore } from '@/stores/auth'
 import type {
+  PresetExecution,
   UnityPresentationIncoming,
   UnityPresentationOutgoing,
   VoiceAction,
@@ -84,6 +84,7 @@ const voicePipelineMetrics = ref<{
 } | null>(null)
 let voiceSubmitStartedAt: number | null = null
 const voiceAutomationDisplay = computed(() => {
+  if (presetProgressLabel.value) return presetProgressLabel.value
   const result = execution.value
   const elapsedEnd = voiceActionFinishedAt.value ?? now.value
   const elapsed = voiceActionStartedAt.value === null ? 0 : Math.max(0, Math.floor((elapsedEnd - voiceActionStartedAt.value) / 1000))
@@ -124,6 +125,36 @@ const runtimeEnded = computed(() => !!context.value && (
     && execution.value.action === 'STOP' && execution.value.state === 'SUCCEEDED')
 ))
 const activeVoiceContext = computed(() => context.value && !runtimeEnded.value ? context.value : null)
+const presetProgress = computed<PresetExecution | null>(() => {
+  const result = execution.value
+  if (result?.action !== 'ALGORITHM_PRESET' || !result.presetExecution) return null
+  let progress = result.presetExecution
+  if (result.runtimeRef === context.value?.runtimeRef && result.runtimeGeneration === context.value?.runtimeGeneration
+    && String(props.frame?.runId) === props.runtimeHint.algorithmRunId) {
+    const records = props.frame?.metrics?.presetCommands as Record<string, PresetExecution> | undefined
+    progress = records?.[result.commandId] ?? progress
+  }
+  return runtimeEnded.value && progress.status.startsWith('WAITING_') ? { ...progress, status: 'CANCELLED' } : progress
+})
+const presetProgressLabel = computed(() => {
+  switch (presetProgress.value?.status) {
+    case 'WAITING_DEPLOYMENT': return context.value?.state === 'PAUSED' ? '已接收 · 恢复仿真后等待出发完成' : '已接收 · 出发完成后自动执行'
+    case 'WAITING_EXECUTION': return '已接收 · 等待执行'
+    case 'WAITING_DEVICE': return '已接收 · 等待接管设备归队'
+    case 'EXECUTED': return presetProgress.value.presetId >= 13 && presetProgress.value.presetId <= 18
+      ? '编组已保存 · 围捕时使用' : '算法已启动'
+    case 'FAILED': return '指令未能启动'
+    case 'SUPERSEDED': return '已被新指令替换'
+    case 'CANCELLED': return '待执行指令已取消'
+    default: return ''
+  }
+})
+const pendingPresetNotice = computed(() => {
+  if (runtimeEnded.value || presetProgress.value?.status.startsWith('WAITING_')
+    || String(props.frame?.runId) !== props.runtimeHint.algorithmRunId) return ''
+  const pending = props.frame?.metrics?.pendingAlgorithmPresets
+  return Array.isArray(pending) && pending.length ? `${pending.length} 条任务指令等待执行` : ''
+})
 const presentationBridgeReady = ref(false)
 const presentationBridgeStatus = ref(presentationBridgeEnabled ? '等待展示绑定' : 'E03 未启用')
 const presentationBridgeDisplay = computed(() => execution.value?.state === 'SUCCEEDED'
@@ -153,7 +184,13 @@ const actions: Array<{ action: VoiceAction; intent: VoiceIntent; label: string }
 const stateRules: Record<VoiceAction, string[]> = {
   START: ['PREPARED', 'PREVIEW'], PAUSE: ['RUNNING'], RESUME: ['PAUSED'], STOP: ['PREPARED', 'PREVIEW', 'RUNNING', 'PAUSED'],
 }
-const presetInput = ref<InstanceType<typeof VoiceIntelligenceInput> | null>(null)
+// Keep the semantic catalog available for speech verification without showing
+// its internal command numbers as a second control panel.
+watch(() => context.value?.capabilities.includes('ALGORITHM_PRESET'), enabled => {
+  if (enabled) void loadAlgorithmPresets().catch(() => {
+    console.warn('语音动作映射加载失败')
+  })
+}, { immediate: true })
 const actionLabels: Record<string, string> = {
   ALGORITHM_PRESET: '算法任务指令', START: '开始任务', PAUSE: '暂停任务', RESUME: '继续任务', STOP: '停止任务', DEVICE_COMMAND: '单设备控制', SEQUENCE: '受控顺序指令',
   UAV_HOVER: '无人机悬停', UAV_RESUME: '无人机归队', UAV_RETURN: '无人机返航', UAV_LAND: '无人机降落',
@@ -289,6 +326,7 @@ const refinedExecutionPhase = computed(() => {
   if (refinedReviewStatus.value) return refinedReviewStatus.value
   if (refinedProposalReady.value) return '等待人工确认 · 尚未下发'
   if (!execution.value || previousExecutionFeedback.value) return ''
+  if (presetProgressLabel.value) return presetProgressLabel.value
   if (deviceProgress.value) return deviceProgress.value.complete ? '设备动作完成 · 已确认到位'
     : deviceProgressUnverified.value ? '设备状态待核对 · 暂不能确认到位' : '设备执行中 · 等待实际到位'
   return executionLabels[execution.value.state] ?? ''
@@ -585,8 +623,8 @@ async function handleRefinedAutomaticVoiceCandidate(
   interpretationId: string,
   sequenceFirstAction = 'START',
 ) {
-  // Only a newly recognised utterance enters this path. Polling/recovery and
-  // manually edited text never auto-confirm a stored proposal.
+  // A newly recognised utterance or an explicit Execute click enters here.
+  // Polling, recovery and typing alone never confirm a stored proposal.
   if (!panelActive || !autoExecuteSimulationVoice.value || !interpretationId
     || refinedAutomaticRunning.value || refinedSubmissionDisabled.value) return
   const recognisedRuntime = context.value!
@@ -616,7 +654,8 @@ async function handleRefinedAutomaticVoiceCandidate(
     const received = Date.parse(context.value?.lastHeartbeatReceivedAt ?? '')
     return Number.isFinite(received) && Date.now() - received <= 5000
   }
-  const action = intent === 'COMMAND_SEQUENCE' ? sequenceFirstAction === 'DEVICE_COMMAND' ? null : sequenceFirstAction as VoiceAction
+  const presetAction = intent === 'ALGORITHM_PRESET' || (intent === 'COMMAND_SEQUENCE' && sequenceFirstAction === 'ALGORITHM_PRESET')
+  const action = intent === 'COMMAND_SEQUENCE' ? ['DEVICE_COMMAND', 'ALGORITHM_PRESET'].includes(sequenceFirstAction) ? null : sequenceFirstAction as VoiceAction
     : intent === 'ALGORITHM_PRESET' || intent === 'SINGLE_DEVICE_CONTROL' ? null : intent.replace('MISSION_', '') as VoiceAction
   // Match the backend/manual RESUME policy: display evidence has a short TTL,
   // but a live paused local runner can resume while Unity catches up. Recheck
@@ -625,8 +664,8 @@ async function handleRefinedAutomaticVoiceCandidate(
     && (context.value.sceneReady || isLocalSimulationResume(action))
   if (!sceneAllowsAction()) await refreshAutomaticSceneReadiness(sameRecognisedRuntime)
   const unavailable = action ? refinedActionDisabledReason(action)
-    : context.value?.state !== 'RUNNING' || !context.value.capabilities.includes('DEVICE_COMMAND')
-      ? '当前运行不接受单设备控制' : ''
+    : context.value?.state !== 'RUNNING' || !context.value.capabilities.includes(presetAction ? 'ALGORITHM_PRESET' : 'DEVICE_COMMAND')
+      ? '当前运行不接受此指令' : ''
   if (!sceneAllowsAction() || !freshHeartbeat() || unavailable) {
     voiceAutomationStatus.value = `未自动执行：${!sceneAllowsAction() ? '仿真场景尚未就绪' : unavailable || '设备连接暂时中断'}。请检查后重新录音。`
     return
@@ -1193,13 +1232,9 @@ onBeforeUnmount(() => {
       <p v-else-if="responseUnknown" class="refined-notice" role="alert">上次请求结果尚未确认。请核对结果，不要重复下发指令。</p>
       <p v-else-if="!recoveryAvailable" class="refined-notice" role="alert">无法读取或保存指令恢复信息，已暂停下发。请检查浏览器存储后重新核对。</p>
 
-      <AlgorithmPresetPanel v-if="context?.capabilities.includes('ALGORITHM_PRESET')"
-        :disabled="!!activeProposal || refinedSubmissionDisabled || responseUnknown || runtimeEnded"
-        @select="presetInput?.presetText($event)" />
       <LocalAsrInput v-if="asrOnly" :operator-scope="operatorScope" :disabled="authStore.user?.role !== 'ADMIN' || authStore.loading" />
       <VoiceIntelligenceInput
         v-else-if="voiceP1PreparationEnabled"
-        ref="presetInput"
         refined
         :compact="compact"
         :proposal-ready="refinedProposalReady"
@@ -1212,12 +1247,14 @@ onBeforeUnmount(() => {
         :operator-scope="operatorScope"
         :input-disabled="authStore.user?.role !== 'ADMIN' || authStore.loading"
         :auto-execute-speech="autoExecuteSimulationVoice"
+        :direct-execute-input="autoExecuteSimulationVoice"
         :allow-mock-submission="voiceP0MockEnabled"
         :submission-disabled="refinedSubmissionDisabled || refinedAutomaticRunning"
         :action-disabled-reason="refinedActionDisabledReason"
         @draft-change="beginRefinedInput"
         @candidate="handleVoiceCandidate"
         @voice-candidate="handleAutomaticVoiceCandidate"
+        @execute-candidate="handleRefinedAutomaticVoiceCandidate"
       >
         <section v-if="activeProposal && proposal && !refinedAutomaticRunning && proposal.proposalId !== refinedAutomaticPlanId" class="refined-plan" aria-label="指令预览">
           <div class="refined-section-title"><h3>{{ proposal.proposalId === refinedRestoredProposalId ? '恢复的待确认指令' : '指令预览' }}</h3><span>{{ proposal.plan.action === 'SEQUENCE' ? '受控顺序指令' : '单步指令' }}</span></div>
@@ -1237,10 +1274,12 @@ onBeforeUnmount(() => {
       </VoiceIntelligenceInput>
       <p v-else class="refined-notice">语音控制尚未启用，请检查服务配置。</p>
       <p v-if="refinedExecutionPhase" class="refined-execution-phase" role="status">{{ refinedExecutionPhase }}</p>
+      <p v-if="pendingPresetNotice" class="refined-notice" role="status">{{ pendingPresetNotice }}</p>
 
-      <article v-if="execution" class="refined-result" :class="execution.outcome.toLowerCase()" role="status" aria-live="polite">
+      <article v-if="execution" class="refined-result" :class="presetProgress ? presetProgress.status === 'EXECUTED' ? 'success' : presetProgress.status === 'FAILED' ? 'failed' : 'unknown' : execution.outcome.toLowerCase()" role="status" aria-live="polite">
         <small v-if="previousExecutionFeedback" class="previous-execution-label">上一条指令回执 · 非本次识别结果</small>
-        <div class="refined-result-head"><Check v-if="execution.state === 'SUCCEEDED' && (!deviceProgress || deviceProgress.complete)" :size="16" /><strong>{{ deviceProgress ? deviceProgress.complete ? '设备动作已完成' : deviceProgressUnverified ? '指令已接受 · 状态待核对' : '指令已接受 · 设备执行中' : executionLabels[execution.state] ?? execution.state }}</strong></div>
+        <div class="refined-result-head"><Check v-if="execution.state === 'SUCCEEDED' && (!presetProgress || presetProgress.status === 'EXECUTED') && (!deviceProgress || deviceProgress.complete)" :size="16" /><strong>{{ presetProgressLabel || (deviceProgress ? deviceProgress.complete ? '设备动作已完成' : deviceProgressUnverified ? '指令已接受 · 状态待核对' : '指令已接受 · 设备执行中' : executionLabels[execution.state] ?? execution.state) }}</strong></div>
+        <p v-if="presetProgress?.errorCode" class="refined-notice">{{ errorLabels[presetProgress.errorCode] ?? presetProgress.errorCode }}</p>
         <p v-if="deviceProgress" class="device-action-progress">{{ deviceProgress.label }}</p>
         <ol v-if="execution.action === 'SEQUENCE' && execution.steps" class="refined-execution-steps">
           <li v-for="step in execution.steps" :key="step.index"><span>{{ voiceStepLabel(step) }}</span><small>{{ sequenceStepHint(execution, step) ?? executionLabels[step.state] ?? step.state }}</small></li>
@@ -1259,7 +1298,6 @@ onBeforeUnmount(() => {
         <button v-if="!runtimeEnded && context && !presentationBridgeReady && helloAttempts >= 30" class="refined-recovery" type="button" :disabled="loading || responseUnknown" @click="takePresentationBinding">恢复画面连接</button>
       </div>
     </div>
-    <p class="refined-footer">{{ context?.capabilities.includes('ALGORITHM_PRESET') ? '编号战术指令需确认 · 支持 2–4 步 · 其他明确语音沿用自动执行' : autoExecuteSimulationVoice ? '本地仿真语音自动执行 · 支持 2–4 步 · 文字编辑后需确认' : '先核对设备编号与动作，再确认执行' }}</p>
   </section>
   <section v-else class="voice-p0">
     <header class="voice-head">

@@ -232,7 +232,7 @@ def v1_main(args: argparse.Namespace, adapter, config: dict) -> int:
                  "kind": "PROTOCOL_ERROR", "relatedCommandId": related_command_id,
                  "errorCode": error_code, "detail": detail[:256]})
 
-    def result(command: dict, status: str, error: str | None = None) -> dict:
+    def result(command: dict, status: str, error: str | None = None, preset_execution=None) -> dict:
         nonlocal state_version
         cid = str(command.get("commandId", ""))
         event_sequences[cid] = event_sequences.get(cid, 0) + 1
@@ -246,6 +246,8 @@ def v1_main(args: argparse.Namespace, adapter, config: dict) -> int:
                    "lastFrameSequence": last_frame_sequence,
                    "errorCode": error,
                    "affectedDeviceCodes": _device_codes(frame) if status == "SUCCEEDED" else []}
+        if preset_execution is not None:
+            payload['presetExecution'] = preset_execution
         result_cache.setdefault(cid, []).append(payload)
         emit_v1(payload)
         return payload
@@ -329,9 +331,10 @@ def v1_main(args: argparse.Namespace, adapter, config: dict) -> int:
                         result(command, "REJECTED", "STATE_VERSION_MISMATCH")
                     else:
                         result(command, "ACCEPTED")
+                        preset_execution = None
                         try:
                             if action == "ALGORITHM_PRESET":
-                                adapter.execute_preset(command["parameters"]["presetId"], command["parameters"]["presetVersion"])
+                                preset_execution = adapter.execute_preset(command["parameters"]["presetId"], command["parameters"]["presetVersion"], cid)
                             elif action in {"START", "RESUME"}:
                                 adapter.set_mission_active(True)
                                 state = "RUNNING"
@@ -339,14 +342,19 @@ def v1_main(args: argparse.Namespace, adapter, config: dict) -> int:
                                 adapter.set_mission_active(False)
                                 state = "PAUSED"
                             else:
+                                adapter.cancel_pending_presets()
+                                adapter.set_mission_active(False)
                                 state = "STOPPED"
                         except ValueError as error:
                             # Adapter business rejection is a failed command, not
                             # process death. Do not expose exception details or
                             # invent a successful state/version transition.
-                            result(command, "FAILED", str(error) if str(error) in {"PRESET_INVALID", "PRESET_REJECTED", "PRESET_CAPTURE_NOT_READY", "PRESET_DEVICE_OVERRIDE", "PRESET_DEPLOYING"} else "ADAPTER_ERROR")
+                            result(command, "FAILED", str(error) if str(error) in {"PRESET_INVALID", "PRESET_REJECTED", "PRESET_CAPTURE_NOT_READY", "PRESET_DEVICE_OVERRIDE", "PRESET_DEPLOYING", "PRESET_TARGET_MISSING"} else "ADAPTER_ERROR")
                         else:
-                            result(command, "SUCCEEDED")
+                            # A successful scheduling receipt releases the control
+                            # channel. Actual tactical execution is explicit below
+                            # and in subsequent authoritative frame metrics.
+                            result(command, "SUCCEEDED", preset_execution=preset_execution)
         if input_closed.is_set() and commands.empty():
             return 0
         if state == "RUNNING":

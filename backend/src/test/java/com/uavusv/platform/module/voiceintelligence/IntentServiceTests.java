@@ -704,6 +704,82 @@ class IntentServiceTests {
         }
     }
 
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {
+        "一号无人机追击一号机船。", "请让1号无人机追击第1号机船", "一号无人机追击一号敌船",
+        "一号无人机追击一号的船。", "请让1号无人机追击第1号的船",
+        "让一架无人机追击一号敌船。", "请让一架无人机追击一号敌船。"
+    })
+    void chaseAsrRepairPrecedesGenericAircraftAlias(String text) {
+        ObjectNode runtime = runtime("ALGORITHM_PRESET");
+        runtime.put("_algorithmCommandProfile", "escort-20261020");
+        runtime.putObject("_algorithmTargets").putObject("THREAT-001");
+        when(runtimes.require(REF, 7)).thenReturn(runtime);
+        var data = (ObjectNode)service.interpret(7, ID, request(text, hint())).body().get("data");
+        assertEquals("CANDIDATE", data.path("status").asText());
+        assertEquals("ALGORITHM_PRESET", data.path("action").asText());
+        assertEquals(1, service.requirePresetParameters(7, ID, runtime).path("presetId").asInt());
+        assertTrue(data.path("normalizedText").asText().endsWith("敌船"));
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {"恢复首位。", "请恢复首位！", "恢复守卫"})
+    void guardHomophoneIsPresetRatherThanMissionResume(String text) {
+        ObjectNode runtime = runtime("ALGORITHM_PRESET");
+        runtime.put("_algorithmCommandProfile", "escort-20261020");
+        when(runtimes.require(REF, 7)).thenReturn(runtime);
+        var data = (ObjectNode)service.interpret(7, ID, request(text, hint())).body().get("data");
+        assertEquals("CANDIDATE", data.path("status").asText());
+        assertEquals("ALGORITHM_PRESET", data.path("action").asText());
+        assertEquals(19, data.path("parameters").path("presetId").asInt());
+        assertTrue(data.path("normalizedText").asText().endsWith("守卫"));
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {"的喘", "d穿", "地船", "di chuan", "ＤＩＣＨＵＡＮ"})
+    void chaseSecondTargetHomophoneDoesNotReuseFirstTarget(String noun) {
+        ObjectNode runtime = runtime("ALGORITHM_PRESET");
+        runtime.put("_algorithmCommandProfile", "escort-20261020");
+        runtime.putObject("_algorithmTargets").putObject("THREAT-002");
+        when(runtimes.require(REF, 7)).thenReturn(runtime);
+        var data = (ObjectNode)service.interpret(7, ID, request("一号无人机追击二号" + noun + "。", hint())).body().get("data");
+        assertEquals("CANDIDATE", data.path("status").asText());
+        assertEquals(7, data.path("parameters").path("presetId").asInt());
+        assertEquals("一号无人机追击二号敌船", data.path("normalizedText").asText());
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {
+        "将一二三号无人艇分配给二号的穿。", "将一二三号无人艇分配给二号的船。", "将一二三号无人艇分配给二号机船。"
+    })
+    void bindingHomophonesPreserveGroupAndTarget(String text) {
+        ObjectNode runtime = runtime("ALGORITHM_PRESET");
+        runtime.put("_algorithmCommandProfile", "escort-20261020");
+        runtime.putObject("_algorithmTargets").putObject("THREAT-002");
+        when(runtimes.require(REF, 7)).thenReturn(runtime);
+        var data = (ObjectNode)service.interpret(7, ID, request(text, hint())).body().get("data");
+        assertEquals("CANDIDATE", data.path("status").asText());
+        assertEquals(14, data.path("parameters").path("presetId").asInt());
+        assertEquals("将一二三号无人艇分配给二号敌船", data.path("normalizedText").asText());
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {
+        "不要一号无人机追击一号机船", "一号无人机追击一号机船吗？",
+        "如果一号无人机追击一号机船", "一号无人机追击三号机船",
+        "一号无人机追击一号客船", "一号无人机追击机船",
+        "不要一号无人机追击一号的船", "一号无人机追击一号的船吗？",
+        "如果一号无人机追击一号的船", "一号无人机追击三号的船", "一号无人机追击的船"
+    })
+    void chaseRepairDoesNotGuessOtherTargetsOrConditions(String text) {
+        ObjectNode runtime = runtime("ALGORITHM_PRESET");
+        runtime.put("_algorithmCommandProfile", "escort-20261020");
+        runtime.putObject("_algorithmTargets").putObject("THREAT-001");
+        when(runtimes.require(REF, 7)).thenReturn(runtime);
+        var data = (ObjectNode)service.interpret(7, ID, request(text, hint())).body().get("data");
+        assertNotEquals("CANDIDATE", data.path("status").asText());
+    }
+
     @Test
     void algorithmPresetsUseAuthoritativeContextAndPreserveSequenceParameters() {
         ObjectNode runtime = runtime("ALGORITHM_PRESET");
@@ -774,6 +850,22 @@ class IntentServiceTests {
         assertEquals("SEQUENCE", data.path("action").asText());
         for (int i = 0; i < 3; i++)
             assertEquals(new int[]{13,14,20}[i], data.path("steps").path(i).path("parameters").path("presetId").asInt());
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {
+        "执行围捕观察全过程。", "执行围捕，观察全过程。", "请开始围捕，查看整个过程"
+    })
+    void captureViewingDescriptionIsOnePresetNotAnUnsupportedSequence(String text) {
+        ObjectNode runtime = runtime("ALGORITHM_PRESET");
+        runtime.put("_algorithmCommandProfile", "escort-20261020");
+        runtime.putObject("_algorithmTargets").putObject("THREAT-001");
+        when(runtimes.require(REF, 7)).thenReturn(runtime);
+        var data = (ObjectNode)service.interpret(7, ID, request(text, hint())).body().get("data");
+        assertEquals("CANDIDATE", data.path("status").asText());
+        assertEquals("ALGORITHM_PRESET", data.path("action").asText());
+        assertEquals(20, service.requirePresetParameters(7, ID, runtime).path("presetId").asInt());
+        assertFalse(data.has("steps"));
     }
 
     @org.junit.jupiter.params.ParameterizedTest

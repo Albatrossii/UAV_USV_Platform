@@ -34,8 +34,40 @@ foreach ($preset in $catalog.items) {
     if ($targets -notcontains ('THREAT-00' + $match.Groups[1].Value)) { $targetMissing = $true }
   }
   $cases += @{ Text = "执行第$($preset.id)号指令"; Status = $(if ($targetMissing) { 'UNSUPPORTED' } else { 'CANDIDATE' }); Preset = $preset.id }
+  $cases += @{ Text = $preset.label; Status = $(if ($targetMissing) { 'UNSUPPORTED' } else { 'CANDIDATE' }); Preset = $preset.id }
 }
 $cases += @(
+  @{ Text = '一号无人机追击一号d穿。'; Status = 'CANDIDATE'; Preset = 1 },
+  @{ Text = '一号无人机追击二号d穿。'; Status = 'CANDIDATE'; Preset = 7 },
+  @{ Text = '二号无人艇追击二号地船。'; Status = 'CANDIDATE'; Preset = 4 },
+  @{ Text = '三号无人机追击二号di chuan。'; Status = 'CANDIDATE'; Preset = 11 },
+  @{ Text = '将一二三号无人艇分配给二号d穿。'; Status = 'CANDIDATE'; Preset = 14 },
+  @{ Text = '不要一号无人机追击一号d穿'; Status = 'NOT_ACTIONABLE'; Reason = 'NEGATED_ACTION' },
+  @{ Text = '一号无人机追击一号d穿吗？'; Status = 'NOT_ACTIONABLE'; Reason = 'QUESTION_ACTION' },
+  @{ Text = '一号无人机追击二号的喘。'; Status = 'CANDIDATE'; Preset = 7 },
+  @{ Text = '不要一号无人机追击二号的喘'; Status = 'NOT_ACTIONABLE'; Reason = 'NEGATED_ACTION' },
+  @{ Text = '一号无人机追击二号的喘吗？'; Status = 'NOT_ACTIONABLE'; Reason = 'QUESTION_ACTION' },
+  @{ Text = '让一架无人机追击一号敌船。'; Status = 'CANDIDATE'; Preset = 1 },
+  @{ Text = '请让一架无人机追击一号敌船。'; Status = 'CANDIDATE'; Preset = 1 },
+  @{ Text = '不要让一架无人机追击一号敌船'; Status = 'NOT_ACTIONABLE'; Reason = 'NEGATED_ACTION' },
+  @{ Text = '让一架无人机追击一号敌船吗？'; Status = 'NOT_ACTIONABLE'; Reason = 'QUESTION_ACTION' },
+  @{ Text = '将一二三号无人艇分配给二号的穿。'; Status = 'CANDIDATE'; Preset = 14 },
+  @{ Text = '将一二三号无人艇分配给二号的船。'; Status = 'CANDIDATE'; Preset = 14 },
+  @{ Text = '将一二三号无人艇分配给二号机船。'; Status = 'CANDIDATE'; Preset = 14 },
+  @{ Text = '不要将一二三号无人艇分配给二号的穿'; Status = 'NOT_ACTIONABLE'; Reason = 'NEGATED_ACTION' },
+  @{ Text = '将一二三号无人艇分配给二号的穿吗？'; Status = 'NOT_ACTIONABLE'; Reason = 'QUESTION_ACTION' },
+  @{ Text = '恢复首位。'; Status = 'CANDIDATE'; Preset = 19 },
+  @{ Text = '请恢复首位！'; Status = 'CANDIDATE'; Preset = 19 },
+  @{ Text = '不要恢复首位'; Status = 'NOT_ACTIONABLE'; Reason = 'NEGATED_ACTION' },
+  @{ Text = '恢复首位吗？'; Status = 'NOT_ACTIONABLE'; Reason = 'QUESTION_ACTION' },
+  @{ Text = '一号无人机追击一号机船。'; Status = 'CANDIDATE'; Preset = 1 },
+  @{ Text = '一号无人机追击一号的船。'; Status = 'CANDIDATE'; Preset = 1 },
+  @{ Text = '二号无人艇追击二号的船'; Status = 'CANDIDATE'; Preset = 4 },
+  @{ Text = '不要一号无人机追击一号的船'; Status = 'NOT_ACTIONABLE'; Reason = 'NEGATED_ACTION' },
+  @{ Text = '一号无人机追击一号的船吗？'; Status = 'NOT_ACTIONABLE'; Reason = 'QUESTION_ACTION' },
+  @{ Text = '请让1号无人机追击第1号机船'; Status = 'CANDIDATE'; Preset = 1 },
+  @{ Text = '不要一号无人机追击一号机船'; Status = 'NOT_ACTIONABLE'; Reason = 'NEGATED_ACTION' },
+  @{ Text = '一号无人机追击一号机船吗？'; Status = 'NOT_ACTIONABLE'; Reason = 'QUESTION_ACTION' },
   @{ Text = '执行第13条指令'; Status = 'CANDIDATE'; Preset = 13 },
   @{ Text = '执行第十三条指令'; Status = 'CANDIDATE'; Preset = 13 },
   @{ Text = '执行第十三个指令'; Status = 'CANDIDATE'; Preset = 13 },
@@ -45,6 +77,10 @@ $cases += @(
   @{ Text = '执行第ⅩⅢ条指令'; Status = 'CANDIDATE'; Preset = 13 },
   @{ Text = '执行第１３条指令'; Status = 'CANDIDATE'; Preset = 13 },
   @{ Text = '执行第壹拾叁条指令'; Status = 'CANDIDATE'; Preset = 13 },
+  @{ Text = '执行围捕观察全过程。'; Status = 'CANDIDATE'; Preset = 20 },
+  @{ Text = '执行围捕，观察全过程。'; Status = 'CANDIDATE'; Preset = 20 },
+  @{ Text = '不要执行围捕，观察全过程'; Status = 'NOT_ACTIONABLE'; Reason = 'NEGATED_ACTION' },
+  @{ Text = '执行围捕，观察全过程吗？'; Status = 'NOT_ACTIONABLE'; Reason = 'QUESTION_ACTION' },
   @{ Text = '不要执行二十号指令'; Status = 'NOT_ACTIONABLE'; Reason = 'NEGATED_ACTION' },
   @{ Text = '不要第十三号指令'; Status = 'NOT_ACTIONABLE'; Reason = 'NEGATED_ACTION' },
   @{ Text = '不要第十三条指令'; Status = 'NOT_ACTIONABLE'; Reason = 'NEGATED_ACTION' },
@@ -70,7 +106,7 @@ foreach ($case in $cases) {
   $passed = $parsed.status -eq $case.Status
   if ($case.Reason) { $passed = $passed -and $parsed.reason -eq $case.Reason }
   if ($case.Status -eq 'CANDIDATE') { $passed = $passed -and $parsed.action -eq 'ALGORITHM_PRESET' -and $parsed.parameters.presetId -eq $case.Preset -and $parsed.parameters.presetVersion -eq $catalog.version }
-  $results += [pscustomobject]@{ Text = $case.Text; Passed = $passed; ExpectedStatus = $case.Status; ActualStatus = $parsed.status; Preset = $parsed.parameters.presetId; Reason = $parsed.reason }
+  $results += [pscustomobject]@{ Text = $case.Text; NormalizedText = $parsed.normalizedText; Passed = $passed; ExpectedStatus = $case.Status; ActualStatus = $parsed.status; Preset = $parsed.parameters.presetId; Reason = $parsed.reason }
 }
 $report = [pscustomobject]@{
   Timestamp = [DateTimeOffset]::UtcNow.ToString('o'); Profile = $catalog.version

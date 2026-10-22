@@ -59,6 +59,38 @@ class VoiceSequenceExecutorTests extends VoiceControlTests {
     }
 
     @Test
+    void scheduledPresetMustStartBeforeSequenceAdvances() {
+        prepareSequence();
+        var runtime = s.get("voice_runtime_context", ref());
+        runtime.put("state", "RUNNING").put("_algorithmCommandProfile", AlgorithmPresets.VERSION)
+                .put("_deploymentState", "COMPLETE");
+        runtime.withArray("capabilities").add("ALGORITHM_PRESET");
+        runtime.putObject("_algorithmTargets").putObject("THREAT-001");
+        s.save("voice_runtime_context", runtime);
+        var steps = j.mapper.createArrayNode();
+        steps.addObject().put("index", 0).put("action", "ALGORITHM_PRESET")
+                .set("parameters", AlgorithmPresets.parameters(j, 1));
+        steps.addObject().put("index", 1).put("action", "PAUSE");
+        String id = execution(confirm(sequenceProposal(steps))).path("executionId").asText();
+        sequences.tick();
+        String childId = app.execution(id).path("steps").path(0).path("executionId").asText();
+        markChildSucceeded(childId);
+        var child = s.get("voice_execution", childId);
+        child.putObject("presetExecution").put("commandId", child.path("commandId").asText())
+                .put("presetId", 1).put("status", "WAITING_DEPLOYMENT").putNull("errorCode");
+        s.save("voice_execution", child);
+        sequences.tick();
+        assertEquals("EXECUTING", app.execution(id).path("steps").path(0).path("state").asText());
+        assertTrue(app.execution(id).path("steps").path(1).path("executionId").isNull());
+        var context = s.get("voice_runtime_context", ref());
+        context.putObject("_presetCommands").set(child.path("commandId").asText(),
+                ((ObjectNode) child.path("presetExecution")).deepCopy().put("status", "EXECUTED"));
+        s.save("voice_runtime_context", context);
+        sequences.tick();
+        assertEquals("SUCCEEDED", app.execution(id).path("steps").path(0).path("state").asText());
+    }
+
+    @Test
     void startThenHoverAdvancesOnlyAfterAuthoritativeSuccess() {
         prepareSequence();
         ObjectNode proposal = sequenceProposal("UAV-001", "UAV_HOVER");

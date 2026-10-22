@@ -81,6 +81,9 @@ class SingleDeviceControlAdapter(AlgorithmAdapter):
         self._simulation_elapsed_steps = 0
         self._deployment_elapsed_steps = 0
         self._deployment_complete = not self._start_from_shore
+        self._pending_presets: list[dict] = []
+        self._preset_commands: dict[str, dict] = {}
+        self._preset_request_sequence = 0
         # Display-only high-water mark, owned by this run/adapter instance.
         # It never gates the planner, device routes, or command execution.
         self._lifecycle_progress = 0.0
@@ -108,14 +111,89 @@ class SingleDeviceControlAdapter(AlgorithmAdapter):
     def place_threat(self, x: float, y: float) -> None:
         self.base.place_threat(x, y)
 
-    def execute_preset(self, preset_id, profile):
+    def execute_preset(self, preset_id, profile, command_id=None):
         if not getattr(self.base, "preset_profile", None):
             raise ValueError("PRESET_INVALID")
-        if not self._deployment_complete:
-            raise ValueError("PRESET_DEPLOYING")
+        words = self.base.preset_definition(preset_id, profile)
+        if command_id and command_id in self._preset_commands:
+            return deepcopy(self._preset_commands[command_id])
+        self._preset_request_sequence += 1
+        command_id = command_id or f"local-{self._preset_request_sequence}"
+        if not self._deployment_complete or self._pending_presets:
+            # Validation precedes replacement: an invalid new request must not
+            # discard a valid pending instruction. Keep unrelated bindings/chases.
+            for pending in list(self._pending_presets):
+                old = self.base.preset_definition(pending['presetId'], pending['presetVersion'])
+                if self._preset_conflicts(words, old):
+                    self._preset_commands[pending['commandId']]['status'] = 'SUPERSEDED'
+                    self._pending_presets.remove(pending)
+            record = {'commandId': command_id, 'presetId': preset_id,
+                      'status': 'WAITING_DEPLOYMENT' if not self._deployment_complete else 'WAITING_EXECUTION',
+                      'errorCode': None}
+            self._preset_commands[command_id] = record
+            pending = {**record, 'presetVersion': profile}
+            # A new group definition must take effect before a waiting capture.
+            capture_index = next((i for i, p in enumerate(self._pending_presets) if p['presetId'] == 20), len(self._pending_presets))
+            self._pending_presets.insert(capture_index if words[0] == 'bind' else len(self._pending_presets), pending)
+            self._trim_preset_history()
+            return deepcopy(record)
+        self._execute_ready_preset(preset_id, profile)
+        record = {'commandId': command_id, 'presetId': preset_id, 'status': 'EXECUTED', 'errorCode': None}
+        self._preset_commands[command_id] = record
+        self._trim_preset_history()
+        return deepcopy(record)
+
+    @staticmethod
+    def _preset_conflicts(new, old):
+        if new[0] == 'cancel':
+            return True
+        if new[0] in {'guard', 'capture'}:
+            return old[0] != 'bind'
+        if new[0] == 'chase':
+            return old[0] in {'cancel', 'guard', 'capture'} or (old[0] == 'chase' and new[1] == old[1])
+        if new[0] == old[0] == 'bind':
+            return new[1] == old[1] or bool(set(new[2:]) & set(old[2:]))
+        return False
+
+    def _trim_preset_history(self):
+        pending_ids = {p['commandId'] for p in self._pending_presets}
+        for key in list(self._preset_commands):
+            if len(self._preset_commands) <= 128:
+                break
+            if key not in pending_ids:
+                del self._preset_commands[key]
+
+    def cancel_pending_presets(self):
+        for pending in self._pending_presets:
+            self._preset_commands[pending['commandId']]['status'] = 'CANCELLED'
+        self._pending_presets.clear()
+
+    def _execute_ready_preset(self, preset_id, profile):
         if self._overrides:
             raise ValueError("PRESET_DEVICE_OVERRIDE")
         self.base.execute_preset(preset_id, profile)
+        if preset_id == 0:
+            # Explicit withdrawal resets the vendor's captured targets and
+            # bindings. Retain departure credit, not the prior capture's peak.
+            self._lifecycle_progress = 0.0
+
+    def _drain_pending_presets(self):
+        if not self._deployment_complete or not self.mission_active:
+            return
+        for pending in self._pending_presets:
+            self._preset_commands[pending['commandId']]['status'] = 'WAITING_DEVICE' if self._overrides else 'WAITING_EXECUTION'
+        if self._overrides or not self._pending_presets:
+            return
+        # Execute at most one per authoritative tick, preserving FIFO and poses.
+        pending = self._pending_presets.pop(0)
+        record = self._preset_commands[pending['commandId']]
+        try:
+            self._execute_ready_preset(pending['presetId'], pending['presetVersion'])
+        except ValueError as error:
+            record['status'] = 'FAILED'
+            record['errorCode'] = str(error) if str(error).startswith('PRESET_') else 'ADAPTER_ERROR'
+        else:
+            record['status'] = 'EXECUTED'
 
     def activate_capture(self, threat_code: str | None = None) -> str:
         return self.base.activate_capture(threat_code)
@@ -299,6 +377,7 @@ class SingleDeviceControlAdapter(AlgorithmAdapter):
                 list(self._last_agents.values()), self._last_agents, tuple(self._overrides),
             )
             self._last_unavailable_codes = set(self._overrides)
+        self._drain_pending_presets()
         if self._start_from_shore and self.mission_active:
             # The planner is deliberately frozen until assembly. Its local
             # sequence cannot measure the takeoff and undocking simulation.
@@ -546,6 +625,9 @@ class SingleDeviceControlAdapter(AlgorithmAdapter):
                 frame.metrics["completionBlocker"] = "DEPLOYING" if self.mission_active else "PARKED"
                 frame.metrics["controlOverrideActive"] = any(not item.automatic_departure for item in self._overrides.values())
             self._compose_lifecycle_progress(frame)
+        if getattr(self.base, 'preset_profile', None):
+            frame.metrics['presetCommands'] = deepcopy(self._preset_commands)
+            frame.metrics['pendingAlgorithmPresets'] = [deepcopy(self._preset_commands[p['commandId']]) for p in self._pending_presets]
         self._last_frame = deepcopy(frame)
         self._motion_frame = None
         return frame
