@@ -1,4 +1,5 @@
-import type { DeviceCommandType, VoiceAction, VoiceIntent } from './voiceControl'
+import type { AlgorithmPresetParameters } from '@/services/algorithmPresets'
+import type { DeviceCommandType, VoiceAction, VoiceIntent, VoiceSequencePlanStep } from './voiceControl'
 
 export type VoiceInputStage =
   | 'IDLE'
@@ -15,6 +16,7 @@ export type VoiceParseStatus = 'CANDIDATE' | 'NEEDS_CLARIFICATION' | 'UNSUPPORTE
 export type VoiceParseReason =
   | 'AMBIGUOUS_ACTION'
   | 'NEGATED_ACTION'
+  | 'QUESTION_ACTION'
   | 'NO_SUPPORTED_ACTION'
   | 'AMBIGUOUS_TARGET'
   | 'UNSUPPORTED_CAPABILITY'
@@ -56,9 +58,11 @@ export interface VoiceIntentCandidate {
   status: 'CANDIDATE'
   requestId: string
   intent: VoiceIntent
-  action: VoiceAction | 'DEVICE_COMMAND'
+  action: VoiceAction | 'DEVICE_COMMAND' | 'SEQUENCE' | 'ALGORITHM_PRESET'
+  parameters?: AlgorithmPresetParameters
   targetDeviceCode?: string
   deviceCommandType?: DeviceCommandType
+  steps?: VoiceSequencePlanStep[]
   normalizedText: string
   confidence: number | null
   provider: string

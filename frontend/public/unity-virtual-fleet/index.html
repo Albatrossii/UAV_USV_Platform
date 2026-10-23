@@ -334,6 +334,7 @@
         return {
           runtimeMode: String(source.runtimeMode || 'VIRTUAL_SIMULATION'),
           coordinateFrame: String(source.coordinateFrame || 'GLOBAL_ENU'),
+          returnInfrastructure: source.returnInfrastructure || null,
           runId: finiteNumber(source.runId || runId, 0),
           sequence: finiteNumber(source.sequence, 0),
           sampleTime: finiteNumber(
@@ -453,6 +454,7 @@
               : [],
             sceneName: String(payload.sceneName || ''),
             coordinateSystem: String(payload.coordinateSystem || 'ROS_ENU'),
+            returnInfrastructure: payload.returnInfrastructure || null,
           });
         }
         if (type === 'regeneratescenario') {
@@ -470,6 +472,7 @@
             initialSpeedMps: finiteNumber(payload.initialSpeedMps, 0),
             initialHeadingDeg: finiteNumber(payload.initialHeadingDeg, 0),
             seed: finiteNumber(payload.seed, 0),
+            returnInfrastructure: payload.returnInfrastructure || null,
           });
         }
         if (type === 'poseframe' || type === 'applyposebatch') {
@@ -500,29 +503,33 @@
             message: String(payload.message || payload.detail || ''),
           });
         }
-        if (type === 'selectdevice') {
-          return sendPlatformBridge('SelectDevice', {
+          if (type === 'focuscommand' || type === 'restorecommandcamera') {
+            return sendPlatformBridge('ReceiveFromVue', {
+              type: type === 'focuscommand' ? 'focusCommand' : 'restoreCommandCamera',
+              requestId: message.requestId || '',
+              payload: { deviceCodes: Array.isArray(payload.deviceCodes) ? payload.deviceCodes : [] },
+            });
+          }
+          if (type === 'selectdevice' || type === 'focusdevice') {
+          // SendMessage broadcasts a method name to every component on the
+          // GameObject. Both bridge components expose SelectDevice, and one
+          // also overloads it; direct dispatch can select correctly and then
+          // emit a second failure with an empty device code. ReceiveFromVue is
+          // the single envelope entry point owned by WebCommandBridge.
+          return sendPlatformBridge('ReceiveFromVue', {
+            type: type === 'selectdevice' ? 'selectDevice' : 'focusDevice',
             requestId: message.requestId || '',
-            deviceCode: String(payload.deviceCode || payload.deviceId || ''),
+            payload: { deviceCode: String(payload.deviceCode || payload.deviceId || '') },
           });
-        }
-        if (type === 'focusdevice') {
-          var selected = sendPlatformBridge('SelectDevice', {
-            requestId: message.requestId || '',
-            deviceCode: String(payload.deviceCode || payload.deviceId || ''),
-          });
-          var focused = sendPlatformBridge('SetCameraMode', {
-            requestId: message.requestId || '',
-            mode: 'device-follow',
-            deviceCode: String(payload.deviceCode || payload.deviceId || ''),
-          });
-          return selected || focused;
         }
         if (type === 'switchcamera' || type === 'setcameramode') {
-          return sendPlatformBridge('SetCameraMode', {
+          return sendPlatformBridge('ReceiveFromVue', {
+            type: 'switchCamera',
             requestId: message.requestId || '',
-            mode: String(payload.mode || 'overview'),
-            deviceCode: String(payload.deviceCode || payload.deviceId || ''),
+            payload: {
+              mode: String(payload.mode || 'overview'),
+              deviceCode: String(payload.deviceCode || payload.deviceId || ''),
+            },
           });
         }
         if (type === 'toggletrajectory') {

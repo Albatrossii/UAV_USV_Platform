@@ -20,6 +20,51 @@ from app.adapters.escort_defense import Screen
 
 
 class NextEscortAcceptanceTests(unittest.TestCase):
+    def test_default_terminal_keeps_mixed_guard_pair_with_protected_ship(self):
+        adapter = AdaptiveEscortAdapter(9951, {
+            "uavCount": 3, "usvCount": 3, "seed": 42,
+            "uavSpeedMps": 5, "usvSpeedMps": 3,
+        })
+        frame = None
+        for _ in range(4000):
+            frame = adapter.step()
+            if frame.terminalStatus:
+                break
+
+        self.assertIsNotNone(frame)
+        self.assertEqual("COMPLETED", frame.terminalStatus, frame.metrics)
+        containment = [
+            item for item in adapter.vehicles if item.assigned_threat == 0
+        ]
+        guards = [
+            item for item in adapter.vehicles if item.role == "CLOSE_GUARD"
+        ]
+        self.assertEqual(2, sum(item.kind == "UAV" for item in containment))
+        self.assertEqual(2, sum(item.kind == "USV" for item in containment))
+        self.assertEqual({"UAV", "USV"}, {item.kind for item in guards})
+        self.assertEqual(0, frame.metrics["postMissionFormationRequiredCount"])
+        self.assertEqual(0, frame.metrics["postMissionFormationReadyCount"])
+        protected = adapter.protected[0]
+        self.assertTrue(all(
+            math.hypot(item.x - protected.x, item.y - protected.y)
+            < math.hypot(item.x - adapter.threats[0].x, item.y - adapter.threats[0].y)
+            for item in guards
+        ))
+
+    def test_default_capture_keeps_mixed_close_guard_pair_during_pursuit(self):
+        adapter = AdaptiveEscortAdapter(9952, {
+            "uavCount": 3, "usvCount": 3, "seed": 42,
+            "uavSpeedMps": 5, "usvSpeedMps": 3,
+        })
+        adapter.step()
+        adapter.activate_capture()
+
+        guards = [item for item in adapter.vehicles if item.role == "CLOSE_GUARD"]
+        containment = [item for item in adapter.vehicles if item.assigned_threat == 0]
+        self.assertEqual({"UAV", "USV"}, {item.kind for item in guards})
+        self.assertEqual(2, sum(item.kind == "UAV" for item in containment))
+        self.assertEqual(2, sum(item.kind == "USV" for item in containment))
+
     def test_normal_encounter_does_not_bypass_multi_direction_guard(self):
         adapter = AdaptiveEscortAdapter(9960, {"uavCount": 30, "usvCount": 30, "seed": 20260814})
         for _ in range(1800):
@@ -190,9 +235,10 @@ class NextEscortAcceptanceTests(unittest.TestCase):
                 guards = [agent for agent in frame.agents if agent.role == "CLOSE_GUARD"]
                 assigned = [agent for agent in frame.agents if agent.assignedTargetCode == selected]
                 if count == 3:
-                    self.assertEqual([], guards)
-                    self.assertEqual(3, sum(agent.type == "UAV" for agent in assigned))
-                    self.assertEqual(3, sum(agent.type == "USV" for agent in assigned))
+                    self.assertEqual(1, sum(agent.type == "UAV" for agent in guards))
+                    self.assertEqual(1, sum(agent.type == "USV" for agent in guards))
+                    self.assertEqual(2, sum(agent.type == "UAV" for agent in assigned))
+                    self.assertEqual(2, sum(agent.type == "USV" for agent in assigned))
                 else:
                     self.assertGreaterEqual(sum(agent.type == "UAV" for agent in guards), adapter.plan.protected_count)
                     self.assertGreaterEqual(sum(agent.type == "USV" for agent in guards), adapter.plan.protected_count)
@@ -248,6 +294,22 @@ class NextEscortAcceptanceTests(unittest.TestCase):
                         (round(point[0], 3), round(point[1], 3))
                         for point in desired
                     }))
+
+    def test_default_fleet_places_both_domains_ahead_and_astern(self):
+        adapter = AdaptiveEscortAdapter(9181, {
+            "uavCount": 3, "usvCount": 3, "seed": 20260814,
+        })
+        center_x, _ = adapter._convoy_center()
+        for kind in ("UAV", "USV"):
+            members = [item for item in adapter.vehicles if item.kind == kind]
+            self.assertTrue(
+                any(item.x > center_x + 5.0 for item in members),
+                f"{kind} must have a forward escort slot",
+            )
+            self.assertTrue(
+                any(item.x < center_x - 5.0 for item in members),
+                f"{kind} must have an aft escort slot",
+            )
 
     def test_attack_intent_requires_motion_evidence_and_convoy_departure(self):
         adapter = AdaptiveEscortAdapter(9190, {

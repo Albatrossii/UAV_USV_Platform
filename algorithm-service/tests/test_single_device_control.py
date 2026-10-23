@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from app.adapters.base import AlgorithmAdapter
 from app.adapters.single_device import SingleDeviceControlAdapter
 from app.schemas import AgentFrame, RuntimeFrame
@@ -97,6 +99,14 @@ def test_hold_overrides_only_selected_device() -> None:
     assert frame.metrics["operatorControlledDeviceCount"] == 1
 
 
+def test_landing_without_a_real_helipad_is_rejected_not_frozen_over_water() -> None:
+    subject = adapter()
+    subject.step()
+    with pytest.raises(ValueError, match="LANDING_SITE_UNAVAILABLE"):
+        subject.control_device("UAV-001", "UAV_LAND")
+    assert subject.step().agents[0].status == "ACTIVE"
+
+
 def test_resume_rejoins_live_algorithm_without_jumping() -> None:
     subject = adapter()
     subject.step()
@@ -180,3 +190,29 @@ def test_capture_return_uses_structural_minimum_not_original_group_size() -> Non
     assert completed.metrics["requiredActiveMissionDeviceCount"] == 5
     assert completed.metrics["activeMissionDeviceCount"] == 9
     assert completed.metrics["completionBlocker"] == "NONE"
+
+
+@pytest.mark.parametrize("returned, required_uavs, required_usvs, required_total, deficit, missing", [
+    (["USV-001"], 2, 3, 5, 1, ["USV"]),
+    (["UAV-001"], 2, 3, 5, 0, []),
+    (["USV-001"], 2, 2, 5, 0, []),
+    (["UAV-001", "USV-001"], 2, 2, 5, 1, []),
+])
+def test_escort_return_honors_phase_specific_structural_quorum(
+    returned, required_uavs, required_usvs, required_total, deficit, missing,
+) -> None:
+    subject = adapter()
+    frame = subject.step()
+    frame.agents = [
+        AgentFrame(f"{kind}-{index:03d}", kind, 0.0, 0.0, 20.0 if kind == "UAV" else 0.0, 0.0, "GUARD")
+        for kind in ("UAV", "USV") for index in range(1, 4)
+    ]
+    frame.metrics.update({
+        "requiredActiveUavCount": required_uavs,
+        "requiredActiveUsvCount": required_usvs,
+        "requiredActiveMissionDeviceCount": required_total,
+    })
+    assert subject._remaining_force_is_insufficient(frame, returned) is (deficit > 0)
+    assert frame.metrics["activeMissionDeviceDeficit"] == deficit
+    assert frame.metrics["missingActiveDeviceTypes"] == missing
+    assert frame.metrics["activeForceSufficient"] is (deficit == 0)

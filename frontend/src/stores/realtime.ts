@@ -3,6 +3,12 @@ import { defineStore } from 'pinia'
 import { fetchRealtimeSnapshot } from '@/api/realtime'
 import type { RealtimeSnapshot } from '@/api/realtime'
 import { fetchRuntimeCommandLogs } from '@/api/runtimeControl'
+import {
+  getRecentWebSocketSamples,
+  WEBSOCKET_PROBE_INTERVAL_MS,
+  WEBSOCKET_PROBE_TIMEOUT_MS,
+  type WebSocketProbeSample,
+} from '@/utils/websocketQuality'
 import type {
   ControlEventPayload,
   GatewayEnvelope,
@@ -13,8 +19,16 @@ import type {
 
 type RealtimeConnectionState = 'DISCONNECTED' | 'CONNECTING' | 'CONNECTED'
 
+interface RealtimeLinkQuality {
+  samples: WebSocketProbeSample[]
+  lastMessageAt: number | null
+  reconnectCount: number
+  now: number
+}
+
 interface RealtimeState {
   connectionState: RealtimeConnectionState
+  linkQuality: RealtimeLinkQuality
   hydrating: boolean
   hydrated: boolean
   lastError: string
@@ -34,6 +48,123 @@ let reconnectAttempts = 0
 let reconnectEnabled = false
 let hydrationPromise: Promise<void> | null = null
 let connectionGeneration = 0
+let qualityTimer: number | null = null
+let visibilityListener: (() => void) | null = null
+let probeSequence = 0
+let nextProbeAt = 0
+let previousQualityTick = 0
+let previousQualityWallTime = 0
+let pendingProbe: {
+  id: string
+  sentAt: number
+  startedAt: number
+  generation: number
+  socket: WebSocket
+} | null = null
+
+type QualityStore = Pick<RealtimeState, 'connectionState' | 'linkQuality'>
+
+const QUALITY_REFRESH_MS = 250
+// A blocked event loop cannot provide a useful network-only timing sample.
+const MAX_QUALITY_TICK_GAP_MS = 750
+
+function stopQualityTracking() {
+  if (qualityTimer !== null) window.clearInterval(qualityTimer)
+  qualityTimer = null
+  if (visibilityListener) document.removeEventListener('visibilitychange', visibilityListener)
+  visibilityListener = null
+  pendingProbe = null
+}
+
+function timingWasInterrupted(monotonicNow: number, wallNow: number) {
+  return monotonicNow - previousQualityTick > MAX_QUALITY_TICK_GAP_MS
+    || wallNow - previousQualityWallTime > MAX_QUALITY_TICK_GAP_MS
+    || wallNow < previousQualityWallTime
+}
+
+function resetProbeTiming(store: QualityStore, monotonicNow: number, wallNow: number) {
+  pendingProbe = null
+  nextProbeAt = monotonicNow
+  previousQualityTick = monotonicNow
+  previousQualityWallTime = wallNow
+  store.linkQuality.samples = []
+  store.linkQuality.now = wallNow
+}
+
+function recordProbe(store: QualityStore, rttMs: number | null) {
+  if (!pendingProbe) return
+  store.linkQuality.samples = getRecentWebSocketSamples([
+    ...store.linkQuality.samples,
+    { sentAt: pendingProbe.sentAt, rttMs },
+  ], store.linkQuality.now)
+  pendingProbe = null
+}
+
+function sendProbe(store: QualityStore, monotonicNow: number) {
+  if (pendingProbe || document.visibilityState === 'hidden'
+    || store.connectionState !== 'CONNECTED' || socket?.readyState !== WebSocket.OPEN) return
+  const currentSocket = socket
+  const id = `${connectionGeneration.toString(36)}-${(++probeSequence).toString(36)}`
+  pendingProbe = {
+    id,
+    sentAt: Date.now(),
+    startedAt: monotonicNow,
+    generation: connectionGeneration,
+    socket: currentSocket,
+  }
+  nextProbeAt = monotonicNow + WEBSOCKET_PROBE_INTERVAL_MS
+  try {
+    currentSocket.send(JSON.stringify({ type: 'realtime.ping', id }))
+  } catch {
+    // A closing socket can race send(). Its normal close handler owns recovery.
+    pendingProbe = null
+  }
+}
+
+function startQualityTracking(store: QualityStore) {
+  stopQualityTracking()
+  resetProbeTiming(store, performance.now(), Date.now())
+  visibilityListener = () => {
+    resetProbeTiming(store, performance.now(), Date.now())
+    if (document.visibilityState !== 'hidden') sendProbe(store, performance.now())
+  }
+  document.addEventListener('visibilitychange', visibilityListener)
+  qualityTimer = window.setInterval(() => {
+    const monotonicNow = performance.now()
+    const wallNow = Date.now()
+    store.linkQuality.now = wallNow
+    if (timingWasInterrupted(monotonicNow, wallNow)) resetProbeTiming(store, monotonicNow, wallNow)
+    previousQualityTick = monotonicNow
+    previousQualityWallTime = wallNow
+    store.linkQuality.samples = getRecentWebSocketSamples(store.linkQuality.samples, wallNow)
+    if (document.visibilityState === 'hidden') {
+      pendingProbe = null
+      return
+    }
+    if (pendingProbe && monotonicNow - pendingProbe.startedAt >= WEBSOCKET_PROBE_TIMEOUT_MS) {
+      recordProbe(store, null)
+    }
+    if (monotonicNow >= nextProbeAt) sendProbe(store, monotonicNow)
+  }, QUALITY_REFRESH_MS)
+}
+
+function isProbeMessage(value: unknown): value is { type: 'realtime.ping' | 'realtime.pong'; id?: unknown } {
+  if (!value || typeof value !== 'object') return false
+  const type = (value as { type?: unknown }).type
+  return type === 'realtime.ping' || type === 'realtime.pong'
+}
+
+function receivePong(store: QualityStore, value: { id?: unknown }, currentSocket: WebSocket, generation: number) {
+  if (!pendingProbe || pendingProbe.socket !== currentSocket || pendingProbe.generation !== generation
+    || typeof value.id !== 'string' || pendingProbe.id !== value.id) return
+  const monotonicNow = performance.now()
+  if (document.visibilityState === 'hidden' || timingWasInterrupted(monotonicNow, Date.now())) {
+    resetProbeTiming(store, monotonicNow, Date.now())
+    return
+  }
+  const elapsed = monotonicNow - pendingProbe.startedAt
+  recordProbe(store, elapsed >= 0 && elapsed < WEBSOCKET_PROBE_TIMEOUT_MS ? elapsed : null)
+}
 
 function reconnectDelay() {
   return Math.min(1000 * 2 ** reconnectAttempts, 15000)
@@ -84,6 +215,7 @@ function normalizeEnvelope(value: unknown): GatewayEnvelope | null {
 export const useRealtimeStore = defineStore('realtime', {
   state: (): RealtimeState => ({
     connectionState: 'DISCONNECTED',
+    linkQuality: { samples: [], lastMessageAt: null, reconnectCount: 0, now: Date.now() },
     hydrating: false,
     hydrated: false,
     lastError: '',
@@ -106,6 +238,8 @@ export const useRealtimeStore = defineStore('realtime', {
       reconnectEnabled = true
       if (socket && socket.readyState !== WebSocket.CLOSED) return
       const generation = ++connectionGeneration
+      this.linkQuality.lastMessageAt = null
+      startQualityTracking(this)
       this.hydrated = false
       hydrationPromise = null
       this.streamSequences = {}
@@ -122,13 +256,29 @@ export const useRealtimeStore = defineStore('realtime', {
       const currentSocket = new WebSocket(realtimeUrl())
       socket = currentSocket
       currentSocket.onopen = () => {
-        if (socket !== currentSocket) return
+        if (socket !== currentSocket || generation !== connectionGeneration) return
         this.connectionState = 'CONNECTED'
         this.lastError = ''
         reconnectAttempts = 0
+        resetProbeTiming(this, performance.now(), Date.now())
+        sendProbe(this, performance.now())
       }
       currentSocket.onmessage = event => {
-        if (socket === currentSocket) this.ingestMessage(event.data)
+        if (socket !== currentSocket || generation !== connectionGeneration) return
+        this.linkQuality.now = Date.now()
+        this.linkQuality.lastMessageAt = this.linkQuality.now
+        let parsed: unknown = event.data
+        try {
+          if (typeof parsed === 'string') parsed = JSON.parse(parsed)
+        } catch {
+          this.ingestMessage(event.data)
+          return
+        }
+        if (isProbeMessage(parsed)) {
+          if (parsed.type === 'realtime.pong') receivePong(this, parsed, currentSocket, generation)
+          return
+        }
+        this.ingestMessage(parsed)
       }
       currentSocket.onerror = () => {
         if (socket !== currentSocket) return
@@ -137,12 +287,14 @@ export const useRealtimeStore = defineStore('realtime', {
       currentSocket.onclose = () => {
         if (socket !== currentSocket || generation !== connectionGeneration) return
         this.connectionState = 'DISCONNECTED'
+        pendingProbe = null
         socket = null
         if (reconnectEnabled && reconnectTimer === null) {
           const delay = reconnectDelay()
           reconnectAttempts += 1
           reconnectTimer = window.setTimeout(() => {
             reconnectTimer = null
+            this.linkQuality.reconnectCount += 1
             this.connect()
           }, delay)
         }
@@ -191,6 +343,7 @@ export const useRealtimeStore = defineStore('realtime', {
     disconnect() {
       reconnectEnabled = false
       connectionGeneration += 1
+      stopQualityTracking()
       hydrationPromise = null
       if (reconnectTimer !== null) {
         window.clearTimeout(reconnectTimer)
@@ -201,11 +354,13 @@ export const useRealtimeStore = defineStore('realtime', {
       previousSocket?.close()
       reconnectAttempts = 0
       this.connectionState = 'DISCONNECTED'
+      this.linkQuality = { samples: [], lastMessageAt: null, reconnectCount: 0, now: Date.now() }
       this.clear()
     },
     ingestMessage(raw: unknown) {
       try {
         const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw
+        if (isProbeMessage(parsed)) return
         const envelope = normalizeEnvelope(parsed)
         if (!envelope || !this.acceptSequence(envelope)) return
         this.lastEnvelope = envelope

@@ -2,7 +2,11 @@ from __future__ import annotations
 
 import math
 import time
-from typing import Dict, List, Mapping
+import contextlib
+import sys
+from dataclasses import replace
+from types import SimpleNamespace
+from typing import Dict, List, Mapping, Sequence
 
 import numpy as np
 
@@ -11,25 +15,24 @@ from app.adapters.capture import CaptureAdapter
 from app.capture import (
     RingMember,
     RingSlot,
+    FormationSlot,
     allocate_balanced_groups,
     assess_canonical_ring,
     build_canonical_slots,
     maximum_capture_gap_deg,
 )
-from app.decision import DecisionAgent, DecisionTarget, DynamicTaskAllocator
+from app.decision import DecisionAgent, DecisionTarget
 from app.navigation import TASK_CENTER_SCENE_MAP, SceneSafetyFilter
 from app.scenario import derive_scenario_plan
 from app.schemas import AgentFrame, RuntimeFrame, TargetFrame
 
 
 class AdaptiveCaptureAdapter(AlgorithmAdapter):
-    """Coordinate one independent capture solver per hostile target.
+    """Global GB/CS assignment with per-target SFLA and executed-ring control.
 
-    The original vendor solver is single-target.  This coordinator partitions
-    both domains into stable teams, keeps each solver's pursuit/ring state
-    independent, and merges their frames back to the global device codes used
-    by Unity.  Target count follows the same adaptive threat-count contract as
-    escort missions instead of being silently forced to one.
+    One planner observes every target and every available craft. Local solvers
+    optimise the geometry assigned by that planner; the coordinator controls
+    those selected goals and validates the final globally safe positions.
     """
 
     code = "GB_SFLA_CS"
@@ -156,20 +159,30 @@ class AdaptiveCaptureAdapter(AlgorithmAdapter):
             self.children.append(child)
             self.agent_code_maps.append(code_map)
 
-        self.dynamic_allocator = DynamicTaskAllocator(
-            evaluation_interval_frames=max(
-                5, int(self.config.get("assignmentEvaluationFrames", 10))
-            ),
-            minimum_improvement_ratio=float(
-                self.config.get("assignmentMinimumImprovement", 0.12)
-            ),
-            confirmation_cycles=max(
-                1, int(self.config.get("assignmentConfirmationCycles", 2))
-            ),
-            cooldown_frames=max(
-                10, int(self.config.get("assignmentCooldownFrames", 30))
-            ),
+        # One GB/CS planner sees the whole scene and exclusively owns target
+        # assignment. Children optimise/execute their assigned local geometry.
+        self.global_environment = SimpleNamespace(
+            agents=np.empty((0, 8)), targets=np.empty((0, 5)),
+            permanently_captured=set(), guarding_agents={},
+            previous_assignments={}, assignment_only=True,
+            minimum_ball_agents=3, assignment_type_capacities={},
+            locked_target_ids=set(), target_velocities={},
         )
+        self.children[0]._activate_vendor_runtime_config()
+        self.global_planner = self.children[0].source.GBSFLACSAlgorithm(self.global_environment)
+        self.global_planner.full_plan_interval = 1
+        # Compatibility counters only; no parallel decision engine.
+        self.dynamic_allocator = SimpleNamespace(assignment_revision=0, reassignment_count=0)
+        self.assignment_evaluation_frames = max(5, int(self.config.get("assignmentEvaluationFrames", 10)))
+        self.assignment_last_evaluation = -10000
+        self.assignment_candidate = None
+        self.assignment_candidate_cycles = 0
+        self.assignment_last_switch = -10000
+        self.unavailable_codes: set[str] = set()
+        self.withdrawn_codes: set[str] = set()
+        self.global_agent_ids = {code: index for index, code in enumerate(sorted(
+            code for mapping in self.agent_code_maps for code in mapping.values()))}
+        self.child_geometry_signatures = [None for _ in self.children]
         self.assignment_changes: List[Dict[str, object]] = []
         self.assignment_last_result: Dict[str, object] = {
             "reason": "INITIAL_DISTANCE_BALANCE",
@@ -235,6 +248,8 @@ class AdaptiveCaptureAdapter(AlgorithmAdapter):
             current_target = f"TARGET-{target_index + 1:03d}"
             rows = self._local_agent_rows(child)
             for local_code, global_code in code_map.items():
+                if global_code in self.withdrawn_codes:
+                    continue
                 raw = rows[local_code]
                 kind = "UAV" if int(raw[6]) == 0 else "USV"
                 position = self.previous_scene.get(
@@ -300,7 +315,7 @@ class AdaptiveCaptureAdapter(AlgorithmAdapter):
                     or child.captured_at_sequence is not None
                 ),
             ))
-            mapped_codes = list(self.agent_code_maps[index].values())
+            mapped_codes = [code for code in self.agent_code_maps[index].values() if code not in self.withdrawn_codes]
             capacities[target_code] = {
                 "UAV": sum(code.startswith("UAV-") for code in mapped_codes),
                 "USV": sum(code.startswith("USV-") for code in mapped_codes),
@@ -369,44 +384,90 @@ class AdaptiveCaptureAdapter(AlgorithmAdapter):
                         ),
                     ),
                 )
-                uavs = sorted(code for code in new_map.values() if code.startswith("UAV-"))
-                usvs = sorted(code for code in new_map.values() if code.startswith("USV-"))
+                uavs = sorted(code for code in new_map.values() if code.startswith("UAV-") and code not in self.withdrawn_codes)
+                usvs = sorted(code for code in new_map.values() if code.startswith("USV-") and code not in self.withdrawn_codes)
                 self.ring_member_codes[target_index] = set(
-                    uavs[:primary_per_domain] + usvs[:primary_per_domain]
+                    uavs[:6] + usvs[:6]
                 )
 
     def _maybe_reassign_capture_groups(self) -> None:
         if not self.mission_active or self.target_count < 2:
             return
         agents, targets, capacities = self._current_assignment_snapshot()
-        result = self.dynamic_allocator.evaluate(
-            agents,
-            targets,
-            capacities,
-            frame=self.sequence,
+        if self.sequence - self.assignment_last_evaluation < self.assignment_evaluation_frames:
+            return
+        self.assignment_last_evaluation = self.sequence
+        planner = self.global_planner
+        env = self.global_environment
+        ids = self.global_agent_ids
+        codes = {index: code for code, index in ids.items()}
+        current = {ids[agent.code]: int(agent.current_target.rsplit("-", 1)[1])-1 for agent in agents}
+        env.agents = np.asarray([
+            [agent.x*3, agent.y*3, 75.0 if agent.kind == "UAV" else 0.0,
+             agent.speed_mps*0.3, math.radians(agent.heading_deg), 0.0,
+             0 if agent.kind == "UAV" else 1, ids[agent.code]] for agent in agents
+        ])
+        env.targets = np.asarray([[target.x*3, target.y*3, 0, 0, 0] for target in targets])
+        env.maximum_agent_speeds = {ids[agent.code]: agent.maximum_speed_mps*0.3 for agent in agents}
+        env.target_velocities = {i: (target.vx*3, target.vy*3) for i, target in enumerate(targets)}
+        env.assignment_type_capacities = {
+            i: {0: capacities[target.code]["UAV"], 1: capacities[target.code]["USV"]}
+            for i, target in enumerate(targets)
+        }
+        env.locked_target_ids = {i for i, target in enumerate(targets) if target.locked}
+        # During manual detach keep capacities stable and require a new plan
+        # after rejoin; unavailable craft cannot be traded as ghost resources.
+        env.locked_target_ids.update(current[ids[code]] for code in self.unavailable_codes if code in ids and ids[code] in current)
+        planner.last_assignments = dict(current)
+        self.children[0]._activate_vendor_runtime_config()
+        with contextlib.redirect_stdout(sys.stderr):
+            proposed = planner.step()
+        planner.last_assignments = dict(current)
+        current_cost = planner._composite_cost(current)
+        proposed_cost = planner._composite_cost(proposed)
+        improvement = max(0.0, (current_cost-proposed_cost)/max(current_cost, 1e-9))
+        signature = tuple(sorted(proposed.items()))
+        if signature == self.assignment_candidate:
+            self.assignment_candidate_cycles += 1
+        else:
+            self.assignment_candidate, self.assignment_candidate_cycles = signature, 1
+        accepted = (
+            proposed != current
+            and improvement >= float(self.config.get("assignmentMinimumImprovement", 0.12))
+            and self.assignment_candidate_cycles >= max(1, int(self.config.get("assignmentConfirmationCycles", 2)))
+            and self.sequence-self.assignment_last_switch >= max(10, int(self.config.get("assignmentCooldownFrames", 30)))
         )
         self.assignment_last_result = {
-            "reason": result.reason,
-            "improvementRatio": round(result.improvement_ratio, 4),
-            "currentCost": round(result.current_cost, 3),
-            "proposedCost": round(result.proposed_cost, 3),
+            "reason": "GB_CS_IMPROVEMENT" if accepted else "GB_CS_KEEP_CURRENT",
+            "improvementRatio": round(improvement, 4),
+            "currentCost": round(current_cost, 3),
+            "proposedCost": round(proposed_cost, 3),
+            "globalTargetCount": len(env.targets),
+            "globalAgentCount": len(env.agents),
+            "granularBallCount": len(planner.leaf_balls),
+            "planRevision": planner.plan_revision,
         }
-        if not result.accepted:
+        if not accepted:
+            planner.last_assignments = current
             return
-        self._apply_dynamic_assignments(result.assignments)
-        for change in result.changes:
+        selected = {codes[agent_id]: f"TARGET-{target_id+1:03d}" for agent_id, target_id in proposed.items()}
+        selected.update({code: f"TARGET-{index+1:03d}" for index, mapping in enumerate(self.agent_code_maps)
+                         for code in mapping.values() if code in self.withdrawn_codes})
+        self._apply_dynamic_assignments(selected)
+        planner.last_assignments = dict(proposed)
+        self.assignment_last_switch = self.sequence
+        self.dynamic_allocator.assignment_revision += 1
+        for agent_id, target_id in proposed.items():
+            if current[agent_id] == target_id:
+                continue
+            self.dynamic_allocator.reassignment_count += 1
             self.assignment_changes.append({
                 "sequence": self.sequence,
-                "deviceCode": change.agent_code,
-                "deviceType": change.kind,
-                "previousTarget": change.previous_target,
-                "targetCode": change.target,
-                "reason": change.reason,
-                "previousEtaSec": (
-                    None if change.previous_eta_sec is None
-                    else round(change.previous_eta_sec, 2)
-                ),
-                "interceptEtaSec": round(change.intercept_eta_sec, 2),
+                "deviceCode": codes[agent_id],
+                "deviceType": codes[agent_id].split("-")[0],
+                "previousTarget": f"TARGET-{current[agent_id]+1:03d}",
+                "targetCode": f"TARGET-{target_id+1:03d}",
+                "reason": "GB_CS_IMPROVEMENT",
             })
         self.assignment_changes = self.assignment_changes[-48:]
 
@@ -443,6 +504,57 @@ class AdaptiveCaptureAdapter(AlgorithmAdapter):
         super().set_mission_active(active)
         for child in self.children:
             child.set_mission_active(active)
+
+    def reconcile_execution(
+        self,
+        agents: Sequence[AgentFrame],
+        previous_agents: Mapping[str, AgentFrame],
+        unavailable_codes: Sequence[str] = (),
+    ) -> None:
+        actual = {agent.code: agent for agent in agents}
+        changed = set(unavailable_codes) != self.unavailable_codes
+        self.unavailable_codes = set(unavailable_codes)
+        withdrawn = {agent.code for agent in agents if agent.status == "RETURNED"}
+        membership_changed = withdrawn != self.withdrawn_codes
+        self.withdrawn_codes = withdrawn
+        for agent in agents:
+            self.previous_scene[agent.code] = (agent.x, agent.y, agent.z)
+            self._stable_headings[agent.code] = agent.heading
+        for index, (child, mapping) in enumerate(zip(self.children, self.agent_code_maps)):
+            local_agents = []
+            previous_local = {}
+            for local_code, global_code in mapping.items():
+                if global_code not in actual:
+                    continue
+                local = replace(actual[global_code], code=local_code)
+                local_agents.append(local)
+                previous = previous_agents.get(global_code)
+                if previous is actual[global_code]:
+                    previous_local[local_code] = local
+                elif previous is not None:
+                    previous_local[local_code] = replace(previous, code=local_code)
+            unavailable_local = [local for local, global_code in mapping.items() if global_code in self.unavailable_codes]
+            child.reconcile_execution(local_agents, previous_local, unavailable_local)
+            if set(unavailable_local) - child.withdrawn_codes or membership_changed:
+                self.executed_hold_frames[index] = 0
+                self.containment_stage_latched[index] = False
+            if membership_changed:
+                available = [code for code in mapping.values() if code not in withdrawn]
+                self.ring_member_codes[index] = set(
+                    sorted(code for code in available if code.startswith("UAV-"))[:6]
+                    + sorted(code for code in available if code.startswith("USV-"))[:6])
+                self.ring_slots[index].clear()
+                self.support_slots[index].clear()
+                self.child_geometry_signatures[index] = None
+        if changed or membership_changed:
+            self.assignment_last_evaluation = -10000
+
+    def rejoin_target(self, device_code: str) -> tuple[float, float, float] | None:
+        for child, mapping in zip(self.children, self.agent_code_maps):
+            for local_code, global_code in mapping.items():
+                if global_code == device_code:
+                    return child.rejoin_target(local_code)
+        return None
 
     @staticmethod
     def _hard_containment_failure(blocker: object) -> bool:
@@ -516,6 +628,67 @@ class AdaptiveCaptureAdapter(AlgorithmAdapter):
             )
         return self.ring_slots[index]
 
+    def _prepare_child_geometry(self, index: int) -> None:
+        """Supply canonical base slots to SFLA before it selects any plan."""
+        child = self.children[index]
+        mapping = self.agent_code_maps[index]
+        rows = self._local_agent_rows(child)
+        center = child.previous_scene.get("TARGET", child._to_scene(child.env.targets[0, :3], "TARGET"))
+        agents = []
+        for local_code, global_code in mapping.items():
+            if global_code in self.withdrawn_codes:
+                continue
+            kind = "UAV" if local_code.startswith("UAV-") else "USV"
+            point = self.previous_scene.get(global_code, child.previous_scene.get(local_code, child._to_scene(rows[local_code][:3], kind)))
+            agents.append(AgentFrame(global_code, kind, *point, 0.0, "INTERCEPTOR"))
+        target = TargetFrame(f"TARGET-{index+1:03d}", "CAPTURE_TARGET", *center, 0.0, True)
+        primary = [agent for agent in agents if agent.code in self.ring_member_codes[index]]
+        base = self._ensure_ring_slots(index, primary, target)
+        support_agents = [agent for agent in agents if agent.code not in base]
+        if set(self.support_slots[index]) != {agent.code for agent in support_agents}:
+            candidates = build_canonical_slots(self._as_ring_members(support_agents), center, phase=math.pi/4, minimum_spacing_m=14.0) if support_agents else {}
+            radius = max((slot.radius for slot in base.values()), default=24.0) + 28.0
+            self.support_slots[index] = {
+                code: RingSlot(slot.index, slot.angle, radius, slot.altitude)
+                for code, slot in candidates.items()
+            }
+        all_slots = {**base, **self.support_slots[index]}
+        signature = tuple((code, slot.angle, slot.radius, slot.altitude) for code, slot in sorted(all_slots.items()))
+        if self.child_geometry_signatures[index] == signature:
+            return
+        self.child_geometry_signatures[index] = signature
+        child.env.algorithm.formation_slot_assignment.clear()
+        for kind, type_value in (("UAV", 0), ("USV", 1)):
+            locals_for_type = sorted(code for code in mapping if code.startswith(kind+"-") and mapping[code] not in self.withdrawn_codes)
+            specs = [FormationSlot(all_slots[mapping[code]].radius, all_slots[mapping[code]].angle,
+                                   all_slots[mapping[code]].altitude, 0 if mapping[code] in base else 1)
+                     for code in locals_for_type]
+            if kind == "UAV":
+                child.uav_slot_specs = specs
+            else:
+                child.usv_slot_specs = specs
+            child._vendor_runtime_config[f"CAPTURE_FORMATION_{kind}_SLOT_SPECS"] = [
+                (slot.radius*3, slot.angle, (slot.altitude-9)*4.4 if kind == "UAV" else 0.0, slot.ring)
+                for slot in specs
+            ]
+            ids = [int(rows[code][7]) for code in locals_for_type]
+            child.env.algorithm.formation_slot_assignment[(0, type_value)] = {
+                "signature": tuple(sorted(ids)), "slots": {agent_id: offset for offset, agent_id in enumerate(ids)},
+            }
+        child.outer_formation_radius = max((slot.radius for slot in all_slots.values()), default=46.0)
+        child._vendor_runtime_config["CAPTURE_RADIUS"] = (child.outer_formation_radius + 40.0) * 3.0
+        child.env.algorithm.planning_step = 0
+
+    def _selected_ring_slots(self, index: int, agents: List[AgentFrame], target: TargetFrame) -> Dict[str, RingSlot]:
+        child = self.children[index]
+        local_plans = child._planned_formation_slots()
+        global_plans = {self.agent_code_maps[index][code]: slot for code, slot in local_plans.items()}
+        if all(agent.code in global_plans for agent in agents):
+            return {agent.code: RingSlot(offset, global_plans[agent.code].angle, global_plans[agent.code].radius,
+                                        global_plans[agent.code].altitude)
+                    for offset, agent in enumerate(agents)}
+        return self._ensure_ring_slots(index, agents, target)
+
     def _command_canonical_ring(
         self,
         index: int,
@@ -528,6 +701,7 @@ class AdaptiveCaptureAdapter(AlgorithmAdapter):
             return
         if child.target_travelled_distance < child.required_pursuit_distance + 20.0:
             return
+        agents = [agent for agent in agents if agent.code not in self.withdrawn_codes]
         primary_agents = [
             agent for agent in agents
             if agent.code in self.ring_member_codes[index]
@@ -536,7 +710,7 @@ class AdaptiveCaptureAdapter(AlgorithmAdapter):
             agent for agent in agents
             if agent.code not in self.ring_member_codes[index]
         ]
-        slots = self._ensure_ring_slots(index, primary_agents, target)
+        slots = self._selected_ring_slots(index, primary_agents, target)
         previous_target = self.previous_scene.get(target.code)
         velocity_x = 0.0 if previous_target is None else (target.x - previous_target[0]) / 0.1
         velocity_y = 0.0 if previous_target is None else (target.y - previous_target[1]) / 0.1
@@ -633,38 +807,14 @@ class AdaptiveCaptureAdapter(AlgorithmAdapter):
             agent.role = "RING_MEMBER"
 
         if support_agents:
-            support_codes = {agent.code for agent in support_agents}
-            if set(self.support_slots[index]) != support_codes:
-                support = build_canonical_slots(
-                    self._as_ring_members(support_agents),
-                    (target.x, target.y, target.z),
-                    phase=(
-                        math.radians(target.heading)
-                        + math.pi / max(1, len(support_agents))
-                    ),
-                    minimum_spacing_m=14.0,
-                )
-                inner_radius = max(
-                    (slot.radius for slot in slots.values()),
-                    default=24.0,
-                )
-                outer_radius = min(96.0, inner_radius + 28.0)
-                self.support_slots[index] = {
-                    code: RingSlot(
-                        slot.index,
-                        slot.angle,
-                        outer_radius,
-                        slot.altitude,
-                    )
-                    for code, slot in support.items()
-                }
+            selected_support = self._selected_ring_slots(index, support_agents, target)
             support_center = (
                 target.x + velocity_x * 0.10,
                 target.y + velocity_y * 0.10,
                 target.z,
             )
             for agent in support_agents:
-                slot = self.support_slots[index][agent.code]
+                slot = selected_support[agent.code]
                 current = self.previous_scene.get(
                     agent.code, (agent.x, agent.y, agent.z)
                 )
@@ -742,7 +892,7 @@ class AdaptiveCaptureAdapter(AlgorithmAdapter):
             child.target_travelled_distance
             >= child.required_pursuit_distance + 20.0
         )
-        slots = self._ensure_ring_slots(index, agents, target)
+        slots = self._selected_ring_slots(index, agents, target)
         contract = assess_canonical_ring(
             self._as_ring_members(agents),
             (target.x, target.y, target.z),
@@ -761,8 +911,12 @@ class AdaptiveCaptureAdapter(AlgorithmAdapter):
                 agent.y - slots[agent.code].point(center)[1],
             ) > 3.5
         ]
-        if not visible_chase_complete:
+        if any(code in self.unavailable_codes - self.withdrawn_codes for code in self.agent_code_maps[index].values()):
+            blocker = "POST_GLOBAL_INVALID_PARTICIPANT"
+        elif not visible_chase_complete:
             blocker = "PURSUIT_DISTANCE"
+        elif not any(agent.type == "UAV" for agent in agents) or not any(agent.type == "USV" for agent in agents):
+            blocker = "POST_GLOBAL_TYPE_LAYER"
         elif not contract.ready:
             blocker = f"POST_GLOBAL_{contract.blocker}"
         else:
@@ -896,6 +1050,8 @@ class AdaptiveCaptureAdapter(AlgorithmAdapter):
     def step(self) -> RuntimeFrame:
         self.sequence += 1
         self._maybe_reassign_capture_groups()
+        for index in range(len(self.children)):
+            self._prepare_child_geometry(index)
         target_centers = [
             child.previous_scene.get("TARGET")
             for child in self.children
@@ -983,7 +1139,14 @@ class AdaptiveCaptureAdapter(AlgorithmAdapter):
                     frame.metrics.get("nearestInterceptorCode"),
                 ),
                 "nearestInterceptorDistanceM": frame.metrics.get("nearestInterceptorDistanceM"),
-                "assignmentStrategy": "PREDICTIVE_DYNAMIC",
+                "assignmentStrategy": "GLOBAL_GB_CS",
+                "plannerSource": frame.metrics.get("plannerSource", "GB_SFLA_CS"),
+                "planRevision": frame.metrics.get("planRevision", 0),
+                "plannerDiagnostics": frame.metrics.get("plannerDiagnostics", {}),
+                "plannerGoals": {
+                    code_map.get(code, code): goal
+                    for code, goal in frame.metrics.get("plannerGoals", {}).items()
+                },
                 "assignmentRevision": self.dynamic_allocator.assignment_revision,
                 "reassignmentCount": self.dynamic_allocator.reassignment_count,
                 "recentReassignments": [
@@ -1434,7 +1597,7 @@ class AdaptiveCaptureAdapter(AlgorithmAdapter):
             ),
             "requiredCaptureHoldFrames": max(int(item.get("requiredCaptureHoldFrames", 0)) for item in metrics_list),
             "captureGroups": groups,
-            "assignmentStrategy": "PREDICTIVE_DYNAMIC",
+            "assignmentStrategy": "GLOBAL_GB_CS",
             "assignmentRevision": self.dynamic_allocator.assignment_revision,
             "reassignmentCount": self.dynamic_allocator.reassignment_count,
             "assignmentDecision": self.assignment_last_result,

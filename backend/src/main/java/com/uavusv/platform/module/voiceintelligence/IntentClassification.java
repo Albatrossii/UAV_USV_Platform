@@ -11,7 +11,15 @@ record IntentClassification(
         String message,
         String action,
         String targetDeviceCode,
-        String deviceCommandType) {
+        String deviceCommandType,
+        com.fasterxml.jackson.databind.node.ArrayNode sequenceSteps, Integer presetId) {
+    IntentClassification(String status, String reason, String message, String action, String targetDeviceCode, String deviceCommandType, com.fasterxml.jackson.databind.node.ArrayNode steps) {
+        this(status, reason, message, action, targetDeviceCode, deviceCommandType, steps, null);
+    }
+    IntentClassification(String status, String reason, String message, String action,
+            String targetDeviceCode, String deviceCommandType) {
+        this(status, reason, message, action, targetDeviceCode, deviceCommandType, null);
+    }
     IntentClassification(String status, String reason, String message, String action) {
         this(status, reason, message, action, null, null);
     }
@@ -25,7 +33,23 @@ record IntentClassification(
     ObjectNode data(String id, String text, String provider, String model, VoiceJson json) {
         ObjectNode node = json.object();
         node.put("status", status).put("requestId", id);
-        if ("DEVICE_COMMAND".equals(action)) {
+        if ("SEQUENCE".equals(action)) {
+            var steps = json.mapper.createArrayNode();
+            steps.addObject().put("index", 0).put("action", "START");
+            steps.addObject()
+                    .put("index", 1)
+                    .put("action", "DEVICE_COMMAND")
+                    .put("targetDeviceCode", targetDeviceCode)
+                    .put("deviceCommandType", deviceCommandType);
+            if (sequenceSteps != null) steps = sequenceSteps.deepCopy();
+            node.put("intent", "COMMAND_SEQUENCE")
+                    .put("action", action)
+                    .set("steps", steps);
+            node.putNull("confidence");
+        } else if ("ALGORITHM_PRESET".equals(action)) {
+            node.put("intent", "ALGORITHM_PRESET").put("action", action).putNull("confidence");
+            node.set("parameters", com.uavusv.platform.module.voicecontrol.AlgorithmPresets.parameters(json, presetId));
+        } else if ("DEVICE_COMMAND".equals(action)) {
             node.put("intent", "SINGLE_DEVICE_CONTROL")
                     .put("action", action)
                     .put("targetDeviceCode", targetDeviceCode)

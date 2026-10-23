@@ -1,0 +1,248 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { createPinia, setActivePinia } from 'pinia'
+import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
+
+import VirtualFleetConfigView from '@/views/VirtualFleetConfigView.vue'
+import { simulationRuntime } from '@/composables/simulationRuntime'
+import { useAuthStore } from '@/stores/auth'
+import type { AlgorithmRuntimeFrame } from '@/types/mission'
+
+vi.mock('@/components/layout/ConsoleLayout.vue', () => ({ default: { template: '<main><slot /></main>' } }))
+vi.mock('@/components/layout/ConsoleNavigationRail.vue', () => ({ default: { template: '<nav />' } }))
+vi.mock('@/components/voice/VoiceP0ControlPanel.vue', () => ({
+  default: { template: '<aside />', methods: { handleUnityMessage: vi.fn() } },
+}))
+vi.mock('@/api/algorithm', () => ({
+  prepareAlgorithmRun: vi.fn().mockResolvedValue({}),
+  controlAlgorithmRun: vi.fn(),
+  fetchAlgorithmRunStatus: vi.fn().mockResolvedValue({ state: 'STOPPED', sequence: 0 }),
+  fetchAlgorithmFrames: vi.fn().mockResolvedValue([]),
+}))
+
+interface ViewSetup {
+  state: { algorithm: string; uavCount: number; usvCount: number; runId: number; mission: string; sequence: number }
+  currentAlgorithmFrame: AlgorithmRuntimeFrame | null
+  scenarioReadyRunId: number | null
+  applyAlgorithmFrame: (frame: AlgorithmRuntimeFrame) => Promise<void>
+}
+
+const wrappers: VueWrapper[] = []
+async function createView(algorithm = 'GB_SFLA_CS') {
+  simulationRuntime.panel.value = {
+    postToUnity: vi.fn().mockReturnValue('request-1'), postPresentationEnvelope: vi.fn().mockReturnValue(true),
+    beginViewportTransition: vi.fn(), endViewportTransition: vi.fn(), syncViewport: vi.fn(), reload: vi.fn(),
+  } as unknown as NonNullable<typeof simulationRuntime.panel.value>
+  const wrapper = mount(VirtualFleetConfigView, {
+    global: { stubs: { RouterLink: { template: '<a><slot /></a>' }, NodeCommunicationPanel: true } },
+  })
+  wrappers.push(wrapper)
+  await flushPromises()
+  const setup = wrapper.vm.$.setupState as unknown as ViewSetup
+  Object.assign(setup.state, { algorithm, runId: 7001, mission: 'RUNNING', uavCount: 3, usvCount: 3, sequence: 0 })
+  setup.scenarioReadyRunId = 7001
+  return { wrapper, setup }
+}
+
+function frame(metrics: Record<string, unknown> = {}, terminalStatus: string | null = null): AlgorithmRuntimeFrame {
+  return {
+    runId: 7001, sequence: 1, timestamp: Date.now(), coordinateFrame: 'FLEET_LOCAL_ENU',
+    algorithmCode: 'GB_SFLA_CS', phase: String(metrics.deploymentState === 'PARKED' || metrics.deploymentState === 'DEPLOYING'
+      ? metrics.deploymentState : metrics.missionStage ?? 'COMPLETED'),
+    agents: [], targets: [], route: [], obstacles: [], terminalStatus,
+    metrics: { missionStage: 'COMPLETED', missionProgress: 1, capturedTargetCount: 1, ...metrics },
+  } as AlgorithmRuntimeFrame
+}
+
+function displayed(wrapper: VueWrapper) {
+  return { phase: wrapper.get('.vf-live-strip strong').text() }
+}
+
+describe('VirtualFleetConfigView authoritative mission completion display', () => {
+  it.each(['GB_SFLA_CS', 'ESCORT_GUARD'])('labels %s near-shore release as departure instead of offshore assembly', async algorithm => {
+    const { wrapper, setup } = await createView(algorithm)
+    setup.currentAlgorithmFrame = frame({
+      deploymentState: 'DEPLOYING', deploymentMode: 'SAFE_RELEASE', deploymentProgress: .6,
+      deploymentTotalCount: 6, deploymentReadyCount: 3, deployingDeviceCount: 3, missionProgress: .06,
+      taskProgress: 0, progressCompositionVersion: 'shore-lifecycle-v1',
+    })
+    await flushPromises()
+    expect(wrapper.get('.vf-return-notice').text()).toContain('近岸释放点')
+  })
+
+  it.each(['GB_SFLA_CS', 'ESCORT_GUARD'])('shows %s departure status before the tactical stage', async algorithm => {
+    const { wrapper, setup } = await createView(algorithm)
+    setup.currentAlgorithmFrame = frame({
+      deploymentState: 'DEPLOYING', deploymentProgress: .56, deploymentTotalCount: 6,
+      deploymentReadyCount: 2, deployingDeviceCount: 4, missionProgress: 0,
+      simulationElapsedSeconds: 80,
+    })
+    await flushPromises()
+    expect(wrapper.get('.vf-return-notice').text()).toContain('已就位 2/6 台')
+
+    setup.currentAlgorithmFrame = frame({
+      deploymentState: 'COMPLETE', deploymentProgress: 1, missionStage: 'PURSUIT',
+      missionProgress: .12, simulationElapsedSeconds: 90,
+    })
+    await flushPromises()
+    expect(displayed(wrapper).phase).toBe('协同追击')
+    expect(wrapper.get('.vf-live-strip').text()).not.toMatch(/综合进度|任务进度|仿真时长|%/)
+  })
+
+  it('does not count withdrawn devices as assembled or let elapsed wall time invent simulation progress', async () => {
+    const { wrapper, setup } = await createView()
+    setup.currentAlgorithmFrame = frame({
+      deploymentState: 'DEPLOYING', deploymentProgress: .4, deploymentTotalCount: 6,
+      deploymentReadyCount: 1, deploymentWithdrawnCount: 1, deployingDeviceCount: 4,
+      simulationElapsedSeconds: 30, missionProgress: 0,
+    })
+    setup.state.mission = 'PAUSED'
+    await flushPromises()
+    const before = wrapper.get('.vf-live-strip').text()
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(wrapper.get('.vf-live-strip').text()).toBe(before)
+    expect(before).toContain('已就位 1/6 台，1 台已返航退出集结')
+  })
+
+  it('shows that a held departure device is deferred while the remaining fleet keeps running', async () => {
+    const { wrapper, setup } = await createView('ESCORT_GUARD')
+    setup.currentAlgorithmFrame = frame({
+      deploymentState: 'COMPLETE', deploymentProgress: 1, deploymentTotalCount: 6,
+      deploymentReadyCount: 5, deploymentDeferredCount: 1,
+      deploymentDeferredDeviceCodes: ['UAV-001'], missionStage: 'GUARDING',
+      escortAssemblyState: 'ASSEMBLING', escortAssemblyProgress: .4,
+      escortProtectionReadyCount: 0, escortProtectionRequiredCount: 2,
+      missionProgress: .14,
+    })
+    setup.currentAlgorithmFrame.phase = 'ASSEMBLING_ESCORT'
+    await flushPromises()
+    const notice = wrapper.get('.vf-return-notice').text()
+    expect(notice).toContain('UAV-001 已由人工接管并保持当前位置')
+    expect(notice).toContain('其余设备继续执行任务')
+    expect(notice).toContain('归队')
+  })
+
+  it.each(['PARKED', 'DEPLOYING'])('shows %s departure without exposing the inner stage', async deploymentState => {
+    const { wrapper, setup } = await createView()
+    setup.currentAlgorithmFrame = frame({
+      deploymentState, deployingDeviceCount: 6, missionStage: 'ESCAPE', missionProgress: 0,
+      stageSubjectThreatCode: 'THREAT-001',
+    })
+    await flushPromises()
+    const values = wrapper.get('.vf-live-strip').findAll('strong')
+    expect(values[0]!.text()).toBe(deploymentState === 'PARKED' ? '岸边待命' : '安全起飞 / 离泊')
+    expect(wrapper.get('.vf-return-notice').text()).toContain(deploymentState === 'PARKED' ? '原停机坪待命' : '6 台设备正在起飞')
+    setup.currentAlgorithmFrame = frame({ deploymentState: 'COMPLETE', missionStage: 'ESCAPE', missionProgress: .02 })
+    await flushPromises()
+    expect(displayed(wrapper).phase).toBe('目标逃逸')
+  })
+
+  it.each([0.42, 0.75])('shows actual return status at any reported progress (%s)', async progress => {
+    const { wrapper, setup } = await createView()
+    setup.currentAlgorithmFrame = frame({ missionStage: 'ENCIRCLEMENT', missionProgress: progress, returningDeviceCount: 1, completionBlocker: 'WAITING_FOR_RETURN' })
+    await flushPromises()
+    expect(wrapper.get('.vf-return-notice').text()).toContain('等待 1 台设备抵达返航点')
+    expect(wrapper.get('.vf-live-strip').text()).not.toContain('%')
+  })
+
+  it('shows the real completion blocker while waiting for return', async () => {
+    const { wrapper, setup } = await createView()
+    setup.currentAlgorithmFrame = frame({ returningDeviceCount: 1, completionBlocker: 'WAITING_FOR_RETURN' })
+    await flushPromises()
+    expect(wrapper.get('.vf-return-notice').text()).toContain('返航尚未完成')
+  })
+
+  beforeEach(() => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-10-10T09:00:00.000Z'))
+    sessionStorage.clear()
+    setActivePinia(createPinia())
+    useAuthStore().user = { username: 'admin', role: 'ADMIN' }
+    simulationRuntime.recovering.value = false
+  })
+
+  afterEach(() => {
+    for (const wrapper of wrappers.splice(0)) wrapper.unmount()
+    simulationRuntime.panel.value = null
+    simulationRuntime.events = null
+    simulationRuntime.recovering.value = false
+    sessionStorage.clear()
+    vi.useRealTimers()
+  })
+
+  it.each(['GB_SFLA_CS', 'ESCORT_GUARD'])('does not show completion while %s still has an operator-controlled agent', async algorithm => {
+    const { wrapper, setup } = await createView(algorithm)
+    setup.currentAlgorithmFrame = frame({
+      missionProgress: 0.99, completionBlocker: 'OPERATOR_OVERRIDE', controlOverrideActive: true,
+      operatorControlledDeviceCount: 1,
+      deviceControlStates: { 'UAV-001': { controlAuthority: 'OPERATOR', motionState: 'HOLDING' } },
+    })
+    await flushPromises()
+    expect(displayed(wrapper)).toEqual({
+      phase: '稳定闭环 · 等待人工处理',
+    })
+    expect(wrapper.get('.vf-return-notice').text()).toContain('存在人工接管设备')
+    expect(setup.state.mission).toBe('RUNNING')
+  })
+
+  it.each([
+    ['WAITING_FOR_RETURN', '等待返航'],
+    ['INSUFFICIENT_ACTIVE_FORCE', '等待编组恢复'],
+  ])('keeps %s in a non-terminal stage even when the inner algorithm reports 100 percent', async (blocker, reason) => {
+    const { wrapper, setup } = await createView()
+    setup.currentAlgorithmFrame = frame({ completionBlocker: blocker })
+    await flushPromises()
+    expect(displayed(wrapper)).toEqual({
+      phase: `稳定闭环 · ${reason}`,
+    })
+  })
+
+  it.each(['GB_SFLA_CS', 'ESCORT_GUARD'])('does not infer %s terminal completion from stage, progress, or captured count alone', async algorithm => {
+    const { wrapper, setup } = await createView(algorithm)
+    setup.currentAlgorithmFrame = frame()
+    await flushPromises()
+    expect(displayed(wrapper).phase).not.toBe('完成')
+  })
+
+  it.each([
+    ['GB_SFLA_CS', 'PURSUIT', '协同追击'],
+    ['GB_SFLA_CS', 'ENCIRCLEMENT', '动态围捕'],
+    ['ESCORT_GUARD', 'THREAT_DETECTION', '意图识别'],
+  ])('keeps the actual %s / %s stage during a paused operator override', async (algorithm, phase, label) => {
+    const { wrapper, setup } = await createView(algorithm)
+    setup.currentAlgorithmFrame = frame({
+      missionStage: phase, missionProgress: 0.42, completionBlocker: 'OPERATOR_OVERRIDE',
+      stageSubjectThreatCode: 'THREAT-001',
+    })
+    setup.state.mission = 'PAUSED'
+    await flushPromises()
+    expect(displayed(wrapper)).toEqual({
+      phase: `${label} · THREAT-001`,
+    })
+  })
+
+  it('waits for the matching Unity acknowledgement before showing the completed state', async () => {
+    const { wrapper, setup } = await createView()
+    await setup.applyAlgorithmFrame(frame({ missionProgress: 0.99 }, 'COMPLETED'))
+    await flushPromises()
+    expect(setup.state.mission).toBe('COMPLETING')
+    expect(displayed(wrapper)).toEqual({
+      phase: '稳定闭环 · 等待画面同步',
+    })
+    simulationRuntime.events!.message({ type: 'poseFrameApplied', payload: { success: true, runId: 7001, sequence: 0 } })
+    await flushPromises()
+    expect(setup.state.mission).toBe('COMPLETING')
+    expect(displayed(wrapper).phase).toBe('稳定闭环 · 等待画面同步')
+    simulationRuntime.events!.message({ type: 'poseFrameApplied', payload: { success: true, runId: 7001, sequence: 1 } })
+    await flushPromises()
+    expect(setup.state.mission).toBe('COMPLETED')
+    expect(displayed(wrapper)).toEqual({ phase: '完成' })
+  })
+
+  it.each(['GB_SFLA_CS', 'ESCORT_GUARD'])('uses committed %s completion consistently even if the preceding frame was 99 percent', async algorithm => {
+    const { wrapper, setup } = await createView(algorithm)
+    setup.currentAlgorithmFrame = frame({ missionStage: 'STABLE_CONTAINMENT', missionProgress: 0.99 })
+    setup.state.mission = 'COMPLETED'
+    await flushPromises()
+    expect(displayed(wrapper)).toEqual({ phase: '完成' })
+  })
+})

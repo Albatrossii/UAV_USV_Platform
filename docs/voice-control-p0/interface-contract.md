@@ -50,13 +50,13 @@ P0 不实现 /interpret、/clarify、音频接口、实时 WS 或公共 commandR
 
 ## 4. 请求与不可变计划
 
-ProposalRequest 只允许 runtimeRef、runtimeGeneration、expectedContextVersion、intent。整队动作的 targetScope 固定 FLEET，由后端生成；`SINGLE_DEVICE_CONTROL` 仅能引用同一用户当前活动的 `_SINGLE_DEVICE` 仿真实例中、由后端已认证并缓存的单设备候选。请求体不能指定目标设备或命令；候选须匹配用户、请求、运行代次和上下文版本。不允许用户提供 owner、runId、执行端、设备列表或 requiresConfirmation。
+ProposalRequest 只允许 runtimeRef、runtimeGeneration、expectedContextVersion、intent。整队动作的 targetScope 固定 FLEET，由后端生成；`SINGLE_DEVICE_CONTROL` 仅能引用同一用户当前活动的 `_SINGLE_DEVICE` 仿真实例中、由后端已认证并缓存的单设备候选。`COMMAND_SEQUENCE` 同样必须引用后端缓存的解释结果，当前只允许固定的 `START → UAV_HOVER/USV_HOLD` 两步组合。请求体不能指定目标设备、命令或步骤；候选须匹配用户、请求、运行代次和上下文版本。不允许用户提供 owner、runId、执行端、设备列表或 requiresConfirmation。
 
 ConfirmRequest 和 CancelRequest 只含 expectedPlanVersion、expectedPlanHash；动作和参数完全从持久化提案读取。每个提案只有一个冻结版本（P0 planVersion=1）；修改需求创建新 proposalId，不原地覆盖。
 
 I05 校验顺序：先校验请求 Schema，再校验持久化计划。expectedPlanVersion 必须为 1；传入 2 等不受支持的版本返回 **400 INVALID_REQUEST**。expectedPlanVersion=1 且 expectedPlanHash 为合法的 64 位小写十六进制字符串、但与提案哈希不一致时，返回 **409 PLAN_MISMATCH**。哈希格式错误仍为 400。确认与取消使用相同规则。两种拒绝均不创建 execution/outbox、不发送算法命令、不修改原提案。前端不得将这两类确定性拒绝当作网络未知结果自动重发确认。
 
-计划包含 runtimeRef/generation、contextVersion、stateVersion、action、explicitDeviceCodes、policyVersion。设备数组按已登记 canonical code 去重排序，至少一项；FLEET 表示这个冻结集合，确认时成员集合变更使提案失效。禁止按“UAV 数量”临时重新展开为另一组设备。单设备计划使用 `DEVICE_COMMAND`，必须只含一个 explicitDeviceCode，并冻结 `targetDeviceCode` 与 `deviceCommandType`；仍需人工确认，确认时复核设备仍属于该运行且具备对应能力。歧义、缺失目标或不支持的指令不得回退成整队动作。
+计划包含 runtimeRef/generation、contextVersion、stateVersion、action、explicitDeviceCodes、policyVersion。设备数组按已登记 canonical code 去重排序，至少一项；FLEET 表示这个冻结集合，确认时成员集合变更使提案失效。禁止按“UAV 数量”临时重新展开为另一组设备。单设备计划使用 `DEVICE_COMMAND`，必须只含一个 explicitDeviceCode，并冻结 `targetDeviceCode` 与 `deviceCommandType`。双步骤计划使用 `SEQUENCE`，冻结两个带连续 index 的步骤：第 0 步必须为 `START`，第 1 步必须为带唯一目标的 `DEVICE_COMMAND`，且当前命令只能是 `UAV_HOVER` 或 `USV_HOLD`。两类计划都必须人工确认，确认时复核运行代次、成员和能力。歧义、缺失目标或不支持的组合不得回退成整队动作。
 
 planHash 计算规范：对 Schema 限定的 Plan 对象递归按键名排序，数组顺序保留（explicitDeviceCodes 生成时已排序），字符串采用 JSON Unicode 转义且使用小写十六进制，不添加空白，布尔/null 使用 JSON 标准值，整数用十进制，不允许浮点/NaN；UTF-8 后 SHA-256，返回小写 64 位 hex。不得把时间戳或本地化文案加入 Plan。Java/Python 实现必须通过 fixtures 中同一个黄金哈希样例，不能仅各自自测。
 
@@ -70,6 +70,7 @@ expiresAt = createdAt + 30 秒，以后端注入 Clock 计算；now >= expiresAt
 | MISSION_PAUSE → PAUSE | RUNNING | PAUSED | 无需等下一帧；画面离线不阻止暂停 |
 | MISSION_RESUME → RESUME | PAUSED | RUNNING | 进程可用，当前场景已就绪且回执在 10 秒内 |
 | MISSION_STOP → STOP | PREPARED、PREVIEW、RUNNING、PAUSED | STOPPED | 不等同 CANCEL、返航、降落、业务任务成功 |
+| COMMAND_SEQUENCE → SEQUENCE | PREPARED、PREVIEW | RUNNING | 第 0 步 START 权威成功且运行态为 RUNNING 后，才创建第 1 步悬停/驻留命令 |
 
 全部写动作要求：ADMIN + owner、PYTHON_SIMULATION、v1 协议、能力匹配、进程存活、收到心跳不超过 5 秒。暂停状态继续心跳，不以最新位姿帧的年龄判断失联。
 
@@ -78,6 +79,8 @@ COMPLETED、FAILED、STOPPED、CANCELLED、LOST 不可写，不允许“恢复�
 提案：AWAITING_CONFIRMATION → CONFIRMED / CANCELLED / EXPIRED / INVALIDATED。输入语义不支持返回 422，不在 P0 创建 INTERPRETING/NEEDS_CLARIFICATION 等模型状态。确认后不能取消提案；要停止实例必须建立新的 STOP 提案。
 
 执行：QUEUED → DISPATCHED → ACCEPTED → EXECUTING → SUCCEEDED；快速动作可 ACCEPTED → SUCCEEDED。发送前条件改变 → INVALIDATED；runner 拒绝 → REJECTED；明确执行异常 → FAILED；超时结果未知 → TIMED_OUT。超时后可信终结回执可对账为 SUCCEEDED/REJECTED/FAILED，并保留 timedOutAt；不自动重发。旧代次迟到回执可更新其原执行记录，绝不能更新当前代次状态。
+
+`SEQUENCE` 父执行本身不直接进入 runner outbox，而是由持久化协调器严格串行创建两个普通子执行。父执行公开 `currentStepIndex`、`sequenceStatus` 和每步状态；第 0 步未收到权威 `SUCCEEDED` 时不得创建第 1 步。任一步失败、拒绝、失效或超时，父执行立即终结并保留已完成步骤，不自动补偿、不继续下发后续动作。
 
 状态与旧 CommandStatus 映射：QUEUED→PENDING、TIMED_OUT→TIMEOUT，其余同名状态直接映射；INVALIDATED 仅保留在新 execution 表，不硬塞入旧枚举；若未来生成旧 ControlCommand，可映射 REJECTED 并保留 CONTEXT_CHANGED 原因。P0 Python 执行不必创建 ROS ControlCommand。
 

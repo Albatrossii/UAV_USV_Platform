@@ -30,7 +30,7 @@ class RunnerApplyCountTest(unittest.TestCase):
         adapter,events=self.run_commands([start,start.copy(),self.command(2,2,1,'STOP')])
         receipts=[e for e in events if e.get('commandId')==start['commandId'] and e.get('kind')=='COMMAND_RESULT']
         self.assertEqual(4,len(receipts));self.assertEqual(receipts[:2],receipts[2:])
-        self.assertEqual([False,True],[c.args[0] for c in adapter.set_mission_active.call_args_list])
+        self.assertEqual([False,True,False],[c.args[0] for c in adapter.set_mission_active.call_args_list])
     def test_changed_action_and_parameters_preserve_original_receipt(self):
         start=self.command(1,1,0,'START')
         query=dict(protocolVersion=runner.PROTOCOL_VERSION,runtimeRef=self.ref,runtimeGeneration=self.gen,kind='STATUS_QUERY',queryId=self.ref,commandId=start['commandId'])
@@ -39,18 +39,18 @@ class RunnerApplyCountTest(unittest.TestCase):
         original=next(e for e in events if e.get('commandId')==start['commandId'] and e.get('status')=='SUCCEEDED')
         reply=next(e for e in events if e.get('kind')=='STATUS_REPLY')
         self.assertEqual(original,reply['result']);self.assertTrue(reply['known'])
-        self.assertEqual([False,True],[c.args[0] for c in adapter.set_mission_active.call_args_list])
+        self.assertEqual([False,True,False],[c.args[0] for c in adapter.set_mission_active.call_args_list])
     def test_stale_version_never_calls_adapter(self):
         stale=self.command(2,2,0,'PAUSE')
         adapter,events=self.run_commands([self.command(1,1,0,'START'),stale,self.command(3,3,1,'STOP')])
         receipt=next(e for e in events if e.get('commandId')==stale['commandId'])
         self.assertEqual('REJECTED',receipt['status']);self.assertEqual('STATE_VERSION_MISMATCH',receipt['errorCode'])
         self.assertEqual('RUNNING',receipt['runtimeState']);self.assertEqual(1,receipt['stateVersion'])
-        self.assertEqual([False,True],[c.args[0] for c in adapter.set_mission_active.call_args_list])
+        self.assertEqual([False,True,False],[c.args[0] for c in adapter.set_mission_active.call_args_list])
 
     def test_adapter_business_error_reports_failure_and_next_command_works(self):
         first=self.command(1,1,0,'START')
-        adapter,events=self.run_commands([first,self.command(2,2,0,'START'),self.command(3,3,1,'STOP')],[None,ValueError('business rejection'),None])
+        adapter,events=self.run_commands([first,self.command(2,2,0,'START'),self.command(3,3,1,'STOP')],[None,ValueError('business rejection'),None,None])
         failed=[e for e in events if e.get('commandId')==first['commandId'] and e.get('status')=='FAILED']
         self.assertEqual(1,len(failed));self.assertEqual('ADAPTER_ERROR',failed[0]['errorCode'])
         self.assertEqual('PREPARED',failed[0]['runtimeState']);self.assertEqual(0,failed[0]['stateVersion'])
@@ -62,4 +62,4 @@ class RunnerApplyCountTest(unittest.TestCase):
         extra={**self.command(2,1,0,'START'),'parameters':{'speed':2}}
         adapter,events=self.run_commands([unknown,extra,self.command(3,1,0,'START'),self.command(4,2,1,'STOP')])
         self.assertEqual(['MALFORMED_MESSAGE']*2,[e['errorCode'] for e in events if e.get('kind')=='PROTOCOL_ERROR'])
-        self.assertEqual([False,True],[c.args[0] for c in adapter.set_mission_active.call_args_list])
+        self.assertEqual([False,True,False],[c.args[0] for c in adapter.set_mission_active.call_args_list])

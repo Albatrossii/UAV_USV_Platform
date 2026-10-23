@@ -259,6 +259,7 @@ class BaseAlgorithm(ABC):
         return [
             agent for agent in self.env.agents
             if int(agent[7]) not in guarding_ids
+            and int(agent[7]) not in set(getattr(self.env, "withdrawn_agent_ids", ()))
         ]
 
 
@@ -410,6 +411,7 @@ class GBSFLACSAlgorithm(BaseAlgorithm):
         self.ball_tree = None
         self.all_balls = {}
         self.desired_waypoints = {}
+        self.desired_slots = {}
         self.last_assignments = {}
         self.last_objective = np.inf
         self.plan_params_by_target = {}
@@ -419,6 +421,9 @@ class GBSFLACSAlgorithm(BaseAlgorithm):
         # Re-optimising topology every five seconds is sufficient; waypoint
         # translation and safety filtering still run at the 10 Hz output rate.
         self.full_plan_interval = 50
+        self.minimum_ball_agents = max(2, int(getattr(env, "minimum_ball_agents", 3)))
+        self.plan_revision = 0
+        self.last_plan_diagnostics = {}
         self._agent_map_cache = None
         self._target_reference_cache = {}
         self._speed_cache = {}
@@ -442,7 +447,9 @@ class GBSFLACSAlgorithm(BaseAlgorithm):
         self._agent_map_cache = {int(agent[7]): agent for agent in active_agents}
         self._target_reference_cache = {}
         self._speed_cache = {
-            int(agent[7]): float(V_MAX_UAV if int(agent[6]) == 0 else V_MAX_USV)
+            int(agent[7]): float(getattr(self.env, "maximum_agent_speeds", {}).get(
+                int(agent[7]), V_MAX_UAV if int(agent[6]) == 0 else V_MAX_USV,
+            ))
             for agent in active_agents
         }
 
@@ -588,7 +595,7 @@ class GBSFLACSAlgorithm(BaseAlgorithm):
     # 粒球分裂与合并：均在真实成员 ID 分区上进行
     # ------------------------------------------------------------------
     def _split_candidate(self, ball):
-        minimum_child = max(2, int(MIN_CAPTURE_AGENTS))
+        minimum_child = self.minimum_ball_agents
         if len(ball.agent_ids) < 2 * minimum_child:
             return None
         if len(np.unique(np.round(ball.points, 8), axis=0)) < 2:
@@ -680,6 +687,11 @@ class GBSFLACSAlgorithm(BaseAlgorithm):
             return self._target_reference_cache[target_id].copy()
         target = self.env.targets[target_id]
         position = np.asarray(target[:3], dtype=float).copy()
+        velocities = getattr(self.env, "target_velocities", {})
+        if target_id in velocities:
+            position[:2] += np.asarray(velocities[target_id], dtype=float)[:2] * 2.0
+            self._target_reference_cache[target_id] = position.copy()
+            return position
         if TARGET_IS_STATIC != 0:
             self._target_reference_cache[target_id] = position.copy()
             return position
@@ -734,6 +746,30 @@ class GBSFLACSAlgorithm(BaseAlgorithm):
         active_ids = sorted(agent_map)
         if not active_ids or not active_target_ids:
             return {}
+
+        typed_capacities = getattr(self.env, "assignment_type_capacities", None)
+        if typed_capacities is not None:
+            # The global coordinator supplies exact mixed-fleet capacities.
+            # This is the feasible starting nest for GB/CS, not a second
+            # allocator running after the selected optimiser result.
+            previous = self.last_assignments
+            locked = set(getattr(self.env, "locked_target_ids", ()))
+            assignments = {}
+            for kind in (0, 1):
+                ids = [i for i in active_ids if int(agent_map[i][6]) == kind]
+                slots = [t for t in active_target_ids for _ in range(typed_capacities[t].get(kind, 0))]
+                if len(ids) != len(slots):
+                    raise ValueError("global capture type capacity does not match fleet")
+                costs = np.asarray([
+                    [self._arrival_cost(i, t) + (0.4 if previous.get(i, t) != t else 0.0)
+                     if not ((previous.get(i) in locked or t in locked) and previous.get(i) != t)
+                     else 1e12 for t in slots]
+                    for i in ids
+                ])
+                if ids:
+                    rows, columns = linear_sum_assignment(costs)
+                    assignments.update({ids[int(r)]: slots[int(c)] for r, c in zip(rows, columns)})
+            return assignments
 
         balls = balls if balls is not None else self.leaf_balls
         agent_to_ball = self._agent_to_ball(balls)
@@ -806,6 +842,23 @@ class GBSFLACSAlgorithm(BaseAlgorithm):
         active_ids = sorted(agent_map)
         if not active_target_ids or not active_ids:
             return {}
+
+        typed_capacities = getattr(self.env, "assignment_type_capacities", None)
+        if typed_capacities is not None:
+            valid = set(assignments) == set(active_ids)
+            locked = set(getattr(self.env, "locked_target_ids", ()))
+            for target_id in active_target_ids:
+                for kind in (0, 1):
+                    valid = valid and sum(
+                        target == target_id and int(agent_map[i][6]) == kind
+                        for i, target in assignments.items() if i in agent_map
+                    ) == typed_capacities[target_id].get(kind, 0)
+            valid = valid and all(
+                not ((self.last_assignments.get(i) in locked or target in locked)
+                     and self.last_assignments.get(i) != target)
+                for i, target in assignments.items()
+            )
+            return dict(assignments) if valid else self._capacity_aware_assignment(active_target_ids)
 
         active_set = set(active_target_ids)
         repaired = {}
@@ -914,6 +967,25 @@ class GBSFLACSAlgorithm(BaseAlgorithm):
         if len(active_target_ids) <= 1 or not candidate:
             return candidate
 
+        if getattr(self.env, "assignment_type_capacities", None) is not None:
+            # Same-domain exchanges preserve exact capacities throughout CS.
+            # Levy flight controls how many complete assignment exchanges a
+            # nest explores; locked rings cannot be broken by a candidate.
+            locked = set(getattr(self.env, "locked_target_ids", ()))
+            agent_map = self._active_agent_map()
+            eligible = [i for i in candidate if candidate[i] not in locked]
+            count = max(1, min(len(eligible), int(np.ceil(abs(self._levy_flight())))))
+            for _ in range(count):
+                if not eligible:
+                    break
+                left = int(self.rng.choice(eligible))
+                alternatives = [i for i in eligible if candidate[i] != candidate[left]
+                                and int(agent_map[i][6]) == int(agent_map[left][6])]
+                if alternatives:
+                    right = int(self.rng.choice(alternatives))
+                    candidate[left], candidate[right] = candidate[right], candidate[left]
+            return candidate
+
         balls = balls if balls is not None else self.leaf_balls
         levy = abs(self._levy_flight())
         mutation_fraction = min(0.40, max(1.0 / len(candidate), 0.04 * levy))
@@ -949,7 +1021,7 @@ class GBSFLACSAlgorithm(BaseAlgorithm):
             if not proposal:
                 break
             if self.rng.random() < 0.65:
-                splittable = [ball for ball in proposal if len(ball.agent_ids) >= 2 * max(2, MIN_CAPTURE_AGENTS)]
+                splittable = [ball for ball in proposal if len(ball.agent_ids) >= 2 * self.minimum_ball_agents]
                 if not splittable:
                     continue
                 chosen = min(splittable, key=lambda ball: ball.quality)
@@ -1064,7 +1136,7 @@ class GBSFLACSAlgorithm(BaseAlgorithm):
             waypoints[agent_id] = waypoint
         return waypoints
 
-    def _plan_to_waypoints(self, agent_ids, target_id, params):
+    def _plan_to_waypoints(self, agent_ids, target_id, params, *, commit=False):
         """Build separated surface and aerial containment formations."""
         agent_ids = [int(agent_id) for agent_id in agent_ids]
         if not agent_ids:
@@ -1118,6 +1190,13 @@ class GBSFLACSAlgorithm(BaseAlgorithm):
                     len(typed_ids),
                     USV_Z if agent_type == 1 else target_pos[2] + CAPTURE_FORMATION_UAV_ALTITUDE,
                 )
+            # Preserve the research parameter meanings: phase, radial scale,
+            # and aerial height scale. Stable ownership is independent of
+            # those values; candidate evaluation never mutates committed slots.
+            radii = radii * float(params[1])
+            angles = angles + float(params[0])
+            if agent_type == 0:
+                altitudes = target_pos[2] + (altitudes - target_pos[2]) * float(params[2]) / 0.96
             slots = np.column_stack([
                 target_pos[0] + radii * np.cos(angles),
                 target_pos[1] + radii * np.sin(angles),
@@ -1187,14 +1266,18 @@ class GBSFLACSAlgorithm(BaseAlgorithm):
                     "slots": slot_assignment,
                     "points": slots.copy(),
                 }
-                self.formation_slot_assignment[slot_key] = cached_slots
+                if commit:
+                    self.formation_slot_assignment[slot_key] = cached_slots
             else:
                 # The target may move; keep slot ownership stable while the
                 # corresponding world-space slot centres follow it.
-                cached_slots["points"] = slots.copy()
+                if commit:
+                    cached_slots["points"] = slots.copy()
             for agent_id in typed_ids:
                 col = int(cached_slots["slots"][agent_id])
                 waypoint = np.asarray(slots[col], dtype=float)
+                if commit:
+                    self.desired_slots[agent_id] = waypoint.copy()
                 if agent_type == 1:
                     # A surface craft must never reach a slot on the far side
                     # by cutting through the capture target. First rotate on
@@ -1304,17 +1387,28 @@ class GBSFLACSAlgorithm(BaseAlgorithm):
     def _sfla_target_waypoints(self, agent_ids, target_id):
         if not agent_ids:
             return {}
+        previous = self.plan_params_by_target.get(
+            int(target_id), np.asarray([0.0, 1.0, 0.96], dtype=float),
+        ).copy()
+        # Bind identities once, before evaluating candidates. Otherwise the
+        # first frog evaluated could silently select slots for all later frogs.
+        self._plan_to_waypoints(agent_ids, target_id, previous, commit=True)
+
+        def bounded(values):
+            values = self._plan_bounds_clip(values)
+            phase_delta = (values[0] - previous[0] + np.pi) % (2 * np.pi) - np.pi
+            values[0] = (previous[0] + np.clip(phase_delta, -np.deg2rad(3), np.deg2rad(3))) % (2 * np.pi)
+            values[1] = np.clip(values[1], previous[1] - 0.01, previous[1] + 0.01)
+            values[2] = np.clip(values[2], previous[2] - 0.01, previous[2] + 0.01)
+            return self._plan_bounds_clip(values)
+
         population = []
         for index in range(self.sfla_population_size):
             if index == 0:
-                params = np.array([0.0, 1.0, 0.96], dtype=float)
+                params = previous.copy()
             else:
-                params = np.array([
-                    self.rng.uniform(0, 2 * np.pi),
-                    self.rng.uniform(0.94, 1.06),
-                    self.rng.uniform(0.90, 1.00),
-                ])
-            population.append(self._plan_bounds_clip(params))
+                params = previous + self.rng.uniform([-np.deg2rad(3), -0.01, -0.01], [np.deg2rad(3), 0.01, 0.01])
+            population.append(bounded(params))
 
         for _ in range(self.sfla_local_iterations):
             costs = np.asarray([self._local_plan_cost(agent_ids, target_id, params) for params in population])
@@ -1329,24 +1423,27 @@ class GBSFLACSAlgorithm(BaseAlgorithm):
                 worst = population[worst_index]
                 local_best = population[local_best_index]
 
-                candidate = self._plan_bounds_clip(worst + self.rng.random(3) * (local_best - worst))
+                candidate = bounded(worst + self.rng.random(3) * (local_best - worst))
                 candidate_cost = self._local_plan_cost(agent_ids, target_id, candidate)
                 if candidate_cost >= costs[worst_index]:
-                    candidate = self._plan_bounds_clip(worst + self.rng.random(3) * (global_best - worst))
+                    candidate = bounded(worst + self.rng.random(3) * (global_best - worst))
                     candidate_cost = self._local_plan_cost(agent_ids, target_id, candidate)
                 if candidate_cost >= costs[worst_index]:
-                    candidate = self._plan_bounds_clip(np.array([
-                        self.rng.uniform(0, 2 * np.pi),
-                        self.rng.uniform(0.94, 1.06),
-                        self.rng.uniform(0.90, 1.00),
-                    ]))
+                    candidate = bounded(previous + self.rng.uniform(
+                        [-np.deg2rad(3), -0.01, -0.01], [np.deg2rad(3), 0.01, 0.01],
+                    ))
                     candidate_cost = self._local_plan_cost(agent_ids, target_id, candidate)
                 if candidate_cost < costs[worst_index]:
                     population[worst_index] = candidate
 
         best = min(population, key=lambda params: self._local_plan_cost(agent_ids, target_id, params))
+        self.last_plan_diagnostics[int(target_id)] = {
+            "baselineCost": self._local_plan_cost(agent_ids, target_id, previous),
+            "selectedCost": self._local_plan_cost(agent_ids, target_id, best),
+            "parameters": best.tolist(),
+        }
         self.plan_params_by_target[int(target_id)] = np.asarray(best, dtype=float).copy()
-        return self._plan_to_waypoints(agent_ids, target_id, best)
+        return self._plan_to_waypoints(agent_ids, target_id, best, commit=True)
 
     def _build_sfla_waypoints(self, assignments):
         grouped = {}
@@ -1367,7 +1464,7 @@ class GBSFLACSAlgorithm(BaseAlgorithm):
                 int(target_id),
                 np.asarray([0.0, 1.0, 0.96], dtype=float),
             )
-            waypoints.update(self._plan_to_waypoints(agent_ids, target_id, params))
+            waypoints.update(self._plan_to_waypoints(agent_ids, target_id, params, commit=True))
         return waypoints
 
     # ------------------------------------------------------------------
@@ -1399,14 +1496,17 @@ class GBSFLACSAlgorithm(BaseAlgorithm):
             bool(self.last_assignments)
             and set(int(target_id) for target_id in self.last_assignments.values())
             <= active_target_set
-            and self.planning_step % self.full_plan_interval != 1
+            and (self.planning_step - 1) % max(1, self.full_plan_interval) != 0
         )
         if cached_assignment_valid:
             assignment = self._repair_assignment_capacity(
                 dict(self.last_assignments),
                 active_target_ids,
             )
-            self.desired_waypoints = self._build_cached_waypoints(assignment)
+            self.desired_waypoints = (
+                self._build_cached_waypoints(assignment)
+                if not getattr(self.env, "assignment_only", False) else {}
+            )
             self.last_assignments = dict(assignment)
             return assignment
 
@@ -1424,7 +1524,11 @@ class GBSFLACSAlgorithm(BaseAlgorithm):
         objective = self._composite_cost(assignment, self.leaf_balls)
 
         # 4. SFLA：为最终分配生成真实可执行的围捕航点。
-        self.desired_waypoints = self._build_sfla_waypoints(assignment)
+        self.plan_revision += 1
+        self.desired_waypoints = (
+            self._build_sfla_waypoints(assignment)
+            if not getattr(self.env, "assignment_only", False) else {}
+        )
         self.last_assignments = dict(assignment)
         self.last_objective = float(objective)
         self._refresh_tree()
@@ -1734,6 +1838,7 @@ class SwarmEnv3D:
         return [
             agent for agent in self.agents
             if int(agent[7]) not in guarding_ids
+            and int(agent[7]) not in set(getattr(self, "withdrawn_agent_ids", ()))
         ]
 
     def _validate_unique_agent_ids(self):
@@ -2160,6 +2265,8 @@ class SwarmEnv3D:
 
     def _update_capture_state(self):
         """在智能体和目标完成本步运动后检测围捕，并锁定守卫智能体。"""
+        if not getattr(self, "capture_latch_enabled", True):
+            return
         current_locked = set()
         self.target_captors = {}
 

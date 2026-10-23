@@ -632,7 +632,15 @@ class AlgorithmRuntimeTests(unittest.TestCase):
             for item in final.agents
             if item.type == "UAV"
         ]
-        self.assertAlmostEqual(22.0, sum(usv_radii) / len(usv_radii), delta=1.2)
+        # SFLA's radial scale now affects the executed ring. Keep the same
+        # arrival tolerance, and independently constrain the selected radius
+        # to the research parameter range rather than accepting any self-
+        # reported goal.
+        self.assertGreaterEqual(final.metrics["usvFormationRadius"], 22.0 * 0.94 - 0.005)
+        self.assertLessEqual(final.metrics["usvFormationRadius"], 22.0 * 1.06 + 0.005)
+        self.assertGreaterEqual(final.metrics["uavFormationRadius"], 46.0 * 0.94 - 0.005)
+        self.assertLessEqual(final.metrics["uavFormationRadius"], 46.0 * 1.06 + 0.005)
+        self.assertAlmostEqual(final.metrics["usvFormationRadius"], sum(usv_radii) / len(usv_radii), delta=1.2)
         self.assertAlmostEqual(
             final.metrics["uavFormationRadius"],
             sum(uav_radii) / len(uav_radii),

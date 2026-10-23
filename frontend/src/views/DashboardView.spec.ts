@@ -25,7 +25,7 @@ afterEach(() => {
 })
 
 describe('DashboardView Unity overlay', () => {
-  it('does not mount its Teleport while the simulation workspace has no overview Unity host', async () => {
+  it.each([false, true])('preserves overview content and overlay lifecycle (embedded=%s)', async (embedded) => {
     const pinia = createPinia()
     setActivePinia(pinia)
     vi.spyOn(useMonitoringStore(), 'refresh').mockResolvedValue(undefined)
@@ -45,6 +45,7 @@ describe('DashboardView Unity overlay', () => {
     document.body.append(host)
 
     const wrapper = mount(DashboardView, {
+      props: { embedded },
       attachTo: host,
       global: {
         plugins: [pinia, router],
@@ -52,10 +53,23 @@ describe('DashboardView Unity overlay', () => {
           ConsoleLayout: { template: '<div><slot /></div>' },
           PointCloudOverviewPanel: true,
           VehicleGlyph: true,
+          VoiceP0ControlPanel: { template: '<div data-test="overview-voice-control">真实任务语音控制</div>' },
         },
       },
     })
     await flushPromises()
+    expect(wrapper.find('.overview-hf-statusbar').exists()).toBe(!embedded)
+    expect(wrapper.find('.overview-taskbar').exists()).toBe(true)
+    expect(wrapper.find('.overview-device-deck').exists()).toBe(true)
+    expect(wrapper.find('[data-unity-runtime-viewport="dashboard"]').exists()).toBe(true)
+    expect(wrapper.find('.overview-mission-console').exists()).toBe(false)
+    expect(wrapper.get('[aria-label="任务控制台"]').text()).toContain('真实任务语音控制')
+    expect(wrapper.findAll('[data-test="overview-voice-control"]')).toHaveLength(1)
+    expect(wrapper.get('[data-test="node-communication-panel"]')).toBeTruthy()
+    expect(wrapper.emitted('workspace-status')?.slice(-1)[0]?.[0]).toMatchObject({
+      deviceContext: '全局态势',
+      statuses: expect.arrayContaining([expect.objectContaining({ label: 'ROS 离线' })]),
+    })
     expect(warnings.mock.calls.flat().join(' ')).not.toContain('Failed to locate Teleport target')
     expect(host.querySelector('.overview-camera-tools')).toBeNull()
 

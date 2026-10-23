@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>语音控制 · 三种设计方案</title>
+  <style>
+    :root { color-scheme:dark; --bg:#081518; --surface:#0e2228; --line:#29434a; --text:#e5f1ef; --muted:#9db4b7; --mint:#78dfc6; }
+    * { box-sizing:border-box; }
+    body { margin:0; color:var(--text); background:var(--bg); font:14px/1.6 "Segoe UI","Microsoft YaHei",sans-serif; }
+    a { color:inherit; }
+    a:focus-visible { outline:2px solid var(--mint); outline-offset:5px; }
+    main { max-width:1380px; margin:auto; padding:0 40px 36px; }
+    header { display:flex; justify-content:space-between; align-items:center; min-height:86px; gap:18px; border-bottom:1px solid #1c343a; }
+    .brand { font:600 16px/1.4 Bahnschrift,"Segoe UI",sans-serif; letter-spacing:.08em; }
+    .brand span { display:block; color:var(--muted); font:10px/1.6 "Microsoft YaHei",sans-serif; letter-spacing:.14em; }
+    .old-link { font-size:12px; color:#afc8c9; text-decoration:none; }
+    .intro { padding:46px 0 32px; display:flex; justify-content:space-between; align-items:end; gap:24px; }
+    .eyebrow { color:var(--mint); font:11px/1.5 Bahnschrift,"Segoe UI",sans-serif; letter-spacing:.18em; margin-bottom:12px; }
+    h1 { margin:0 0 12px; font-size:30px; font-weight:500; letter-spacing:.025em; }
+    .intro p { margin:0; color:var(--muted); font-size:13px; }
+    .preview-badge { border:1px solid #5d5037; color:#e3c085; padding:6px 10px; border-radius:6px; font-size:11px; white-space:nowrap; }
+    .options { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:18px; }
+    .option { display:flex; flex-direction:column; border:1px solid var(--line); border-radius:13px; background:var(--surface); overflow:hidden; text-decoration:none; transition:transform .2s,border-color .2s; }
+    .option:hover { transform:translateY(-4px); border-color:#699990; }
+    .option-head { display:flex; align-items:center; justify-content:space-between; padding:20px 22px 18px; }
+    .letter { font:22px Bahnschrift,"Segoe UI",sans-serif; color:var(--mint); }
+    .tag { color:#a5bdbc; background:#17322f; padding:3px 8px; border:1px solid #31554b; border-radius:5px; font-size:10px; }
+    .mock { height:248px; margin:0 17px; padding:9px; background:#07161c; border:1px solid #304b51; border-radius:9px; display:grid; grid-template-rows:15px minmax(0,1fr); gap:8px; }
+    .mock-top { display:flex; align-items:center; gap:3px; padding-left:3px; }
+    .mock-top i { width:3px; height:3px; border-radius:50%; background:#416168; }
+    .mock-top span { margin-left:6px; color:#9bb9bf; font:8px Bahnschrift,sans-serif; letter-spacing:.06em; }
+    .mock-body { display:grid; grid-template-columns:minmax(0,1fr) 86px; gap:6px; min-height:0; }
+    .mini-scene { position:relative; border-radius:4px; background:radial-gradient(ellipse at center,#244958,#112b34); overflow:hidden; min-height:0; }
+    .mini-scene::before { content:""; position:absolute; inset:0; background-image:linear-gradient(#63839212 1px,transparent 1px),linear-gradient(90deg,#63839212 1px,transparent 1px); background-size:22px 22px; }
+    .mini-scene b { position:absolute; color:#b5d3d6; font:7px Bahnschrift,sans-serif; left:9px; top:10px; font-weight:400; }
+    .unit { position:absolute; color:#89d8c9; width:23px; height:17px; border:1px solid #8cd7cb; transform:rotate(-25deg); border-radius:4px; left:var(--x); top:var(--y); background:#4d817333; }
+    .unit::after { content:""; position:absolute; width:30px; height:7px; border-radius:2px; background:#09202c; border:1px solid #54847e; top:23px; left:-4px; transform:rotate(25deg); }
+    .unit.boat { width:14px; height:23px; border-radius:9px 9px 2px 2px; border-color:#a0c8dc; background:#81abc649; }
+    .unit.boat::after { top:27px; left:-9px; border-color:#526f84; }
+    .mini-panel { border:1px solid #2c4e53; border-radius:4px; background:#10282e; padding:9px 7px; display:flex; flex-direction:column; gap:8px; }
+    .mini-title { width:40px; height:4px; border-radius:2px; background:#b2cfcd; margin-bottom:3px; }
+    .mini-record { display:flex; align-items:center; gap:5px; color:#adcbc7; font-size:6px; }
+    .mic { width:15px; height:15px; border-radius:4px; background:var(--mint); flex-shrink:0; position:relative; }
+    .mic::after { content:""; position:absolute; width:4px; height:7px; border:1px solid #124639; border-radius:3px; left:5px; top:3px; }
+    .mini-text { min-height:45px; border:1px solid #38595f; border-radius:4px; background:#0a1e26; padding:7px 5px; }
+    .line { height:3px; border-radius:2px; background:#819fa5; margin-bottom:6px; width:88%; }
+    .line.short { width:55%; }
+    .mini-button { display:flex; align-items:center; justify-content:center; height:18px; border-radius:3px; color:#0e392d; background:var(--mint); font-size:6px; font-weight:600; }
+    .mini-hint { height:2px; background:#487075; width:72%; margin:0 auto; }
+    .mini-plan { display:flex; align-items:center; gap:5px; margin-top:2px; }
+    .mini-plan i { display:block; width:8px; height:8px; border-radius:2px; border:1px solid #578b7e; }
+    .mini-plan span { height:3px; width:39px; background:#b2ccca; border-radius:2px; }
+    .dock .mock-body { grid-template-columns:1fr; grid-template-rows:minmax(0,1fr) 35px; }
+    .mini-dock { display:flex; align-items:center; gap:7px; padding:5px 6px; border:1px solid #345b5b; background:#102a2d; border-radius:5px; }
+    .mini-dock .mini-text { min-height:22px; flex:1; padding:7px; }
+    .mini-dock .mini-button { width:40px; height:23px; }
+    .mini-dock .line { margin:0; }
+    .chat .mock-body { grid-template-columns:minmax(0,1fr) 109px; }
+    .chat .mini-panel { gap:7px; padding:8px 6px; }
+    .bubble { width:84%; height:21px; background:#315e50; border-radius:5px 5px 1px 5px; align-self:flex-end; padding:8px 6px; }
+    .bubble .line { background:#bce3d5; height:2px; margin:0; }
+    .assistant-card { padding:6px; background:#18343b; border:1px solid #365a5d; border-radius:5px; }
+    .assistant-card .mini-button { margin-top:8px; height:15px; }
+    .chat .mini-text { margin-top:auto; min-height:24px; display:flex; align-items:center; gap:5px; padding:4px; }
+    .chat .mini-text .line { flex:1; height:2px; margin:0; }
+    .card-body { padding:23px 22px 22px; display:flex; flex-direction:column; flex:1; }
+    h2 { margin:0 0 9px; font-size:21px; font-weight:500; }
+    .card-body p { margin:0 0 20px; color:var(--muted); font-size:12px; line-height:1.9; min-height:46px; }
+    .features { display:flex; flex-wrap:wrap; gap:7px; margin-bottom:26px; }
+    .features span { color:#b9cecc; font-size:10px; border:1px solid #335058; border-radius:4px; padding:3px 6px; }
+    .open { border-top:1px solid #2b454b; padding-top:15px; display:flex; justify-content:space-between; align-items:center; color:var(--mint); font-size:12px; margin-top:auto; }
+    .open b { font-size:18px; font-weight:400; }
+    .note { display:flex; justify-content:space-between; gap:20px; margin:25px 0 0; color:var(--muted); font-size:11px; }
+    .note strong { color:#c9ddda; font-weight:500; }
+    @media (max-width:1100px) { main { padding-inline:22px; } .options { gap:12px; } .option-head,.card-body { padding-inline:16px; } .mock { margin-inline:10px; height:218px; padding:7px; } .mock-body { grid-template-columns:minmax(0,1fr) 75px; } .chat .mock-body { grid-template-columns:minmax(0,1fr) 88px; } .mini-panel { padding:8px 5px; } .mini-record { font-size:5px; } .card-body p { min-height:69px; } .features { gap:5px; } }
+    @media (max-width:800px) { .intro { display:block; padding-top:30px; } .preview-badge { display:inline-block; margin-top:20px; } .options { grid-template-columns:1fr; gap:20px; } .mock { height:270px; margin-inline:18px; } .mock-body { grid-template-columns:minmax(0,1fr) 110px; } .chat .mock-body { grid-template-columns:minmax(0,1fr) 140px; } .card-body { padding:22px; } .card-body p { min-height:0; margin-bottom:15px; } .features { margin-bottom:18px; } .option-head { padding-inline:22px; } .note { flex-direction:column; gap:8px; } }
+    @media (max-width:450px) { main { padding-inline:14px; } h1 { font-size:25px; } .intro p { font-size:12px; } .mock { height:230px; margin-inline:12px; } .mock-body { grid-template-columns:minmax(0,1fr) 84px; } .chat .mock-body { grid-template-columns:minmax(0,1fr) 110px; } .brand { font-size:14px; } .old-link { font-size:11px; } }
+    @media (prefers-reduced-motion:reduce) { * { transition:none!important; } }
+  </style>
+</head>
+<body>
+  <main>
+    <header><div class="brand">UAV · USV<span>海空协同控制平台</span></div><a class="old-link" href="voice-control-refined-preview.html">查看上一版预览 ↗</a></header>
+    <section class="intro"><div><div class="eyebrow">VOICE CONTROL / DESIGN STUDY</div><h1>同一句指令，三种操作体验。</h1><p>保留语音转文字、指令确认与设备反馈。选择一个方案，进入完整交互预览。</p></div><span class="preview-badge">离线设计预览 · 不连接真实设备</span></section>
+    <section class="options" aria-label="三种语音控制设计">
+      <a class="option" href="voice-control-sidebar-preview.html" aria-label="打开方案 A 极简侧栏">
+        <div class="option-head"><span class="letter">A</span><span class="tag">适合现有页面</span></div>
+        <div class="mock sidebar" aria-hidden="true"><div class="mock-top"><i></i><i></i><i></i><span>UAV · USV</span></div><div class="mock-body"><div class="mini-scene"><b>ALGORITHM SIMULATION</b><i class="unit" style="--x:23%;--y:25%"></i><i class="unit" style="--x:65%;--y:36%"></i><i class="unit boat" style="--x:35%;--y:64%"></i><i class="unit boat" style="--x:74%;--y:67%"></i></div><div class="mini-panel"><div class="mini-title"></div><div class="mini-record"><span class="mic"></span>语音输入</div><div class="mini-text"><div class="line"></div><div class="line short"></div></div><div class="mini-plan"><i></i><span></span></div><div class="mini-plan"><i></i><span></span></div><div class="mini-button">确认执行</div><div class="mini-hint"></div></div></div></div>
+        <div class="card-body"><h2>极简侧栏</h2><p>右侧固定一个紧凑操作区。随时录音、修改文字、核对动作，不打断场景观察。</p><div class="features"><span>紧凑录音入口</span><span>单条指令聚焦</span><span>一行结果反馈</span></div><div class="open">体验方案 A <b aria-hidden="true">↗</b></div></div>
+      </a>
+      <a class="option" href="voice-control-dock-preview.html" aria-label="打开方案 B 底部指令栏">
+        <div class="option-head"><span class="letter">B</span><span class="tag">更多场景空间</span></div>
+        <div class="mock dock" aria-hidden="true"><div class="mock-top"><i></i><i></i><i></i><span>UAV · USV</span></div><div class="mock-body"><div class="mini-scene"><b>ALGORITHM SIMULATION</b><i class="unit" style="--x:20%;--y:24%"></i><i class="unit" style="--x:48%;--y:32%"></i><i class="unit" style="--x:74%;--y:21%"></i><i class="unit boat" style="--x:26%;--y:60%"></i><i class="unit boat" style="--x:60%;--y:65%"></i></div><div class="mini-dock"><span class="mic"></span><div class="mini-text"><div class="line"></div></div><div class="mini-button">确认执行</div></div></div></div>
+        <div class="card-body"><h2>底部指令栏</h2><p>取消右侧面板，把输入集中在场景下方。仅在需要时展开动作预览，让画面更宽阔。</p><div class="features"><span>场景横向铺开</span><span>底部统一输入</span><span>按需展开步骤</span></div><div class="open">体验方案 B <b aria-hidden="true">↗</b></div></div>
+      </a>
+      <a class="option" href="voice-control-chat-preview.html" aria-label="打开方案 C 对话助手">
+        <div class="option-head"><span class="letter">C</span><span class="tag">自然对话体验</span></div>
+        <div class="mock chat" aria-hidden="true"><div class="mock-top"><i></i><i></i><i></i><span>UAV · USV</span></div><div class="mock-body"><div class="mini-scene"><b>ALGORITHM SIMULATION</b><i class="unit" style="--x:20%;--y:27%"></i><i class="unit" style="--x:66%;--y:36%"></i><i class="unit boat" style="--x:30%;--y:66%"></i><i class="unit boat" style="--x:77%;--y:68%"></i></div><div class="mini-panel"><div class="mini-title"></div><div class="bubble"><div class="line"></div></div><div class="assistant-card"><div class="mini-plan"><i></i><span></span></div><div class="mini-plan"><i></i><span></span></div><div class="mini-button">确认执行</div></div><div class="mini-text"><span class="mic"></span><div class="line"></div></div></div></div></div>
+        <div class="card-body"><h2>对话助手</h2><p>说出指令，由助手整理成动作卡片。确认与回执留在对话中，方便连续操作和回看。</p><div class="features"><span>消息式交互</span><span>结构化动作卡片</span><span>简短操作记录</span></div><div class="open">体验方案 C <b aria-hidden="true">↗</b></div></div>
+      </a>
+    </section>
+    <footer class="note"><span><strong>同一演示能力：</strong>开始任务 → 单台无人机悬停 / 无人艇驻留；运行后可下达单设备指令。</span><span>语音为模拟输入 · 阿里云未连接 · 场景非 Unity 实时画面</span></footer>
+  </main>
+</body>
+</html>

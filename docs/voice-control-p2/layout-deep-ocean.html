@@ -1,0 +1,243 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>深海蓝 · 海空协同仿真布局预览</title>
+<style>
+:root{color-scheme:dark;--bg:#0b1220;--panel:#121e30;--raised:#1a2940;--line:#29394f;--text:#e8eef8;--muted:#99abc3;--blue:#6aaaff;--cyan:#80d9eb;--amber:#efc37d;--red:#f89caa}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:14px/1.5 'Segoe UI','Microsoft YaHei',sans-serif}
+button,input,textarea,select{font:inherit}
+button,a,select{touch-action:manipulation}
+button{cursor:pointer}
+a{color:inherit;text-decoration:none}
+button:focus-visible,a:focus-visible,textarea:focus-visible,select:focus-visible{outline:2px solid var(--cyan);outline-offset:4px}
+button:disabled{opacity:.45;cursor:not-allowed}
+[hidden]{display:none!important}
+button{color:inherit;border:1px solid var(--line);border-radius:8px;background:var(--raised)}
+.symbols{position:absolute;width:0;height:0;overflow:hidden}
+.icon{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round;flex-shrink:0}
+.preview{display:flex;gap:12px;align-items:center;justify-content:space-between;padding:10px 26px;background:#152134;border-bottom:1px solid var(--line);font-size:12px;color:#b5c5db}
+.preview a{color:#cfddf0}
+.preview strong{color:var(--blue);font-weight:500;margin-right:14px}
+.switches{display:flex;gap:20px;white-space:nowrap}
+.switches a[aria-current]{color:var(--text);border-bottom:1px solid var(--blue)}
+.shell{display:grid;grid-template-columns:174px minmax(0,1fr);min-height:calc(100vh - 40px)}
+.rail{border-right:1px solid var(--line);padding:28px 16px;display:flex;flex-direction:column;gap:35px}
+.brand{display:flex;gap:10px;align-items:center}
+.brand>svg{width:34px;height:34px;color:var(--blue)}
+.brand strong{display:block;letter-spacing:.12em;font:600 17px Bahnschrift,'Segoe UI',sans-serif}
+.brand small{display:block;color:var(--muted);font-size:10px;letter-spacing:.1em;margin-top:4px}
+.rail nav{display:grid;gap:8px}
+.nav-item{padding:12px 10px;display:flex;gap:11px;align-items:center;color:var(--muted);border-radius:8px;font-size:13px}
+.nav-item.active{color:#b9d6ff;background:#213550;box-shadow:inset 3px 0 var(--blue)}
+.rail-note{margin-top:auto;color:#8b9db6;font-size:11px;line-height:1.9;padding:10px}
+.rail-note b{display:block;color:#c3d0e3;font-weight:500}
+.content{min-width:0;padding:26px 28px 18px;max-width:1920px;width:100%;margin:auto}
+.page-heading{display:flex;justify-content:space-between;align-items:center;margin:0 0 23px;gap:15px}
+.eyebrow{font-size:10px;letter-spacing:.16em;color:#8cacd5;margin-bottom:6px}
+.page-heading h1{font-size:25px;line-height:1.2;letter-spacing:.04em;margin:0;font-weight:600}
+.page-heading p{color:var(--muted);font-size:12px;margin:8px 0 0}
+.head-note{font-size:12px;color:#a4b8d3;display:flex;align-items:center;gap:7px}
+.dot{width:6px;height:6px;background:var(--cyan);border-radius:50%;display:inline-block}
+.workspace{display:grid;grid-template-columns:minmax(0,1fr) 330px;gap:18px;align-items:stretch}
+.scene-pane{min-width:0;border:1px solid var(--line);border-radius:13px;overflow:hidden;background:var(--panel)}
+.scene-toolbar{display:flex;gap:14px;align-items:center;justify-content:space-between;padding:15px 18px;border-bottom:1px solid var(--line)}
+.scene-toolbar strong{font-size:14px;font-weight:500}
+.inline-field{display:flex;align-items:center;gap:10px}
+.inline-field span{color:var(--muted);font-size:11px}
+select{background:#0f1b2c;color:var(--text);border:1px solid var(--line);padding:6px 10px;border-radius:6px;font-size:12px;max-width:100%}
+.ghost{background:none;padding:7px 10px;color:var(--muted);font-size:12px}
+.scene{height:440px;min-height:340px;position:relative;overflow:hidden;background:radial-gradient(ellipse at 40% 32%,#244463,#182f48 60%,#14263b);isolation:isolate}
+.ocean{position:absolute;width:100%;height:100%;inset:0;z-index:-1}
+.grid{position:absolute;inset:0;z-index:-1;background-image:linear-gradient(#c8e3ff05 1px,transparent 1px),linear-gradient(90deg,#c8e3ff05 1px,transparent 1px);background-size:48px 48px}
+.scene-top{position:absolute;top:18px;left:20px;right:20px;display:flex;justify-content:space-between;align-items:center;font-size:11px;color:#b0c2da;pointer-events:none}
+.scene-top b{color:#e3eefb;font-weight:500}
+.scene-top .tag{border:1px solid #6c89a55c;border-radius:5px;padding:4px 8px;background:#142a40}
+.scene-bottom{position:absolute;bottom:16px;left:20px;right:20px;display:flex;justify-content:space-between;gap:12px;align-items:center;color:#a7bfd5;font-size:10px}
+.scale{width:60px;border:1px solid #8da8c3;border-top:0;height:5px;display:inline-block;margin-right:7px}
+.marker{position:absolute;left:var(--x);top:var(--y);transform:translate(-50%,-50%);width:99px;border:0;padding:0;background:none;text-align:center;transition:left 1.8s ease-in-out,top 1.8s ease-in-out;z-index:2}
+.craft{width:50px;height:40px;margin:auto;display:block;color:#bedcff;filter:drop-shadow(0 7px 5px #0006)}
+.marker.boat .craft{color:#96d9e8}
+.marker .label{display:block;width:max-content;margin:4px auto 0;padding:3px 7px;border:1px solid #5f7b955e;background:#10243cd9;border-radius:4px;color:#dceafa;font:11px/1.4 Consolas,'Segoe UI',sans-serif}
+.marker.selected .label{color:white;border-color:var(--blue);background:#23476d}
+.marker.selected .craft{filter:drop-shadow(0 0 8px #7db9ff7a)}
+.marker.selected::before{content:'';position:absolute;left:24px;top:17px;width:50px;height:22px;border:1px solid #75b0ff77;border-radius:50%}
+.target{position:absolute;transform:translate(-50%,-50%);text-align:center;color:#edafba;font-size:10px;pointer-events:none}
+.target svg{width:43px;height:46px;display:block;margin:auto}
+.target.friend{color:#c4d3e5}
+.shore-label{position:absolute;right:4%;bottom:16%;color:#afc2c7;writing-mode:vertical-rl;letter-spacing:.2em;font-size:10px}
+.missionbar{padding:16px 20px;border-bottom:1px solid var(--line);display:flex;gap:20px;align-items:center;justify-content:space-between}
+.mission-summary{display:flex;align-items:center;gap:12px;min-width:0}
+.phase-icon{width:34px;height:34px;display:grid;place-items:center;border-radius:9px;background:#21374f;color:var(--blue)}
+.mission-summary strong{font-size:13px;font-weight:500;display:block}
+.mission-summary small{font-size:11px;color:var(--muted)}
+.mission-actions{display:flex;gap:7px}
+.mission-actions button{padding:8px 13px;font-size:12px}
+.mission-actions .primary,.primary{color:#071e39;background:var(--blue);border:1px solid var(--blue);font-weight:600}
+.progress{display:flex;padding:15px 20px;gap:7px;align-items:center;color:#a8b9d0;font-size:11px;flex-wrap:wrap}
+.progress span{display:flex;align-items:center;gap:6px}
+.progress i{width:19px;height:19px;display:grid;place-items:center;font-style:normal;border:1px solid #536780;border-radius:50%;font-size:9px}
+.progress span.active{color:#cbe1ff}
+.progress .active i{background:var(--blue);color:#0c203d;border-color:var(--blue)}
+.progress em{width:12px;height:1px;background:#42536a}
+.fleet{margin-top:16px;padding:17px 19px;border:1px solid var(--line);border-radius:12px;background:var(--panel)}
+.section-head{display:flex;align-items:center;justify-content:space-between;font-size:12px;margin-bottom:13px}
+.section-head span{color:var(--muted);font-size:11px}
+.fleet-list{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:7px}
+.fleet-list button{padding:10px 3px;display:grid;gap:5px;text-align:center;background:#17263b;color:#c5d2e7;font:11px Consolas,'Segoe UI',sans-serif}
+.fleet-list small{color:#94abc7;font-family:'Microsoft YaHei',sans-serif;font-size:10px}
+.fleet-list button[aria-pressed=true]{border-color:var(--blue);background:#203953;color:#cde4ff}
+.voice{border:1px solid var(--line);border-radius:13px;background:var(--panel);display:flex;flex-direction:column;min-width:0;overflow:hidden}
+.voice-head{display:flex;align-items:center;justify-content:space-between;padding:20px 22px;border-bottom:1px solid var(--line)}
+.voice-head h2{font-size:16px;font-weight:500;margin:0}
+.voice-head .icon{color:var(--blue)}
+.voice-body{display:flex;flex-direction:column;gap:19px;padding:20px 22px;flex:1}
+.provider{display:flex;align-items:center;justify-content:space-between;font-size:11px;color:var(--muted)}
+.provider b{font-weight:400;color:#c2d4eb;display:flex;gap:6px;align-items:center}
+.provider .icon{width:15px;height:15px}
+.voice-capture{text-align:center;padding:0 0 6px}
+.mic-wrap{width:116px;height:116px;border-radius:50%;background:radial-gradient(circle,#6caaff16,transparent 70%);border:1px solid #354e6c;display:grid;place-items:center;margin:3px auto 12px;position:relative}
+.mic-wrap::before{content:'';position:absolute;inset:9px;border:1px solid #2f4866;border-radius:50%;pointer-events:none}
+.mic{display:grid;place-items:center;width:74px;height:74px;border-radius:50%;background:#71aaf4;color:#11263e;border:1px solid #92c2ff;box-shadow:0 6px 24px #0c1a2e88}
+.mic .icon{width:30px;height:30px;stroke-width:1.7}
+.voice-capture h3{font-size:15px;font-weight:500;margin:0 0 5px}
+.voice-capture p{font-size:11px;color:var(--muted);margin:0}
+.voice-capture .wave{height:22px;display:flex;justify-content:center;align-items:center;gap:4px;margin-top:10px}
+.wave i{width:2px;background:#729ecd;border-radius:3px;height:var(--h)}
+.input-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:9px;font-size:12px}
+.input-head span{font-size:10px;color:var(--muted)}
+.input-box{border:1px solid #3a4d67;background:#0e1929;border-radius:9px;overflow:hidden}
+.input-box:focus-within{border-color:var(--blue)}
+textarea{display:block;resize:vertical;min-height:94px;width:100%;border:0;background:none;color:#e4eefc;padding:12px 13px;line-height:1.7;font-size:13px;max-height:200px}
+textarea::placeholder{color:#8b9bb2}
+textarea:focus-visible{outline-offset:-2px}
+.input-foot{display:flex;justify-content:space-between;font-size:10px;color:#8ca0ba;padding:0 13px 10px}
+.examples{display:flex;gap:6px;flex-wrap:wrap;margin-top:9px}
+.examples button{font-size:10px;padding:5px 7px;background:none;color:#aebfd6}
+.plan{border-top:1px solid var(--line);padding-top:14px}
+.plan h3{font-size:12px;margin:0 0 10px;font-weight:500}
+.plan-line{display:flex;align-items:center;gap:8px;color:#d2e1f5;font-size:12px;margin:8px 0}
+.number{display:grid;place-items:center;width:22px;height:22px;background:#263c58;border-radius:5px;font:11px Consolas,sans-serif;color:#8fbeff}
+.notice{font-size:11px;color:var(--muted);line-height:1.7;margin:10px 0 0}
+.notice.warn{color:var(--amber)}
+.main-action{width:100%;min-height:42px;margin-top:13px;padding:10px 12px;border-radius:8px;display:flex;justify-content:center;gap:8px;align-items:center}
+.cancel{width:100%;margin-top:8px;padding:7px;background:none;font-size:11px;color:var(--muted)}
+.feedback{padding:13px 14px;background:#162a3c;border-left:2px solid #6bafd7;border-radius:4px;font-size:12px;margin-top:auto}
+.feedback small{display:block;color:#a6bed8;margin-top:4px;font-size:11px}
+.voice-foot{font-size:10px;color:#92a4bd;border-top:1px solid var(--line);padding:12px 18px;text-align:center}
+.page-foot{margin:17px 0 0;display:flex;justify-content:space-between;gap:12px;color:#788fae;font-size:10px}
+.config{margin:0 0 16px;padding:16px 18px;border:1px solid var(--line);border-radius:10px;background:var(--panel)}
+.config form{display:flex;flex-wrap:wrap;gap:16px;align-items:end}
+.config label{display:grid;gap:6px;font-size:11px;color:var(--muted)}
+.config input{width:90px;border:1px solid #3b4c62;border-radius:6px;padding:7px;background:#0f1b2c;color:#dfebfa}
+.config p{font-size:11px;margin:12px 0 0;color:var(--muted)}
+.config .ghost{height:36px}
+.error{color:var(--red)!important}
+.badge{font-size:10px;padding:3px 7px;border-radius:4px;border:1px solid #375171;color:#b6d6fd}
+.caption-number{font:11px Consolas,sans-serif;color:var(--muted)}
+@media(min-width:1600px){.scene{height:540px}
+.content{padding:35px}
+.workspace{grid-template-columns:minmax(0,1fr) 365px}
+.voice-body{padding:24px 28px;gap:25px}
+.voice-capture{padding:15px 0}
+.scene-toolbar{padding:19px 23px}
+}
+@media(max-width:1200px){.shell{grid-template-columns:62px minmax(0,1fr)}
+.rail{padding:28px 8px}
+.brand{justify-content:center}
+.brand div,.nav-item span,.rail-note{display:none}
+.nav-item{justify-content:center;padding:13px 5px}
+.content{padding:22px 18px}
+.workspace{grid-template-columns:minmax(0,1fr) 300px;gap:12px}
+.scene-toolbar{padding:12px;gap:8px}
+.inline-field span{display:none}
+.scene{height:420px}
+.voice-body{padding:18px;gap:16px}
+.voice-head{padding:17px 18px}
+.fleet{padding:14px}
+.fleet-list{grid-template-columns:repeat(3,minmax(0,1fr))}
+.missionbar{padding:13px;gap:10px}
+.mission-actions button{padding:8px}
+.head-note{font-size:11px}
+}
+@media(max-width:900px){.workspace{grid-template-columns:1fr}
+.voice{display:block}
+.voice-body{display:grid;grid-template-columns:1fr 1fr;align-items:start}
+.provider{grid-column:1/-1}
+.voice-capture{grid-row:2/4}
+.feedback{grid-column:1/-1}
+.voice-head{padding:16px 20px}
+.scene{height:450px}
+.fleet-list{grid-template-columns:repeat(6,minmax(0,1fr))}
+.page-heading h1{font-size:22px}
+.head-note{display:none}
+}
+@media(max-width:560px){.preview{padding:10px 14px;display:block}
+.preview strong{display:inline-block;margin-bottom:5px}
+.switches{margin-top:8px;gap:16px;font-size:11px}
+.shell{display:block}
+.rail{display:none}
+.content{padding:21px 12px}
+.page-heading{margin-bottom:17px}
+.page-heading h1{font-size:23px}
+.scene-toolbar{flex-wrap:wrap}
+.scene{height:380px}
+.marker{width:77px}
+.craft{width:34px;height:30px}
+.marker .label{font-size:9px;padding:2px 4px}
+.marker.selected::before{left:18px;width:40px;height:18px;top:13px}
+.target{font-size:9px}
+.target svg{width:30px;height:37px}
+.missionbar{align-items:start;flex-wrap:wrap}
+.mission-actions{margin-left:auto}
+.mission-summary small{font-size:10px}
+.progress{gap:5px;font-size:10px;padding:12px}
+.progress em{width:7px}
+.progress i{width:16px;height:16px}
+.fleet-list{grid-template-columns:repeat(3,minmax(0,1fr))}
+.voice-body{display:flex}
+.voice-capture{padding:0}
+.page-foot{display:block;line-height:1.8}
+.scene-top,.scene-bottom{left:12px;right:12px}
+.shore-label{display:none}
+}
+@media(prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}
+}
+
+</style></head>
+<body>
+<svg class="symbols" aria-hidden="true"><defs>
+<symbol id="logo" viewBox="0 0 32 32"><path d="M4 25 16 5l12 20-12-7Z" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M4 25h24M16 18v10" fill="none" stroke="currentColor"/></symbol>
+<symbol id="grid-icon" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></symbol>
+<symbol id="wave-icon" viewBox="0 0 24 24"><path d="M2 12h4l3-8 5 16 3-8h5"/></symbol><symbol id="mic-icon" viewBox="0 0 24 24"><rect x="9" y="2" width="6" height="13" rx="3"/><path d="M5 10v2a7 7 0 0 0 14 0v-2M12 19v3M8 22h8"/></symbol><symbol id="cloud-icon" viewBox="0 0 24 24"><path d="M6 19a5 5 0 0 1-1-10 7 7 0 0 1 13-2 6 6 0 0 1 0 12Z"/></symbol>
+<symbol id="drone" viewBox="0 0 60 48"><path d="m14 10 32 27M45 10 15 37" stroke="#172941" stroke-width="6"/><path d="m14 10 32 27M45 10 15 37" stroke="currentColor" stroke-width="2"/><g fill="#12283a" stroke="currentColor" stroke-width="1.5"><ellipse cx="12" cy="9" rx="10" ry="5"/><ellipse cx="47" cy="9" rx="10" ry="5"/><ellipse cx="12" cy="38" rx="10" ry="5"/><ellipse cx="47" cy="38" rx="10" ry="5"/></g><path d="m23 12 15 1 4 16-13 6-9-9Z" fill="currentColor"/><path d="m27 14 9 1 2 9-10 4-4-6Z" fill="#315d87"/></symbol>
+<symbol id="boat" viewBox="0 0 60 60"><path d="m29 4 14 15-1 28-11 8-12-7-3-29Z" fill="#102c44" stroke="currentColor" stroke-width="1.3"/><path d="m29 8 10 12v24l-8 6-8-6-3-24Z" fill="currentColor"/><path d="M24 22h11v19H24Z" fill="#386484"/><path d="M25 19h9v9h-9Z" fill="#d5e7ed"/><path d="M24 35h11" stroke="#91b3d2"/></symbol>
+</defs></svg>
+<div class="preview"><div><strong>A / 深海蓝</strong>交互预览 · 不连接阿里云或真实设备</div><nav class="switches" aria-label="设计方案"><a href="./layout-gallery.html">方案总览</a><a href="./layout-deep-ocean.html" aria-current="page">深海蓝</a><a href="./layout-cloud-harbor.html">云港白</a><a href="./layout-graphite.html">石墨橙</a></nav></div>
+<div class="shell"><aside class="rail"><div class="brand"><svg><use href="#logo"/></svg><div><strong>SEA / AIR</strong><small>海空协同仿真平台</small></div></div><nav aria-label="工作区"><div class="nav-item"><svg class="icon"><use href="#grid-icon"/></svg><span>系统总览</span></div><div class="nav-item active"><svg class="icon"><use href="#wave-icon"/></svg><span>算法仿真</span></div></nav><div class="rail-note"><b>协同，始于一个指令。</b>海空一体 · 语音驱动<br>DESIGN CONCEPT / 01</div></aside>
+<main class="content"><header class="page-heading"><div><div class="eyebrow">SIMULATION WORKSPACE</div><h1>海空协同仿真</h1><p>从岸边出发，让每一步指令清晰可见。</p></div><div class="head-note"><i class="dot"></i>独立交互示例<span class="caption-number"> / 01</span></div></header>
+<section class="config" id="config" hidden aria-label="场景配置"><form onsubmit="return false"><label>无人机数量<input type="number" min="1" max="3" value="3" disabled></label><label>无人艇数量<input type="number" min="1" max="3" value="3" disabled></label><label>无人机巡航 m/s<input type="number" value="5" disabled></label><label>无人艇巡航 m/s<input type="number" value="3" disabled></label><button class="ghost" type="button" id="close-config">收起配置 ↑</button></form><p>预览采用 3 架无人机、3 艘无人艇的固定示例。正式接入后使用实际场景参数。</p></section>
+<div class="workspace"><div><section class="scene-pane" aria-label="仿真场景示意"><div class="scene-toolbar"><div class="inline-field"><strong>仿真视窗</strong><span>智能粒球护航</span></div><button class="ghost" id="config-toggle" aria-expanded="false" aria-controls="config">场景配置 ⇄</button></div>
+<div class="scene" id="scene"><div class="grid"></div><svg class="ocean" viewBox="0 0 900 600" preserveAspectRatio="none" aria-hidden="true"><g fill="none" stroke="#90bddd" stroke-width="1" opacity=".08"><path d="M-80 590C130 300 250 630 490 300S600 70 900 0"/><path d="M-60 620C130 330 280 640 520 320S660 90 960 30"/><path d="M-120 560C130 270 220 590 450 290S570 60 870-30"/><path d="M-140 530C70 180 160 550 410 260S540 20 830-60"/></g><path d="M900 0h-20l-18 60 24 50-30 60 5 60-47 43 7 58-36 54 7 51-26 55 9 109h125Z" fill="#344858"/><path d="m900 25-20 82 12 51-20 61 10 54-35 55 14 80-33 46 2 146" fill="none" stroke="#647b85" opacity=".25"/><path d="M900 0h-20l-18 60 24 50-30 60 5 60-47 43 7 58-36 54 7 51-26 55 9 109" fill="none" stroke="#80afb1" stroke-width="3" opacity=".25"/><g transform="translate(530 437)"><rect x="0" y="0" width="272" height="46" rx="3" fill="#566574"/><g fill="#2d4258" stroke="#a9bdc8" opacity=".8"><circle cx="28" cy="19" r="15"/><circle cx="136" cy="19" r="15"/><circle cx="244" cy="19" r="15"/></g><g font-family="sans-serif" font-size="17" fill="#c8d7df" text-anchor="middle"><text x="28" y="25">H</text><text x="136" y="25">H</text><text x="244" y="25">H</text></g></g></svg>
+<div class="scene-top"><b>近岸协同演示区</b><span class="tag">场景示意 · 非 Unity 实时画面</span></div><div class="target" style="left:23%;top:36%"><svg><use href="#boat"/></svg>敌船 · THREAT-001</div><div class="target friend" style="left:35%;top:67%"><svg><use href="#boat"/></svg>友船 · PROTECTED-001</div><span class="shore-label">原场景岸基区域 · 示意</span><div class="scene-bottom"><span><i class="scale"></i>示意比例</span><span>N ↑ &nbsp; 全局观察 · 不显示轨迹</span></div></div>
+<div class="missionbar"><div class="mission-summary"><div class="phase-icon"><svg class="icon"><use href="#wave-icon"/></svg></div><div><strong id="mission-state">岸边待命</strong><small id="mission-note">3 UAV · 3 USV · 2 艘目标船</small></div></div><div class="mission-actions"><button class="primary" id="start">▷ 演示开始</button><button id="pause" disabled>暂停</button><button id="reset">重置</button></div></div><div class="progress"><span class="active"><i>1</i>起飞 / 离泊</span><em></em><span><i>2</i>编队护航</span><em></em><span><i>3</i>协同拦截</span><em></em><span><i>4</i>完成</span></div></section>
+<section class="fleet"><div class="section-head">编队设备<span>点击编号，查看指令目标</span></div><div class="fleet-list" id="fleet-list"></div></section></div>
+<aside class="voice" aria-label="语音控制预览"><div class="voice-head"><h2>语音控制</h2><svg class="icon"><use href="#wave-icon"/></svg></div><div class="voice-body"><div class="provider"><b><svg class="icon"><use href="#cloud-icon"/></svg>阿里云语音识别</b><span>未连接 · 仅示例</span></div><div class="voice-capture"><div class="mic-wrap"><button class="mic" id="mic" aria-label="演示语音转写，不调用麦克风"><svg class="icon"><use href="#mic-icon"/></svg></button></div><h3>一句话，调度海空设备</h3><p>点击演示转写，不会开启麦克风</p><div class="wave" aria-hidden="true"><i style="--h:5px"></i><i style="--h:10px"></i><i style="--h:17px"></i><i style="--h:10px"></i><i style="--h:21px"></i><i style="--h:13px"></i><i style="--h:7px"></i><i style="--h:15px"></i><i style="--h:5px"></i></div></div>
+<section><div class="input-head"><label for="transcript">识别文字</label><span id="input-source">可编辑</span></div><div class="input-box"><textarea id="transcript" maxlength="200" placeholder="试着演示：开始任务，然后让一号无人机悬停。"></textarea><div class="input-foot"><span>明确设备编号与动作</span><span id="count">0 / 200</span></div></div><div class="examples"><button data-example="开始任务，然后让一号无人机悬停">开始 → 一号机悬停</button><button data-example="二号无人艇驻留">二号艇驻留</button><button data-example="一号无人机返航">一号机返航</button></div></section>
+<section class="plan"><h3>指令确认 <span class="badge" id="plan-badge">等待输入</span></h3><div id="plan-list"></div><p class="notice" id="plan-message" role="status" aria-live="polite">明确指令可快速执行；返航、降落和停止任务须先确认。</p><button class="main-action primary" id="preview">预览指令 →</button><button class="cancel" id="cancel" hidden>取消此次操作</button></section><div class="feedback" aria-live="polite"><span id="feedback-title">已选择 UAV-001</span><small id="feedback-detail">一号无人机 · 原停机坪待命</small></div></div><footer class="voice-foot">所有按钮仅改变此预览，不连接真实业务。</footer></aside></div><footer class="page-foot"><span>方案 A · 深海蓝 / 冰蓝操作色 / 主次分明的双栏工作台</span><span>SEA–AIR COLLABORATION / DESIGN PREVIEW</span></footer></main></div>
+<script>
+const $=id=>document.getElementById(id); const fleet=Array.from({length:6},(_,i)=>({code:`${i<3?'UAV':'USV'}-${String(i%3+1).padStart(3,'0')}`,kind:i<3?'UAV':'USV',name:`${['一','二','三'][i%3]}号无人${i<3?'机':'艇'}`,state:'待命',home:i<3?[62+i*12,76]:[66+(i-3)*3,31+(i-3)*12],away:i<3?[[37,25],[47,40],[34,52]][i]:[[50,59],[62,49],[56,75]][i-3]}));let selected='UAV-001',running=false,paused=false,pending=null; const symbols={UAV:'drone',USV:'boat'};
+fleet.forEach(d=>{const marker=document.createElement('button');marker.className='marker '+(d.kind==='USV'?'boat':'');marker.id='marker-'+d.code;marker.style.setProperty('--x',d.home[0]+'%');marker.style.setProperty('--y',d.home[1]+'%');marker.setAttribute('aria-label','选择 '+d.name+' '+d.code);marker.innerHTML=`<svg class="craft" aria-hidden="true"><use href="#${symbols[d.kind]}"/></svg><span class="label">${d.code}</span>`;marker.onclick=()=>select(d.code);$('scene').append(marker);const chip=document.createElement('button');chip.id='chip-'+d.code;chip.innerHTML=d.code+'<small>岸边待命</small>';chip.onclick=()=>select(d.code);$('fleet-list').append(chip)});
+function select(code){selected=code;fleet.forEach(d=>{$('marker-'+d.code).classList.toggle('selected',d.code===code);$('chip-'+d.code).setAttribute('aria-pressed',String(d.code===code))});const d=fleet.find(x=>x.code===code);$('feedback-title').textContent='已选择 '+code;$('feedback-detail').textContent=d.name+' · '+d.state}
+function place(d,home){const p=home?d.home:d.away;$('marker-'+d.code).style.setProperty('--x',p[0]+'%');$('marker-'+d.code).style.setProperty('--y',p[1]+'%');$('chip-'+d.code).querySelector('small').textContent=d.state}
+function mission(action){if(action==='start'){running=true;paused=false;fleet.forEach(d=>{d.state='编队航行';place(d,false)});$('mission-state').textContent='编队护航 · 演示中';$('mission-note').textContent='场景仅作布局与交互展示'}if(action==='pause'){if(!running)return;paused=!paused;$('mission-state').textContent=paused?'任务暂停 · 演示':'编队护航 · 演示中'}if(action==='reset'||action==='stop'){running=false;paused=false;fleet.forEach(d=>{d.state='待命';place(d,true)});$('mission-state').textContent=action==='stop'?'任务停止 · 演示':'岸边待命';$('mission-note').textContent='3 UAV · 3 USV · 2 艘目标船'}$('pause').disabled=!running;$('pause').textContent=paused?'继续':'暂停';$('start').disabled=running;select(selected)}
+function invalidate(){pending=null;$('plan-list').replaceChildren();$('preview').textContent='预览指令 →';$('cancel').hidden=true;$('plan-badge').textContent='等待预览';$('plan-message').className='notice';$('plan-message').textContent='预览会核对目标与动作；高风险指令必须确认。';$('count').textContent=$('transcript').value.length+' / 200'}
+function fill(text,source){$('transcript').value=text;invalidate();$('input-source').textContent=source||'示例口令'}
+function parse(text){const t=text.replace(/[，。,.\s]/g,'').replaceAll('1','一').replaceAll('2','二').replaceAll('3','三');const parts=t.split(/然后|接着/);if(parts.length>2||parts.some(x=>!x))return null;const out=[];for(const p of parts){if(p==='开始任务'){out.push({label:'开始任务',action:'start'});continue}if(p==='暂停任务'){out.push({label:'暂停任务',action:'pause'});continue}if(p==='继续任务'){out.push({label:'继续任务',action:'resume'});continue}if(p==='停止任务'){out.push({label:'停止任务',action:'stop',risk:true});continue}const m=p.match(/^(?:让)?([一二三])号(?:无人)?(机|艇)(悬停|驻留|归队|返航|降落)$/);if(!m)return null;const kind=m[2]==='机'?'UAV':'USV';if((kind==='UAV'&&m[3]==='驻留')||(kind==='USV'&&['悬停','降落'].includes(m[3])))return null;out.push({label:`${kind}-${String('一二三'.indexOf(m[1])+1).padStart(3,'0')} · ${m[3]}`,code:`${kind}-${String('一二三'.indexOf(m[1])+1).padStart(3,'0')}`,action:m[3],risk:['返航','降落'].includes(m[3])})}return out}
+function execute(){let active=running,isPaused=paused;for(const step of pending){if(step.action==='start'){if(active)return reject('示例任务已运行，请先重置后再演示开始。');active=true;isPaused=false}else if(step.action==='pause'){if(!active||isPaused)return reject('当前示例不处于运行状态，不能暂停。');isPaused=true}else if(step.action==='resume'){if(!active||!isPaused)return reject('当前示例未暂停。');isPaused=false}else if(step.action==='stop'){if(!active)return reject('当前示例尚未开始。');active=false}else if(!active||isPaused)return reject('请先开始示例任务并保持运行，再演示单设备控制。')}
+const actions=pending;actions.forEach(step=>{if(['start','pause','stop'].includes(step.action))mission(step.action);else if(step.action==='resume'){if(paused)mission('pause')}else{const d=fleet.find(x=>x.code===step.code);d.state=['返航','降落'].includes(step.action)?'返回泊位（示意）':step.action==='归队'?'编队航行':step.action;place(d,['返航','降落'].includes(step.action));select(d.code)}});$('feedback-title').textContent='示例动作已展示';$('feedback-detail').textContent=actions.map(x=>x.label).join(' → ');pending=null;$('preview').textContent='再次预览 →';$('cancel').hidden=true;$('plan-badge').textContent='演示完成';$('plan-message').className='notice';$('plan-message').textContent='只更新此页面示意，不代表真实设备已执行。'}
+function reject(message){pending=null;$('plan-list').replaceChildren();$('plan-message').textContent=message;$('plan-message').className='notice error';$('plan-badge').textContent='未执行';$('preview').textContent='重新预览 →';$('cancel').hidden=true}
+$('preview').onclick=()=>{if(pending){execute();return}const steps=parse($('transcript').value.trim());if(!steps||!steps.length){reject('此预览仅支持明确的开始、暂停、继续、停止及编号机艇动作。请使用示例口令；不会猜测执行。');return}pending=steps;$('plan-list').replaceChildren();steps.forEach((step,i)=>{const row=document.createElement('div');row.className='plan-line';const num=document.createElement('span');num.className='number';num.textContent=String(i+1);const label=document.createElement('span');label.textContent=step.label;row.append(num,label);$('plan-list').append(row)});const risk=steps.some(s=>s.risk);$('plan-badge').textContent=risk?'待高风险确认':'待确认';$('plan-message').textContent=risk?'包含返航、降落或停止：确认前整条指令不会执行。':'目标与动作已列出，确认后演示效果。';$('plan-message').className='notice'+(risk?' warn':'');$('preview').textContent=risk?'确认高风险演示':'确认演示 →';$('cancel').hidden=false};
+$('cancel').onclick=()=>{invalidate();$('plan-message').textContent='已取消，没有演示任何动作。'};$('transcript').oninput=()=>{invalidate();$('input-source').textContent='手动编辑 · 需确认'};document.querySelectorAll('[data-example]').forEach(b=>b.onclick=()=>fill(b.dataset.example));$('mic').onclick=()=>fill('开始任务，然后让一号无人机悬停','模拟转写 · 非真人录音');$('start').onclick=()=>mission('start');$('pause').onclick=()=>mission('pause');$('reset').onclick=()=>{mission('reset');invalidate()};$('config-toggle').onclick=()=>{$('config').hidden=!$('config').hidden;$('config-toggle').setAttribute('aria-expanded',String(!$('config').hidden))};$('close-config').onclick=()=>{$('config').hidden=true;$('config-toggle').setAttribute('aria-expanded','false')};select(selected);
+</script></body></html>

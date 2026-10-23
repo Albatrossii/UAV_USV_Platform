@@ -66,7 +66,7 @@ public class VoiceDispatcher {
     public void recover() {
         // The platform owns local child pipes; deployment is one backend process per database.
         for (var c : s.locked(() -> s.query("SELECT data_json FROM voice_runtime_context")))
-            if (r.channel(c.path("_id").asText()) == null)
+            if (!r.systemOverview(c) && r.channel(c.path("_id").asText()) == null)
                 r.ended(c.path("_id").asText(), c.path("runtimeGeneration").asText());
         s.locked(
                 () -> {
@@ -93,7 +93,10 @@ public class VoiceDispatcher {
                                             "SELECT data_json FROM voice_execution WHERE state IN"
                                                 + " ('QUEUED','DISPATCHED','ACCEPTED','EXECUTING','TIMED_OUT')"));
             for (var e : all) {
+                if ("SEQUENCE".equals(e.path("action").asText())) continue;
                 String ref = e.path("runtimeRef").asText();
+                var context = s.locked(() -> s.get("voice_runtime_context", ref));
+                if (r.systemOverview(context)) continue;
                 var ch = r.channel(ref);
                 if (ch == null) continue;
                 synchronized (ch.lock) {
@@ -141,6 +144,7 @@ public class VoiceDispatcher {
                                                 .path("stateVersion")
                                                 .equals(c.path("stateVersion")))
                                     throw VoiceFailure.conflict("CONTEXT_CHANGED");
+                                if ("ALGORITHM_PRESET".equals(e.path("action").asText())) AlgorithmPresets.validate(c, e.path("_plan").path("parameters"));
                                 r.check(
                                         c,
                                         e.path("action").asText(),
@@ -180,7 +184,9 @@ public class VoiceDispatcher {
                             cmd.put("commandSequence", sequence);
                             cmd.set("expectedStateVersion", e.path("_plan").path("stateVersion"));
                             cmd.set("action", e.path("action"));
-                            cmd.putObject("parameters");
+                            if ("ALGORITHM_PRESET".equals(e.path("action").asText())) {
+                                cmd.set("parameters", e.path("_plan").path("parameters").deepCopy());
+                            } else cmd.putObject("parameters");
                             j.validate("Command", cmd);
                             return cmd;
                         });
@@ -579,6 +585,13 @@ public class VoiceDispatcher {
             return;
         }
         String status = event.path("status").asText();
+        if (event.has("presetExecution")) {
+            if (!"ALGORITHM_PRESET".equals(e.path("action").asText())
+                    || !"SUCCEEDED".equals(status)
+                    || !event.path("commandId").equals(event.path("presetExecution").path("commandId"))
+                    || !e.path("_plan").path("parameters").path("presetId").equals(event.path("presetExecution").path("presetId")))
+                throw VoiceFailure.bad();
+        }
         Set<String> expected = new HashSet<>();
         e.path("_plan").path("explicitDeviceCodes").forEach(x -> expected.add(x.asText()));
         Set<String> actual = new HashSet<>();
@@ -589,7 +602,7 @@ public class VoiceDispatcher {
         if ("SUCCEEDED".equals(status)) {
             String target =
                     switch (e.path("action").asText()) {
-                        case "START", "RESUME" -> "RUNNING";
+                        case "START", "RESUME", "ALGORITHM_PRESET" -> "RUNNING";
                         case "PAUSE" -> "PAUSED";
                         case "STOP" -> "STOPPED";
                         default -> "";
@@ -638,6 +651,7 @@ public class VoiceDispatcher {
             e.put("_presentationDeadlineAt", succeededAt.plusSeconds(30).toString());
         }
         e.put("_resultFrame", event.path("lastFrameSequence").asLong()).put("updatedAt", t.stamp());
+        if (event.has("presetExecution")) e.set("presetExecution", event.path("presetExecution").deepCopy());
         s.save("voice_execution", e);
         var ch = r.channel(c.path("_id").asText());
         if (ch != null && !"LOST".equals(c.path("state").asText()))

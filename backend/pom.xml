@@ -19,6 +19,7 @@
 
     <properties>
         <java.version>17</java.version>
+        <platform.build.finalName>${project.artifactId}-${project.version}</platform.build.finalName>
         <protobuf.version>4.28.3</protobuf.version>
         <protobuf-maven-plugin.version>0.6.1</protobuf-maven-plugin.version>
     </properties>
@@ -80,6 +81,7 @@
     </dependencies>
 
     <build>
+        <finalName>${platform.build.finalName}</finalName>
         <extensions>
             <extension>
                 <groupId>kr.motd.maven</groupId>

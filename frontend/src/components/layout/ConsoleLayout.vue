@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { nextTick, ref, watch } from 'vue'
+import { nextTick, onBeforeUnmount, ref, useId, watch } from 'vue'
 import {
   Activity,
   Boxes,
@@ -23,13 +23,17 @@ const props = withDefaults(defineProps<{
   eyebrow: string
   showRefresh?: boolean
   immersive?: boolean
+  hideSidebar?: boolean
   collapsibleSidebar?: boolean
   defaultSidebarCollapsed?: boolean
+  workspaceNavigation?: boolean
 }>(), {
   showRefresh: true,
   immersive: false,
+  hideSidebar: false,
   collapsibleSidebar: true,
   defaultSidebarCollapsed: false,
+  workspaceNavigation: false,
 })
 
 const SIDEBAR_STORAGE_KEY = 'uav-usv:sidebar-collapsed'
@@ -48,7 +52,10 @@ function readSidebarPreference() {
 }
 
 const sidebarCollapsed = ref(readSidebarPreference())
+const navigationId = useId()
 let sidebarTransitionTimer: number | null = null
+let sidebarTransitionActive = false
+let disposed = false
 
 watch(sidebarCollapsed, (collapsed) => {
   if (typeof window === 'undefined') return
@@ -61,15 +68,30 @@ watch(sidebarCollapsed, (collapsed) => {
 
 async function toggleSidebar() {
   if (!props.collapsibleSidebar) return
-  window.dispatchEvent(new CustomEvent('uav-usv:viewport-transition-start'))
+  if (!sidebarTransitionActive) {
+    sidebarTransitionActive = true
+    window.dispatchEvent(new CustomEvent('uav-usv:viewport-transition-start'))
+  }
   sidebarCollapsed.value = !sidebarCollapsed.value
   await nextTick()
+  if (disposed) return
   if (sidebarTransitionTimer !== null) window.clearTimeout(sidebarTransitionTimer)
-  sidebarTransitionTimer = window.setTimeout(() => {
-    sidebarTransitionTimer = null
-    window.dispatchEvent(new CustomEvent('uav-usv:viewport-transition-end'))
-  }, 220)
+  sidebarTransitionTimer = window.setTimeout(finishSidebarTransition, 220)
 }
+
+function finishSidebarTransition() {
+  if (sidebarTransitionTimer !== null) window.clearTimeout(sidebarTransitionTimer)
+  sidebarTransitionTimer = null
+  if (sidebarTransitionActive) {
+    sidebarTransitionActive = false
+    window.dispatchEvent(new CustomEvent('uav-usv:viewport-transition-end'))
+  }
+}
+
+onBeforeUnmount(() => {
+  disposed = true
+  finishSidebarTransition()
+})
 
 async function logout() {
   monitoringStore.disconnectEvents()
@@ -79,8 +101,8 @@ async function logout() {
 </script>
 
 <template>
-  <div class="app-shell console-shell" :class="{ 'sidebar-collapsed': sidebarCollapsed }">
-    <aside class="sidebar console-sidebar" :aria-label="sidebarCollapsed ? '折叠导航' : '展开导航'">
+  <div class="app-shell console-shell" :class="{ 'sidebar-collapsed': sidebarCollapsed, 'sidebar-hidden': hideSidebar, 'workspace-navigation': workspaceNavigation }">
+    <aside v-if="!hideSidebar" class="sidebar console-sidebar" :aria-label="sidebarCollapsed ? '折叠导航' : '展开导航'">
       <div class="brand console-brand">
         <div class="brand-mark console-brand-mark"><Plane :size="22" /></div>
         <div class="console-brand-copy">
@@ -96,13 +118,15 @@ async function logout() {
         :title="sidebarCollapsed ? '展开菜单' : '折叠菜单'"
         :aria-label="sidebarCollapsed ? '展开菜单' : '折叠菜单'"
         :aria-pressed="sidebarCollapsed"
+        :aria-expanded="!sidebarCollapsed"
+        :aria-controls="navigationId"
         @click="toggleSidebar"
       >
         <PanelLeftOpen v-if="sidebarCollapsed" :size="16" />
         <PanelLeftClose v-else :size="16" />
       </button>
 
-      <nav class="navigation console-navigation" aria-label="主导航">
+      <nav :id="navigationId" class="navigation console-navigation" aria-label="主导航">
         <RouterLink class="nav-item" active-class="active" exact-active-class="active" to="/" title="系统总览">
           <Activity :size="18" />
           <span class="console-nav-label">系统总览</span>
@@ -185,6 +209,10 @@ async function logout() {
 
 .console-shell.sidebar-collapsed {
   --console-sidebar-width: 76px;
+}
+
+.console-shell.sidebar-hidden {
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .console-sidebar {
@@ -334,8 +362,14 @@ async function logout() {
 
 .sidebar-collapsed .console-navigation :deep(.nav-item) {
   justify-content: center;
+  gap: 0;
   padding-right: 0;
   padding-left: 0;
+}
+
+.sidebar-collapsed .console-sidebar-user {
+  justify-content: center;
+  gap: 0;
 }
 
 .sidebar-collapsed .console-sidebar-footer {
@@ -437,5 +471,91 @@ async function logout() {
 }
 @media (max-height: 650px) {
   .console-sidebar { height: 100dvh; overflow-y: auto; }
+}
+
+/* The two workspaces share this navigation. Unlike legacy pages, its labels
+   remain user-expandable at every viewport width. */
+.console-shell.workspace-navigation {
+  --console-sidebar-width: 200px;
+}
+
+.console-shell.workspace-navigation.sidebar-collapsed {
+  --console-sidebar-width: 62px;
+}
+
+.workspace-navigation .console-sidebar {
+  position: sticky;
+  top: 0;
+  z-index: 90;
+  align-self: start;
+  width: var(--console-sidebar-width);
+  height: 100dvh;
+  padding: 18px 10px;
+  overflow: visible;
+}
+
+.workspace-navigation .console-brand {
+  justify-content: flex-start;
+  gap: 10px;
+  padding-inline: 0;
+}
+
+.workspace-navigation .console-brand-mark {
+  width: 38px;
+  height: 38px;
+}
+
+.workspace-navigation .console-brand-copy,
+.workspace-navigation .console-nav-label,
+.workspace-navigation .console-sidebar-user span {
+  display: block;
+}
+
+.workspace-navigation .console-navigation {
+  grid-template-columns: minmax(0, 1fr);
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
+.workspace-navigation .console-navigation :deep(.nav-item) {
+  justify-content: flex-start;
+  padding-inline: 10px;
+}
+
+.workspace-navigation .console-sidebar-footer {
+  display: flex;
+  flex-direction: row;
+  padding-inline: 0;
+}
+
+.workspace-navigation .console-sidebar-toggle {
+  display: grid;
+}
+
+.workspace-navigation.sidebar-collapsed .console-brand {
+  justify-content: center;
+  gap: 0;
+}
+
+.workspace-navigation.sidebar-collapsed .console-navigation :deep(.nav-item) {
+  justify-content: center;
+  padding-inline: 0;
+}
+
+.workspace-navigation.sidebar-collapsed .console-sidebar-footer {
+  flex-direction: column;
+}
+
+@media (max-width: 760px) {
+  .console-shell.workspace-navigation:not(.sidebar-hidden) {
+    grid-template-columns: 62px minmax(0, 1fr);
+  }
+
+  /* Keep the icon-rail track reserved. Expanded labels overlay the content
+     instead of shrinking the simulation's own task console a second time. */
+  .workspace-navigation:not(.sidebar-collapsed) .console-sidebar {
+    box-shadow: 12px 0 30px rgba(0, 0, 0, 0.35);
+  }
 }
 </style>

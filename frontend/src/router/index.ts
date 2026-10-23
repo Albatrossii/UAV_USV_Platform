@@ -1,12 +1,12 @@
 import { createRouter, createWebHistory } from 'vue-router'
 
 import { useAuthStore } from '@/stores/auth'
-import DeviceManagementView from '@/views/DeviceManagementView.vue'
 import LoginView from '@/views/LoginView.vue'
-import MissionWorkspaceView from '@/views/MissionWorkspaceView.vue'
-import OverviewWorkspaceView from '@/views/OverviewWorkspaceView.vue'
-import RadarSituationView from '@/views/RadarHudView.vue'
-import VisualSensorView from '@/views/OpticalVisionView.vue'
+const DeviceManagementView = () => import('@/views/DeviceManagementView.vue')
+const MissionWorkspaceView = () => import('@/views/MissionWorkspaceView.vue')
+const OverviewWorkspaceView = () => import('@/views/OverviewWorkspaceView.vue')
+const RadarSituationView = () => import('@/views/RadarHudView.vue')
+const VisualSensorView = () => import('@/views/OpticalVisionView.vue')
 
 const router = createRouter({
   history: createWebHistory(import.meta.env.BASE_URL),

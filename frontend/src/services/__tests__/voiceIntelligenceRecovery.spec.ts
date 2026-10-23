@@ -5,7 +5,6 @@ import { VoiceIntelligenceError } from '@/types/voiceIntelligence'
 
 describe('voice intelligence failure recovery', () => {
   it.each([
-    [429, 'VOICE_RATE_LIMITED'],
     [503, 'VOICE_PROVIDER_UNAVAILABLE'],
     [502, 'VOICE_PROVIDER_INVALID_RESPONSE'],
     [504, 'VOICE_TRANSCRIPTION_TIMEOUT'],
@@ -14,6 +13,20 @@ describe('voice intelligence failure recovery', () => {
     expect(info.retryable).toBe(false)
     expect(info.message).toContain('重复提交只会返回同一结果')
     expect(info.retryAfter).toBe(2)
+  })
+
+  it('does not confuse a pre-acceptance rate rejection with a cached provider failure', () => {
+    const info = voiceRecoveryInfo(new ApiClientError('busy', 429, 'VOICE_RATE_LIMITED', 17))
+    expect(info.rateLimited).toBe(true)
+    expect(info.retryable).toBe(true)
+    expect(info.retryAfter).toBe(17)
+    expect(info.message).toContain('重试原请求')
+    expect(info.message).not.toContain('已有失败回执')
+    expect(info.message).not.toContain('联系管理员')
+  })
+
+  it('provides a short default cooldown for an explicit rate rejection without Retry-After', () => {
+    expect(voiceRecoveryInfo(new ApiClientError('busy', 429, 'VOICE_RATE_LIMITED')).retryAfter).toBe(2)
   })
 
   it('keeps same-ID recovery available when only the browser timed out', () => {
@@ -25,6 +38,7 @@ describe('voice intelligence failure recovery', () => {
   it('never suggests a new request for an unknown accepted outcome', () => {
     const info = voiceRecoveryInfo(new ApiClientError('unknown', 409, 'VOICE_REQUEST_OUTCOME_UNKNOWN'))
     expect(info.retryable).toBe(false)
+    expect(info.rateLimited).toBe(false)
     expect(info.message).toContain('不要换键重发')
   })
 })

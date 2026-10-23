@@ -149,6 +149,13 @@ select {
   font: inherit;
 }
 
+/* UI glyphs keep their size and do not inherit inline-text baseline spacing. */
+svg.lucide,
+.el-icon > svg {
+  display: block;
+  flex-shrink: 0;
+}
+
 .app-shell {
   display: grid;
   grid-template-columns: 228px minmax(0, 1fr);
@@ -3468,16 +3475,72 @@ h2 {
   margin-top: 14px;
 }
 
-.console-table {
+/* Outrank lazy-loaded Element Plus defaults regardless of route load order. */
+.el-table.console-table {
   --el-table-header-bg-color: rgba(232, 255, 251, 0.06);
   --el-table-bg-color: transparent;
   --el-table-tr-bg-color: transparent;
   --el-table-border-color: rgba(108, 228, 213, 0.12);
   --el-table-text-color: #dff8f4;
   --el-table-header-text-color: #8bded4;
+  --el-table-row-hover-bg-color: #173438;
+  --el-table-current-row-bg-color: #173438;
   border: 1px solid rgba(108, 228, 213, 0.14);
   border-radius: 7px;
   overflow: hidden;
+}
+
+/* Device registry controls and teleported dialogs share the console palette. */
+.device-management-theme,
+.el-dialog.device-dialog,
+.el-dialog.device-delete-dialog,
+.el-popper.device-management-popper {
+  color-scheme: dark;
+  --el-color-primary: #65ded1;
+  --el-color-primary-light-3: #8be7dd;
+  --el-color-primary-light-5: #3c7e79;
+  --el-color-primary-light-7: #26534f;
+  --el-color-primary-light-8: #1b403d;
+  --el-color-primary-light-9: #153431;
+  --el-color-primary-dark-2: #48bfb3;
+  --el-text-color-primary: #e9fffb;
+  --el-text-color-regular: #dff8f4;
+  --el-text-color-secondary: #8db7b2;
+  --el-text-color-placeholder: #6f9691;
+  --el-text-color-disabled: #55716e;
+  --el-bg-color: #0b1e21;
+  --el-bg-color-page: #08191c;
+  --el-bg-color-overlay: #102a2e;
+  --el-fill-color-blank: #0b1e21;
+  --el-fill-color: #173438;
+  --el-fill-color-light: #143035;
+  --el-fill-color-lighter: #10282c;
+  --el-fill-color-extra-light: #0e2428;
+  --el-fill-color-dark: #204247;
+  --el-fill-color-darker: #295156;
+  --el-border-color: #2b5558;
+  --el-border-color-light: #24494c;
+  --el-border-color-lighter: #1d3c40;
+  --el-border-color-extra-light: #173236;
+  --el-disabled-bg-color: #102327;
+  --el-disabled-text-color: #55716e;
+  --el-disabled-border-color: #1d3c40;
+  --el-mask-color: rgba(8, 25, 28, 0.8);
+}
+
+.device-management-theme .el-pagination.is-background .el-pager li.is-active,
+.device-management-theme .el-button--primary:not(.is-link):not(.is-text),
+.device-dialog .el-button--primary:not(.is-link):not(.is-text) {
+  --el-button-text-color: #06201b;
+  --el-button-hover-text-color: #06201b;
+  --el-button-active-text-color: #06201b;
+  color: #06201b;
+}
+
+.el-dialog.device-dialog,
+.el-dialog.device-delete-dialog {
+  --el-dialog-bg-color: #0b1e21;
+  border: 1px solid #2b5558;
 }
 
 .console-table .el-table__inner-wrapper::before {
@@ -3824,6 +3887,7 @@ h2 {
   display: inline-flex;
   min-height: 26px;
   align-items: center;
+  justify-content: center;
   gap: 5px;
   padding: 0 9px;
   color: #dffcf8;

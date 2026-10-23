@@ -1,0 +1,276 @@
+<div id="fleet-console-preview" data-initial-layout="minimal" aria-label="精简任务控制台">
+  <style>
+    #fleet-console-preview{--fc-bg:light-dark(#eaf2f2,#07191d);--fc-panel:light-dark(#fff,#10272d);--fc-raised:light-dark(#f1f7f6,#16333a);--fc-line:light-dark(#d4e3e2,#29464e);--fc-text:light-dark(#18353a,#deedee);--fc-muted:light-dark(#577176,#94afb5);--fc-accent:light-dark(#087769,#6bdfcc);--fc-soft:light-dark(#e0f4ed,#173e3c);--fc-warn:light-dark(#906112,#f2c46a);--fc-sea:light-dark(#dcebee,#17333f);--fc-danger:light-dark(#b54136,#f18d7f);font:14px/1.5 "Segoe UI","Microsoft YaHei",sans-serif;color:var(--fc-text);background:var(--fc-bg);border-radius:14px;overflow:hidden}
+    #fleet-console-preview *{box-sizing:border-box}
+    #fleet-console-preview button,#fleet-console-preview input,#fleet-console-preview textarea,#fleet-console-preview select{font:inherit;color:inherit}
+    #fleet-console-preview button{cursor:pointer;border:1px solid var(--fc-line);background:var(--fc-panel);border-radius:7px;padding:8px 11px;display:inline-flex;align-items:center;justify-content:center;gap:7px}
+    #fleet-console-preview button:hover{background:var(--fc-raised)}
+    #fleet-console-preview button:disabled{opacity:.45;cursor:default}
+    #fleet-console-preview button.fc-primary{background:var(--fc-accent);color:var(--fc-bg);border-color:var(--fc-accent);font-weight:500}
+    #fleet-console-preview button.fc-quiet{border-color:transparent;background:transparent;padding:5px}
+    #fleet-console-preview button.fc-selected{border-color:var(--fc-accent);color:var(--fc-accent);background:var(--fc-soft)}
+    #fleet-console-preview [hidden]{display:none!important}
+    #fleet-console-preview .fc-top{padding:16px 20px;display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;border-bottom:1px solid var(--fc-line)}
+    #fleet-console-preview .fc-brand{display:flex;align-items:center;gap:10px;font-weight:500}
+    #fleet-console-preview .fc-brand-mark{display:grid;place-items:center;width:31px;height:31px;background:var(--fc-accent);color:var(--fc-bg);border-radius:8px}
+    #fleet-console-preview .fc-sub{color:var(--fc-muted);font-size:12px}
+    #fleet-console-preview .fc-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+    #fleet-console-preview .fc-between{justify-content:space-between}
+    #fleet-console-preview .fc-pill{display:inline-flex;align-items:center;gap:5px;border-radius:5px;padding:3px 7px;background:var(--fc-soft);color:var(--fc-accent);font-size:12px}
+    #fleet-console-preview .fc-shell{display:grid;grid-template-columns:54px minmax(0,1fr)}
+    #fleet-console-preview .fc-rail{display:flex;align-items:center;flex-direction:column;gap:14px;padding:18px 7px;border-right:1px solid var(--fc-line)}
+    #fleet-console-preview .fc-rail button{width:38px;min-height:38px;padding:8px}
+    #fleet-console-preview .fc-workspace{padding:16px;min-width:0}
+    #fleet-console-preview .fc-heading{margin-bottom:15px;display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap}
+    #fleet-console-preview h2{font-size:18px;font-weight:500;margin:0}
+    #fleet-console-preview h3{font-size:14px;font-weight:500;margin:0}
+    #fleet-console-preview .fc-layout{display:grid;grid-template-columns:240px minmax(0,1fr);gap:14px;align-items:start}
+    #fleet-console-preview .fc-console{background:var(--fc-panel);border:1px solid var(--fc-line);border-radius:10px;min-width:0}
+    #fleet-console-preview .fc-console-head{padding:15px 15px 0}
+    #fleet-console-preview .fc-tabs{display:flex;gap:16px;margin-top:12px;border-bottom:1px solid var(--fc-line)}
+    #fleet-console-preview .fc-tabs button{border:0;border-radius:0;background:transparent;padding:10px 0;color:var(--fc-muted)}
+    #fleet-console-preview .fc-tabs button[aria-selected=true]{color:var(--fc-accent);box-shadow:0 2px var(--fc-accent)}
+    #fleet-console-preview .fc-pane{padding:16px}
+    #fleet-console-preview .fc-caption{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;gap:6px}
+    #fleet-console-preview .fc-composer{padding:10px;background:var(--fc-bg);border:1px solid var(--fc-line);border-radius:8px}
+    #fleet-console-preview textarea{display:block;width:100%;min-height:60px;resize:vertical;background:transparent;border:0;padding:3px;margin-bottom:8px}
+    #fleet-console-preview textarea::placeholder{color:var(--fc-muted)}
+    #fleet-console-preview .fc-quick{display:grid;grid-template-columns:1fr 1fr 1fr;gap:7px;margin-top:10px}
+    #fleet-console-preview .fc-quick button{font-size:12px}
+    #fleet-console-preview .fc-quick button:last-child{color:var(--fc-warn)}
+    #fleet-console-preview .fc-divider{border:0;border-top:1px solid var(--fc-line);margin:18px 0}
+    #fleet-console-preview .fc-receipt{display:flex;gap:9px;align-items:flex-start;color:var(--fc-muted);font-size:12px}
+    #fleet-console-preview .fc-receipt i{color:var(--fc-accent)}
+    #fleet-console-preview .fc-receipt strong{display:block;color:var(--fc-text);font-size:14px;font-weight:500}
+    #fleet-console-preview .fc-footer{border-top:1px solid var(--fc-line);padding:11px 15px;display:flex;justify-content:space-between;align-items:center;font-size:12px;color:var(--fc-muted);gap:8px}
+    #fleet-console-preview .fc-dot{display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--fc-accent);margin-right:5px}
+    #fleet-console-preview .fc-group{padding:12px;border:1px solid var(--fc-line);border-radius:8px;margin-bottom:10px}
+    #fleet-console-preview .fc-group p{margin:8px 0 0;font-size:12px;color:var(--fc-muted)}
+    #fleet-console-preview .fc-group strong{font-weight:500}
+    #fleet-console-preview .fc-step{display:flex;gap:10px;padding:10px 0}
+    #fleet-console-preview .fc-step-num{width:24px;height:24px;flex-shrink:0;display:grid;place-items:center;border:1px solid var(--fc-line);border-radius:50%;color:var(--fc-muted);font-size:12px}
+    #fleet-console-preview .fc-step-current .fc-step-num{background:var(--fc-accent);border-color:var(--fc-accent);color:var(--fc-bg)}
+    #fleet-console-preview .fc-step-current{color:var(--fc-accent)}
+    #fleet-console-preview .fc-stage-action{width:100%;margin-top:10px}
+    #fleet-console-preview .fc-scene{min-width:0;border:1px solid var(--fc-line);border-radius:10px;background:var(--fc-panel);overflow:hidden}
+    #fleet-console-preview .fc-scene-toolbar{padding:11px 13px;display:flex;gap:8px;align-items:center;justify-content:space-between;flex-wrap:wrap}
+    #fleet-console-preview .fc-scene-toolbar button{font-size:12px;padding:6px 9px}
+    #fleet-console-preview .fc-map{position:relative;height:353px;background:var(--fc-sea);overflow:hidden}
+    #fleet-console-preview .fc-grid{position:absolute;inset:0;background-image:linear-gradient(var(--fc-line) 1px,transparent 1px),linear-gradient(90deg,var(--fc-line) 1px,transparent 1px);background-size:44px 44px;opacity:.3;transform:perspective(600px) rotateX(32deg) scale(1.3)}
+    #fleet-console-preview .fc-map-label{position:absolute;left:14px;top:13px;font-size:12px;color:var(--fc-muted)}
+    #fleet-console-preview .fc-compass{position:absolute;right:15px;top:14px;color:var(--fc-muted);text-align:center;font-size:12px}
+    #fleet-console-preview .fc-zone{position:absolute;width:32%;height:42%;top:35%;left:12%;border:1px dashed var(--fc-accent);border-radius:50%;background:color-mix(in srgb,var(--fc-accent) 5%,transparent);transform:rotate(-15deg)}
+    #fleet-console-preview .fc-zone.second{left:55%;top:22%;border-color:var(--fc-warn);background:color-mix(in srgb,var(--fc-warn) 5%,transparent)}
+    #fleet-console-preview .fc-map-unit{position:absolute;display:flex;flex-direction:column;align-items:center;gap:3px;transform:translate(-50%,-50%);font-size:11px;white-space:nowrap;color:var(--fc-accent)}
+    #fleet-console-preview .fc-map-unit span{color:var(--fc-text);padding:1px 4px;background:var(--fc-sea);border-radius:3px}
+    #fleet-console-preview .fc-map-unit.fc-target{color:var(--fc-danger)}
+    #fleet-console-preview .fc-map-unit.fc-protected{color:var(--fc-warn)}
+    #fleet-console-preview .fc-map-unit svg{width:23px;height:23px}
+    #fleet-console-preview .fc-map-unit.fc-protected svg{width:31px;height:31px}
+    #fleet-console-preview .fc-map-legend{position:absolute;bottom:12px;left:14px;right:14px;font-size:11px;color:var(--fc-muted);display:flex;justify-content:space-between}
+    #fleet-console-preview .fc-status{padding:13px 15px}
+    #fleet-console-preview .fc-progress{height:4px;background:var(--fc-raised);border-radius:3px;overflow:hidden;margin-top:10px}
+    #fleet-console-preview .fc-progress-fill{height:100%;width:68%;background:var(--fc-accent);transition:width .2s}
+    #fleet-console-preview .fc-fleet{margin-top:12px;display:flex;gap:6px;flex-wrap:wrap}
+    #fleet-console-preview .fc-fleet button{flex:1;padding:7px 6px;min-width:65px;font-size:11px}
+    #fleet-console-preview .fc-inline-detail{padding:9px 2px;color:var(--fc-muted);font-size:12px}
+    #fleet-console-preview .fc-inline-detail:empty{display:none}
+    #fleet-console-preview .fc-scene-toolbar select{width:auto;max-width:150px;padding:5px 8px;font-size:12px}
+    #fleet-console-preview .fc-layer{grid-column:1/-1;background:var(--fc-panel);border:1px solid var(--fc-accent);border-radius:10px;padding:17px}
+    #fleet-console-preview .fc-layer-head{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:14px}
+    #fleet-console-preview .fc-catalog-group{margin-top:14px}
+    #fleet-console-preview .fc-command-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:7px;margin-top:8px}
+    #fleet-console-preview .fc-command-grid button{justify-content:flex-start;text-align:left;font-size:12px}
+    #fleet-console-preview .fc-command-grid b{color:var(--fc-accent);font-weight:500;min-width:20px}
+    #fleet-console-preview .fc-fields{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}
+    #fleet-console-preview .fc-fields label{display:flex;flex-direction:column;gap:7px;font-size:12px;color:var(--fc-muted)}
+    #fleet-console-preview select,#fleet-console-preview input{width:100%;padding:8px;background:var(--fc-bg);border:1px solid var(--fc-line);border-radius:6px}
+    #fleet-console-preview .fc-diagnostic{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
+    #fleet-console-preview .fc-diagnostic div{padding:10px;background:var(--fc-raised);border-radius:6px}
+    #fleet-console-preview .fc-notice{padding:10px 0 0;color:var(--fc-muted);font-size:12px}
+    #fleet-console-preview .fc-review{padding:13px;border:1px solid var(--fc-accent);border-radius:8px;margin-top:10px;background:var(--fc-soft)}
+    #fleet-console-preview .fc-review .fc-row{margin-top:12px}
+    #fleet-console-preview .fc-review .fc-sub{margin-top:5px}
+    #fleet-console-preview .fc-alert{color:var(--fc-danger);font-size:12px;margin-top:6px}
+    #fleet-console-preview .fc-floating{display:none}
+    #fleet-console-preview[data-layout="minimal"] .fc-layout{grid-template-columns:64px minmax(0,1fr)}
+    #fleet-console-preview[data-layout="minimal"] .fc-console-head,#fleet-console-preview[data-layout="minimal"] .fc-footer{display:none}
+    #fleet-console-preview[data-layout="minimal"] .fc-pane{padding:6px}
+    #fleet-console-preview[data-layout="minimal"] .fc-stage-action{padding:9px 4px;border:0;margin-top:0;flex-direction:column;font-size:12px}
+    #fleet-console-preview[data-layout="minimal"] .fc-tabs,#fleet-console-preview[data-layout="minimal"] .fc-main-composer,#fleet-console-preview[data-layout="minimal"] .fc-history-block{display:none}
+    #fleet-console-preview[data-layout="minimal"] .fc-floating{display:block;margin-top:12px;padding:14px;background:var(--fc-panel);border:1px solid var(--fc-line);border-radius:10px}
+    #fleet-console-preview[data-layout="minimal"] .fc-footer{flex-wrap:wrap}
+    #fleet-console-preview .fc-bottom{margin-top:12px;font-size:11px;color:var(--fc-muted);display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap}
+    #fleet-console-preview .fc-bottom:has(#fc-feedback:empty){display:none}
+    #fleet-console-preview #fc-step-section{display:flex;gap:9px;margin-bottom:16px;align-items:center;font-size:12px;color:var(--fc-muted)}
+    #fleet-console-preview #fc-step-section span:last-child{color:var(--fc-accent)}
+    #fleet-console-preview[data-layout="minimal"] #fc-composer{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:12px;align-items:center}
+    #fleet-console-preview[data-layout="minimal"] .fc-composer{display:flex;gap:10px;align-items:center}
+    #fleet-console-preview[data-layout="minimal"] textarea{min-height:36px;height:36px;margin:0;flex:1;min-width:50px;resize:none}
+    #fleet-console-preview[data-layout="minimal"] .fc-composer .fc-row{flex-shrink:0}
+    #fleet-console-preview[data-layout="minimal"] .fc-quick{margin:0}
+    #fleet-console-preview[data-layout="minimal"] .fc-review,#fleet-console-preview[data-layout="minimal"] .fc-alert{grid-column:1/-1;grid-row:2}
+    @media(max-width:760px){#fleet-console-preview .fc-shell{grid-template-columns:1fr}#fleet-console-preview .fc-rail{display:none}#fleet-console-preview .fc-workspace{padding:12px}#fleet-console-preview .fc-layout{grid-template-columns:230px minmax(0,1fr)}#fleet-console-preview .fc-map{height:350px}#fleet-console-preview .fc-command-grid{grid-template-columns:repeat(2,minmax(0,1fr))}#fleet-console-preview[data-layout="minimal"] #fc-composer{grid-template-columns:1fr}#fleet-console-preview[data-layout="minimal"] .fc-review,#fleet-console-preview[data-layout="minimal"] .fc-alert{grid-row:auto}}
+    @media(max-width:600px){#fleet-console-preview .fc-layout,#fleet-console-preview[data-layout="minimal"] .fc-layout{grid-template-columns:minmax(0,1fr)}#fleet-console-preview .fc-top{padding:12px}#fleet-console-preview .fc-map{height:310px}#fleet-console-preview .fc-fields,#fleet-console-preview .fc-diagnostic{grid-template-columns:1fr}#fleet-console-preview .fc-command-grid{grid-template-columns:1fr}#fleet-console-preview .fc-brand .fc-sub{display:none}#fleet-console-preview textarea{font-size:16px}}
+    @media(max-width:600px){#fleet-console-preview #fc-minimal-actions{display:flex;gap:8px}#fleet-console-preview[data-layout="minimal"] .fc-stage-action{width:auto;flex:1;flex-direction:row}#fleet-console-preview[data-layout="minimal"] .fc-composer{display:block}}
+    @media(pointer:coarse){#fleet-console-preview button{min-height:44px}}
+  </style>
+  <header class="fc-top">
+    <div class="fc-brand"><span class="fc-brand-mark"><i data-lucide="navigation" aria-hidden="true"></i></span>UAV–USV</div>
+    <span class="fc-sub">模拟预览</span>
+  </header>
+  <div class="fc-shell">
+    <nav class="fc-rail" aria-label="平台导航">
+      <button type="button" class="fc-selected" aria-label="协同仿真" data-nav="协同仿真"><i data-lucide="activity" aria-hidden="true"></i></button>
+      <button type="button" aria-label="任务记录" data-open="history"><i data-lucide="route" aria-hidden="true"></i></button>
+      <button type="button" aria-label="设备诊断" data-open="diagnostics"><i data-lucide="radio" aria-hidden="true"></i></button>
+      <button type="button" aria-label="场景配置" data-open="settings"><i data-lucide="settings-2" aria-hidden="true"></i></button>
+    </nav>
+    <main class="fc-workspace">
+      <div class="fc-heading"><h2>协同仿真</h2><button type="button" class="fc-quiet" data-open="settings" aria-label="场景配置"><i data-lucide="sliders-horizontal" aria-hidden="true"></i></button></div>
+      <div class="fc-layout">
+        <aside class="fc-console">
+          <div class="fc-console-head"><div class="fc-row fc-between"><div class="fc-tabs" role="tablist" aria-label="控制台内容"><button type="button" id="fc-control-tab" role="tab" aria-selected="true" aria-controls="fc-control-pane" data-tab="control">指令</button><button type="button" id="fc-group-tab" role="tab" aria-selected="false" aria-controls="fc-group-pane" data-tab="group">编组</button></div><button type="button" class="fc-quiet" data-open="catalog" aria-label="全部指令"><i data-lucide="list" aria-hidden="true"></i></button></div></div>
+          <section class="fc-pane" id="fc-control-pane" role="tabpanel" aria-labelledby="fc-control-tab">
+            <div id="fc-step-section" hidden><span>✓ 部署</span><span>›</span><span>✓ 编组</span><span>›</span><span id="fc-step-title">围捕</span></div>
+            <div class="fc-main-composer" id="fc-composer-home"><div id="fc-composer">
+              <div class="fc-composer"><textarea id="fc-command-input" aria-label="语音或文字指令" placeholder="输入指令或编号"></textarea><div class="fc-row fc-between"><button type="button" class="fc-quiet" id="fc-mic" aria-label="模拟语音输入" aria-pressed="false"><i data-lucide="mic" aria-hidden="true"></i></button><button type="button" class="fc-primary" id="fc-preview-command">预览</button></div></div>
+              <div class="fc-alert" id="fc-error" role="alert" hidden></div>
+              <div class="fc-review" id="fc-review" hidden><strong id="fc-review-title"></strong><div class="fc-sub" id="fc-review-detail"></div><div class="fc-row"><button type="button" class="fc-primary" id="fc-confirm">确认</button><button type="button" id="fc-cancel">取消</button></div></div>
+              <div class="fc-quick"><button type="button" data-command="19" aria-label="19号指令：守卫">守卫</button><button type="button" data-command="20" aria-label="20号指令：围捕">围捕</button><button type="button" data-command="0" aria-label="0号指令：撤退并恢复护航">撤退</button></div>
+            </div></div>
+            <div id="fc-minimal-actions" hidden><button type="button" class="fc-stage-action" data-open="catalog"><i data-lucide="list" aria-hidden="true"></i>指令</button><button type="button" class="fc-stage-action" data-open="groups"><i data-lucide="group" aria-hidden="true"></i>编组</button><button type="button" class="fc-stage-action" data-open="history"><i data-lucide="history" aria-hidden="true"></i>记录</button><button type="button" class="fc-stage-action" data-open="diagnostics"><i data-lucide="radio" aria-hidden="true"></i>连接</button></div>
+          </section>
+          <section class="fc-pane" id="fc-group-pane" role="tabpanel" aria-labelledby="fc-group-tab" hidden>
+            <div class="fc-group"><strong>T1</strong><p>UAV-001 / 002 / 003</p></div>
+            <div class="fc-group"><strong>T2</strong><p>USV-001 / 002 / 003</p></div>
+            <button type="button" class="fc-stage-action" data-open="catalog">调整编组</button>
+          </section>
+          <div class="fc-footer"><button type="button" class="fc-quiet fc-sub" data-open="diagnostics"><span class="fc-dot"></span>连接</button><button type="button" class="fc-quiet fc-sub" data-open="history">记录</button></div>
+        </aside>
+        <section aria-label="协同态势预览">
+          <div class="fc-scene">
+            <div class="fc-scene-toolbar"><select id="fc-camera" aria-label="跟随设备"><option value="">全局</option>UAV-001</option><option>UAV-002</option><option>UAV-003</option><option>USV-001</option><option>USV-002</option><option>USV-003</option></select><div class="fc-row"><button type="button" id="fc-pause"><i data-lucide="pause" aria-hidden="true"></i><span>暂停</span></button></div></div>
+            <div class="fc-map" role="img" aria-label="示意仿真场景：两组设备分别围绕 T1 与 T2，护航目标位于左下方。">
+              <div class="fc-grid"></div><div class="fc-compass">↑<br>N</div><div class="fc-zone"></div><div class="fc-zone second"></div>
+              <div class="fc-map-unit" style="left:16%;top:42%"><i data-lucide="plane" aria-hidden="true"></i><span>UAV-001</span></div>
+              <div class="fc-map-unit" style="left:40%;top:49%"><i data-lucide="plane" aria-hidden="true"></i><span>UAV-002</span></div>
+              <div class="fc-map-unit" style="left:23%;top:75%"><i data-lucide="plane" aria-hidden="true"></i><span>UAV-003</span></div>
+              <div class="fc-map-unit fc-target" style="left:29%;top:57%"><i data-lucide="triangle" aria-hidden="true"></i><span>T1</span></div>
+              <div class="fc-map-unit" style="left:62%;top:26%"><i data-lucide="ship" aria-hidden="true"></i><span>USV-001</span></div>
+              <div class="fc-map-unit" style="left:85%;top:40%"><i data-lucide="ship" aria-hidden="true"></i><span>USV-002</span></div>
+              <div class="fc-map-unit" style="left:63%;top:64%"><i data-lucide="ship" aria-hidden="true"></i><span>USV-003</span></div>
+              <div class="fc-map-unit fc-target" style="left:71%;top:44%"><i data-lucide="triangle" aria-hidden="true"></i><span>T2</span></div>
+              <div class="fc-map-unit fc-protected" style="left:47%;top:85%"><i data-lucide="ship" aria-hidden="true"></i><span>护航目标</span></div>
+            </div>
+            <div class="fc-status"><div class="fc-row fc-between"><span id="fc-mission-status">协同围捕中</span><span class="fc-sub" id="fc-progress-text">68% · 已捕获 0/2</span></div><div class="fc-progress" role="progressbar" aria-label="任务进度" aria-valuenow="68" aria-valuemin="0" aria-valuemax="100"><div class="fc-progress-fill"></div></div></div>
+          </div>
+          <div class="fc-inline-detail" id="fc-device-detail"></div>
+        </section>
+        <div class="fc-layer" id="fc-layer" hidden><div class="fc-layer-head"><h3 id="fc-layer-title"></h3><button type="button" class="fc-quiet" id="fc-close-layer" aria-label="关闭详情"><i data-lucide="x" aria-hidden="true"></i></button></div><div id="fc-layer-content"></div></div>
+      </div>
+      <div class="fc-floating" id="fc-composer-floating"></div>
+      <div class="fc-bottom"><span id="fc-feedback" role="status" aria-live="polite"></span></div>
+    </main>
+  </div>
+  <script>
+    (() => {
+      const root = document.getElementById('fleet-console-preview');
+      const q = s => root.querySelector(s);
+      const qa = s => [...root.querySelectorAll(s)];
+      const state = { layout:root.dataset.initialLayout || 'minimal', phase:'capturing' };
+      const labels = ['撤退并恢复护航','U1 追击 T1','S1 追击 T1','U2 追击 T2','S2 追击 T2','U3 追击 T1','S3 追击 T2','U1 追击 T2','S1 追击 T2','U2 追击 T1','S2 追击 T1','U3 追击 T2','S3 追击 T1','T1 ← U1 / U2 / U3','T2 ← S1 / S2 / S3','T1 ← S1 / S2 / S3','T2 ← U1 / U2 / U3','T1 ← U1 / S1 / U2','T2 ← S2 / U3 / S3','分层守卫','协同围捕'];
+      const logs = ['14:32:08　20 · 协同围捕','14:31:56　14 · T2 水面组绑定','14:31:42　13 · T1 空中组绑定'];
+      let pending = null, paused = false, mic = false;
+      const icons = () => { if (globalThis.lucide) globalThis.lucide.createIcons({attrs:{width:16,height:16}}); };
+      const feedback = text => { q('#fc-feedback').textContent = text; };
+      function tab(name) {
+        qa('[data-tab]').forEach(el => el.setAttribute('aria-selected', String(el.dataset.tab === name)));
+        q('#fc-control-pane').hidden = name !== 'control';
+        q('#fc-group-pane').hidden = name !== 'group';
+      }
+      function render() {
+        root.dataset.layout = state.layout;
+        q('#fc-step-section').hidden = state.layout !== 'steps';
+        q('#fc-minimal-actions').hidden = state.layout !== 'minimal';
+        (state.layout === 'minimal' ? q('#fc-composer-floating') : q('#fc-composer-home')).append(q('#fc-composer'));
+        if (state.layout === 'minimal') tab('control');
+        const done = state.phase === 'complete', ready = state.phase === 'ready';
+        const progress = done ? 100 : ready ? 0 : 68;
+        q('#fc-mission-status').textContent = done ? '围捕完成' : ready ? '护航待命' : paused ? '协同围捕 · 已暂停' : '协同围捕中';
+        q('#fc-progress-text').textContent = `${progress}% · 已捕获 ${done ? 2 : 0}/2`;
+        q('.fc-progress-fill').style.width = progress + '%';
+        q('.fc-progress').setAttribute('aria-valuenow',String(progress));
+        q('#fc-step-title').textContent = done ? '完成' : ready ? '待命' : '围捕';
+      }
+      function preview(value) {
+        q('#fc-error').hidden = true;
+        if (!/^\d+$/.test(String(value)) || Number(value) > 20) {
+          q('#fc-error').textContent = '请明确一个 0–20 的指令编号';
+          q('#fc-error').hidden = false; q('#fc-review').hidden = true; pending = null; return;
+        }
+        pending = Number(value);
+        q('#fc-command-input').value = String(pending);
+        q('#fc-review-title').textContent = `${pending} · ${labels[pending]}`;
+        q('#fc-review-detail').textContent = pending === 0 ? '清除编组，恢复护航' : '';
+        q('#fc-review').hidden = false;
+        tab('control'); feedback('');
+      }
+      function openLayer(type) {
+        q('#fc-layer').hidden = false;
+        const area = q('#fc-layer-content');
+        if (type === 'groups' && state.layout !== 'minimal') { tab('group'); q('#fc-layer').hidden = true;return; }
+        const titles = {catalog:'指令目录 · 0–20',settings:'场景配置',diagnostics:'连接与节点诊断',history:'指令记录',groups:'当前编组'};
+        q('#fc-layer-title').textContent = titles[type] || '任务详情';
+        if (type === 'catalog') {
+          area.innerHTML = [[1,12,'单设备追击'],[13,18,'目标编组'],[19,20,'协同战术'],[0,0,'撤退护航']].map(([from,to,name]) => `<div class="fc-catalog-group"><div class="fc-sub">${name}</div><div class="fc-command-grid">${Array.from({length:to-from+1},(_,i)=>i+from).map(n=>`<button type="button" data-command="${n}"><b>${n}</b>${labels[n]}</button>`).join('')}</div></div>`).join('');
+        } else if(type === 'settings') {
+          area.innerHTML = '<div class="fc-fields"><label>算法版本<select><option>10 月 20 日 · 指令版</option><option>自适应护航 · 旧版</option></select></label><label>敌方目标<select id="fc-setting-targets"><option value="2">2 个目标</option><option value="1">1 个目标</option></select></label><label>目标速度（m/s）<input type="number" value="4" min="1" max="20" step="1"></label></div><div class="fc-notice">3 架 UAV / 3 艘 USV · 参数将在重新生成场景时应用</div><div class="fc-row" style="margin-top:14px"><button type="button" class="fc-primary" data-save-settings>保存配置预览</button></div>';
+        } else if(type === 'diagnostics') {
+          area.innerHTML = '<div class="fc-diagnostic"><div><span class="fc-sub">WebGL 场景</span><br>仿真已连接</div><div><span class="fc-sub">算法服务</span><br>连接正常</div><div><span class="fc-sub">实体平台心跳</span><br>0 / 6 接入</div></div><div class="fc-notice">UAV-001 / 002 / 003 与 USV-001 / 002 / 003：状态未知，尚无实机心跳。该状态独立于仿真设备状态。</div>';
+        } else if(type === 'groups') {
+          area.innerHTML = '<div class="fc-group"><strong>T1 · UAV-001 / UAV-002 / UAV-003</strong></div><div class="fc-group"><strong>T2 · USV-001 / USV-002 / USV-003</strong></div>';
+        } else {
+          area.replaceChildren(...logs.map(text=>{const el=document.createElement('div');el.className='fc-group';el.textContent=text;return el;}));
+        }
+        icons();
+      }
+      root.addEventListener('click',e=>{
+        const b=e.target.closest('button'); if(!b)return;
+        if(b.dataset.tab)tab(b.dataset.tab);
+        if(b.dataset.open)openLayer(b.dataset.open);
+        if(b.dataset.command!==undefined){preview(b.dataset.command);q('#fc-layer').hidden=true;}
+        if(b.hasAttribute('data-save-settings')){feedback(`配置预览已保存：${q('#fc-setting-targets').value} 个目标；当前示意场景未重新生成。`);q('#fc-layer').hidden=true;}
+        if(b.dataset.nav)feedback('当前位于协同仿真设计预览');
+      });
+      q('#fc-preview-command').addEventListener('click',()=>{
+        const text=q('#fc-command-input').value.normalize('NFKC').replace(/\s+/g,'').replace(/[。!，,]+$/,'');
+        const roman=['','I','II','III','IV','V','VI','VII','VIII','IX','X','XI','XII','XIII','XIV','XV','XVI','XVII','XVIII','XIX','XX'];
+        const chinese=['零','一','二','三','四','五','六','七','八','九','十','十一','十二','十三','十四','十五','十六','十七','十八','十九','二十'];
+        const bare=text.replace(/^(?:请)?(?:帮我)?(?:执行)?/,'').replace(/(?:一下)?吧?$/,'');
+        const match=bare.match(/^(?:第([零一二三四五六七八九十\dIVXivx]+)(?:号|条|个)?|([零一二三四五六七八九十\dIVXivx]+)(?:号|条)?)(?:指令|命令)?$/)||bare.match(/^(?:指令|命令)([零一二三四五六七八九十\dIVXivx]+)$/);
+        const token=match?.[1]||match?.[2];
+        const id=token ? (/^\d+$/.test(token) ? Number(token) : chinese.includes(token) ? chinese.indexOf(token) : roman.indexOf(token.toUpperCase())) : ({'撤退':0,'恢复护航':0,'围捕':20,'守卫':19})[bare];
+        preview(id===undefined||id<0?'':id);
+      });
+      q('#fc-mic').addEventListener('click',()=>{mic=!mic;q('#fc-mic').setAttribute('aria-pressed',String(mic));q('#fc-mic').setAttribute('aria-label',mic?'结束模拟录音':'模拟语音输入');q('#fc-mic').classList.toggle('fc-selected',mic);if(mic){feedback('模拟录音中…');}else{q('#fc-command-input').value='执行第二十条指令';feedback('模拟识别完成');}});
+      q('#fc-confirm').addEventListener('click',()=>{
+        if(pending===null)return;
+        const caption=`${pending} · ${labels[pending]}`;
+        logs.unshift('刚刚　'+caption+'（模拟）');
+        if(pending===20)state.phase='capturing';if(pending===0||pending===19)state.phase='ready';
+        q('#fc-review').hidden=true;feedback('模拟执行成功 · '+caption);pending=null;render();
+      });
+      q('#fc-cancel').addEventListener('click',()=>{pending=null;q('#fc-review').hidden=true;feedback('已取消待确认指令');});
+      q('#fc-close-layer').addEventListener('click',()=>{q('#fc-layer').hidden=true;});
+      q('#fc-pause').addEventListener('click',()=>{paused=!paused;q('#fc-pause span').textContent=paused?'继续':'暂停';render();feedback(paused?'仿真暂停状态预览':'仿真运行状态预览');});
+      q('#fc-camera').addEventListener('change',()=>{const code=q('#fc-camera').value;q('#fc-device-detail').textContent=code ? code+' · '+(code.startsWith('UAV')?'T1':'T2') : '';});
+      render();
+      if(globalThis.Tweak){
+        const tweak=new Tweak({container:root,onChange:render});
+        tweak.addSelect(state,'layout',{label:'控制台方案',options:[{label:'A · 精简面板',value:'command'},{label:'B · 紧凑步骤',value:'steps'},{label:'C · 极简侧栏（推荐）',value:'minimal'}]});
+        tweak.addSelect(state,'phase',{label:'任务状态',options:[{label:'护航待命',value:'ready'},{label:'围捕中',value:'capturing'},{label:'围捕完成',value:'complete'}]});
+      }
+    })();
+  </script>
+</div>

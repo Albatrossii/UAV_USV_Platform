@@ -91,6 +91,10 @@ public class VoiceStore {
     }
 
     public void execution(ObjectNode n) {
+        execution(n, true);
+    }
+
+    public void execution(ObjectNode n, boolean createOutbox) {
         jdbc.update(
                 "INSERT INTO"
                     + " voice_execution(id,proposal_id,command_id,runtime_ref,owner_id,state,data_json)"
@@ -102,9 +106,10 @@ public class VoiceStore {
                 n.path("_owner").asLong(),
                 n.path("state").asText(),
                 n.toString());
-        jdbc.update(
-                "INSERT INTO voice_outbox(execution_id,status,claimed_at) VALUES (?,'READY',NULL)",
-                n.path("_id").asText());
+        if (createOutbox)
+            jdbc.update(
+                    "INSERT INTO voice_outbox(execution_id,status,claimed_at) VALUES (?,'READY',NULL)",
+                    n.path("_id").asText());
     }
 
     public String replay(long user, String op, String key, String hash) {

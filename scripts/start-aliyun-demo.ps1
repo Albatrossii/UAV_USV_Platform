@@ -286,11 +286,19 @@ $environment = @{
 }
 
 $previous = Set-ScopedEnvironment $environment
+$transcriptStarted = $false
 try {
+  $logDirectory = Join-Path $repo '.logs'
+  $null = New-Item -ItemType Directory -Path $logDirectory -Force
+  $logPath = Join-Path $logDirectory ('demo-' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '.log')
+  $null = Start-Transcript -LiteralPath $logPath
+  $transcriptStarted = $true
+  Write-Host "Local startup log: $logPath (review before sharing; may include application logs)."
   Write-Host "Starting full voice-control demo at http://127.0.0.1:$frontendPort/?workspace=simulation" -ForegroundColor Cyan
   Write-Host 'Press Ctrl+C to stop the foreground development services.'
   & $node $devScript
   if ($LASTEXITCODE -ne 0) { throw "Development services exited with code $LASTEXITCODE." }
 } finally {
+  if ($transcriptStarted) { $null = Stop-Transcript }
   Restore-ScopedEnvironment $previous
 }

@@ -15,6 +15,7 @@
 - [前后端模块规划](docs/frontend-backend-roadmap.md)
 - [任务管理模块设计](docs/mission-management-design.md)
 - [阿里云语音控制快速启动](docs/voice-control-p1/ALIYUN-QUICKSTART.md)
+- [2–4 步语音、设备动作进度与实验回放](docs/voice-control-p1/next-stages-20261010.md)
 
 ## 当前开发状态
 

@@ -14,7 +14,7 @@ import type { UnityPresentationOutgoing } from '@/types/voiceControl'
 
 const RUNTIME_SCOPE = 'VIRTUAL_FLEET' as const
 const RUNTIME_INSTANCE_ID = 'virtual-fleet-unity-01'
-const WEBGL_SOURCE = '/unity-virtual-fleet/index.html?embedded=1&build=20260825-v8'
+const WEBGL_SOURCE = '/unity-virtual-fleet/index.html?embedded=1&build=20261021-command-camera'
 
 const emit = defineEmits<{
   unityReady: []
@@ -31,6 +31,8 @@ const loading = ref(true)
 const ready = ref(false)
 const errorMessage = ref('')
 const loadHint = ref('正在加载算法仿真 Unity WebGL')
+const loadProgress = ref(0)
+const loadSlow = ref(false)
 const reloadToken = ref(Date.now())
 const seenPoseReceipts = new Set<string>()
 
@@ -49,7 +51,6 @@ const iframeUrl = computed(() => appendUnityRuntimeParams(WEBGL_SOURCE, {
   scope: RUNTIME_SCOPE,
   instanceId: RUNTIME_INSTANCE_ID,
 }))
-const statusText = computed(() => ready.value ? 'UNITY WEBGL ONLINE' : 'WAITING FOR WEBGL')
 
 function markReady(payload: Record<string, unknown> = {}) {
   if (probeTimer !== null) {
@@ -69,6 +70,8 @@ function markReady(payload: Record<string, unknown> = {}) {
   bridge.setConnectedFor(RUNTIME_SCOPE, true)
   loading.value = false
   ready.value = true
+  loadProgress.value = 100
+  loadSlow.value = false
   errorMessage.value = ''
   loadHint.value = '算法仿真 Unity WebGL 已连接'
   flushOutbox()
@@ -123,8 +126,10 @@ function handleWindowMessage(event: MessageEvent) {
 
   if (message.type === 'unityProgress') {
     const progress = Number(message.payload?.progress ?? 0)
-    if (Number.isFinite(progress) && progress > 0) {
-      loadHint.value = `算法仿真 Unity WebGL 加载中 ${(progress * 100).toFixed(0)}%`
+    if (loading.value && Number.isFinite(progress) && progress >= 0 && progress <= 1) {
+      loadProgress.value = Math.max(loadProgress.value, Math.round(progress * 100))
+      loadHint.value = loadProgress.value === 100 ? '资源已加载，正在等待 Unity 控制桥就绪'
+        : `算法仿真 Unity WebGL 加载中 ${loadProgress.value}%`
     }
   } else if (message.type === 'unityError' || message.type === 'unityBridgeError') {
     markError(String(message.payload?.message ?? '算法仿真 Unity WebGL 加载失败'))
@@ -251,14 +256,16 @@ function startProbe() {
   if (probeTimer !== null) window.clearInterval(probeTimer)
   const startedAt = Date.now()
   probeTimer = window.setInterval(() => {
+    if (Date.now() - startedAt > 120000) {
+      loadSlow.value = true
+      loadHint.value = '加载时间较长，可继续等待或重试画面加载；不会重置仿真任务'
+    }
     const frameDocument = iframeRef.value?.contentDocument
     const frameWindow = iframeRef.value?.contentWindow as UnityFrameWindow | null | undefined
     if (!frameDocument || !frameWindow) return
     const warning = frameDocument.querySelector('#unity-warning')?.textContent?.trim() ?? ''
     if (/does not support WebGL|WebGL\s*not\s*supported/i.test(warning)) {
       markError('浏览器 WebGL 不可用，请启用硬件加速')
-    } else if (Date.now() - startedAt > 120000) {
-      loadHint.value = '算法仿真 WebGL 仍在加载，请检查构建包或硬件加速'
     }
   }, 500)
 }
@@ -267,6 +274,8 @@ function handleIframeLoad() {
   bridge.setConnectedFor(RUNTIME_SCOPE, false)
   seenPoseReceipts.clear()
   loading.value = true
+  loadProgress.value = 0
+  loadSlow.value = false
   ready.value = false
   readyEmitted = false
   errorMessage.value = ''
@@ -278,6 +287,8 @@ function handleIframeLoad() {
 function reload() {
   bridge.setConnectedFor(RUNTIME_SCOPE, false)
   loading.value = true
+  loadProgress.value = 0
+  loadSlow.value = false
   ready.value = false
   readyEmitted = false
   errorMessage.value = ''
@@ -341,19 +352,20 @@ onBeforeUnmount(() => {
     ></iframe>
     <div v-if="loading" class="unity-webgl-overlay">
       <strong>Unity WebGL 加载中</strong>
-      <div class="unity-webgl-progress"><i></i></div>
+      <progress class="simulation-load-progress" :value="loadProgress" max="100" aria-label="Unity 资源加载进度" />
       <span>{{ loadHint }}</span>
+      <button v-if="loadSlow" type="button" @click="reload">重试画面加载</button>
     </div>
     <div v-if="errorMessage" class="unity-webgl-overlay error">
       <strong>Unity WebGL 加载失败</strong>
       <p>{{ errorMessage }}</p>
       <button type="button" @click="reload">重新加载</button>
     </div>
-    <div class="unity-webgl-status" :class="ready ? 'ready' : 'pending'"><i></i>{{ statusText }}</div>
   </div>
 </template>
 
 <style scoped>
 .unity-webgl-panel { position: relative; min-width: 0; min-height: 0; overflow: hidden; }
 .unity-webgl-frame { display: block; width: 100%; height: 100%; background: #061113; border: 0; }
+.simulation-load-progress { width: min(280px, 70%); height: 8px; accent-color: #6ce4d5; }
 </style>

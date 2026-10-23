@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import base64
 import json
+import math
 import queue
 import re
 import sys
@@ -14,6 +15,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
 
+from app.adapters.command_escort import CommandEscortAdapter
 from app.adapters import (
     AdaptiveCaptureAdapter,
     AdaptiveEscortAdapter,
@@ -88,8 +90,13 @@ def _command_shape_error(command: dict) -> str | None:
         return "commandSequence must be a positive integer"
     if not _is_contract_int(command.get("expectedStateVersion"), 0):
         return "expectedStateVersion must be a non-negative integer"
-    if command.get("action") not in {"START", "PAUSE", "RESUME", "STOP"}:
+    if command.get("action") not in {"START", "PAUSE", "RESUME", "STOP", "ALGORITHM_PRESET"}:
         return "unsupported action"
+    if command.get("action") == "ALGORITHM_PRESET":
+        p = command.get("parameters")
+        if not isinstance(p, dict) or set(p) != {"presetId", "presetVersion"} or type(p["presetId"]) is not int or not 0 <= p["presetId"] <= 20 or p["presetVersion"] != "escort-20261020":
+            return "invalid algorithm preset"
+        return None
     if command.get("parameters") != {}:
         return "parameters must be an empty object in P0"
     return None
@@ -170,7 +177,7 @@ def _device_command_receipt(adapter, command: dict, runtime_state: str = "RUNNIN
             "USV_RETURN": {"RETURNING", "RETURNED"},
             "UAV_RESUME": {"REJOINING", "ACTIVE"},
             "USV_RESUME": {"REJOINING", "ACTIVE"},
-            "UAV_LAND": {"STOPPED"},
+            "UAV_LAND": {"RETURNING", "RETURNED"},
             "USV_STOP": {"STOPPED"},
         }
         success = device_status in expected_statuses.get(command_type, set())
@@ -210,6 +217,8 @@ def v1_main(args: argparse.Namespace, adapter, config: dict) -> int:
     capabilities = ["START", "PAUSE", "RESUME", "STOP"]
     if hasattr(adapter, "control_device"):
         capabilities.append("DEVICE_COMMAND")
+    if getattr(getattr(adapter, "base", adapter), "preset_profile", None):
+        capabilities.append("ALGORITHM_PRESET")
     emit_v1({"runtimeRef": runtime_ref, "runtimeGeneration": generation,
              "kind": "RUNTIME_READY", "adapterId": adapter.code,
              "capabilities": capabilities,
@@ -223,7 +232,7 @@ def v1_main(args: argparse.Namespace, adapter, config: dict) -> int:
                  "kind": "PROTOCOL_ERROR", "relatedCommandId": related_command_id,
                  "errorCode": error_code, "detail": detail[:256]})
 
-    def result(command: dict, status: str, error: str | None = None) -> dict:
+    def result(command: dict, status: str, error: str | None = None, preset_execution=None) -> dict:
         nonlocal state_version
         cid = str(command.get("commandId", ""))
         event_sequences[cid] = event_sequences.get(cid, 0) + 1
@@ -237,6 +246,8 @@ def v1_main(args: argparse.Namespace, adapter, config: dict) -> int:
                    "lastFrameSequence": last_frame_sequence,
                    "errorCode": error,
                    "affectedDeviceCodes": _device_codes(frame) if status == "SUCCEEDED" else []}
+        if preset_execution is not None:
+            payload['presetExecution'] = preset_execution
         result_cache.setdefault(cid, []).append(payload)
         emit_v1(payload)
         return payload
@@ -312,29 +323,38 @@ def v1_main(args: argparse.Namespace, adapter, config: dict) -> int:
                     command_sequence += 1
                     action = command["action"]
                     allowed = {"START": {"PREPARED", "PREVIEW"}, "PAUSE": {"RUNNING"},
-                               "RESUME": {"PAUSED"}, "STOP": {"PREPARED", "PREVIEW", "RUNNING", "PAUSED"}}[action]
+                               "RESUME": {"PAUSED"}, "STOP": {"PREPARED", "PREVIEW", "RUNNING", "PAUSED"},
+                               "ALGORITHM_PRESET": {"RUNNING"}}[action]
                     if state not in allowed:
                         result(command, "REJECTED", "INVALID_STATE")
                     elif command["expectedStateVersion"] != state_version:
                         result(command, "REJECTED", "STATE_VERSION_MISMATCH")
                     else:
                         result(command, "ACCEPTED")
+                        preset_execution = None
                         try:
-                            if action in {"START", "RESUME"}:
+                            if action == "ALGORITHM_PRESET":
+                                preset_execution = adapter.execute_preset(command["parameters"]["presetId"], command["parameters"]["presetVersion"], cid)
+                            elif action in {"START", "RESUME"}:
                                 adapter.set_mission_active(True)
                                 state = "RUNNING"
                             elif action == "PAUSE":
                                 adapter.set_mission_active(False)
                                 state = "PAUSED"
                             else:
+                                adapter.cancel_pending_presets()
+                                adapter.set_mission_active(False)
                                 state = "STOPPED"
-                        except ValueError:
+                        except ValueError as error:
                             # Adapter business rejection is a failed command, not
                             # process death. Do not expose exception details or
                             # invent a successful state/version transition.
-                            result(command, "FAILED", "ADAPTER_ERROR")
+                            result(command, "FAILED", str(error) if str(error) in {"PRESET_INVALID", "PRESET_REJECTED", "PRESET_CAPTURE_NOT_READY", "PRESET_DEVICE_OVERRIDE", "PRESET_DEPLOYING", "PRESET_TARGET_MISSING"} else "ADAPTER_ERROR")
                         else:
-                            result(command, "SUCCEEDED")
+                            # A successful scheduling receipt releases the control
+                            # channel. Actual tactical execution is explicit below
+                            # and in subsequent authoritative frame metrics.
+                            result(command, "SUCCEEDED", preset_execution=preset_execution)
         if input_closed.is_set() and commands.empty():
             return 0
         if state == "RUNNING":
@@ -360,6 +380,87 @@ def v1_main(args: argparse.Namespace, adapter, config: dict) -> int:
     return 0
 
 
+def build_adapter(algorithm: str, run_id: int, config: dict):
+    # Parked poses belong to deployment.  The planner starts at short,
+    # physically verified release points just outside the original pad/berth
+    # instead of the old abstract offshore grid.  This keeps the handoff
+    # continuous while avoiding a 1-3 minute pre-mission assembly transit.
+    planner_config = dict(config)
+    base_algorithm = algorithm.removesuffix("_SINGLE_DEVICE")
+    if config.get("startFromShore") is True:
+        target_poses = [
+            pose for pose in config.get("initialPoses", [])
+            if isinstance(pose, dict) and not str(pose.get("deviceCode", "")).upper().startswith(("UAV-", "USV-"))
+        ]
+        launch_poses: list[dict[str, object]] = []
+        infrastructure = config.get("returnInfrastructure", {})
+        slots = infrastructure.get("slots", []) if isinstance(infrastructure, dict) else []
+        coordinate_frame = str(config.get("initialPosesCoordinateFrame", "GLOBAL_ENU")).upper()
+        origin = config.get("fleetOrigin", {})
+        origin = origin if isinstance(origin, dict) else {}
+
+        def coordinate(value: float, axis: str) -> float:
+            return value if coordinate_frame == "FLEET_LOCAL_ENU" else value + float(origin.get(axis, 0.0))
+
+        for raw_slot in slots:
+            if not isinstance(raw_slot, dict):
+                continue
+            code = str(raw_slot.get("deviceCode", "")).upper()
+            kind = str(raw_slot.get("kind", "")).upper()
+            if not code.startswith(("UAV-", "USV-")):
+                continue
+            east = float(raw_slot.get("eastM", 0.0))
+            north = float(raw_slot.get("northM", 0.0))
+            up = float(raw_slot.get("upM", 0.0))
+            if kind == "HELIPAD":
+                launch_east = float(raw_slot.get("approachEastM", east))
+                launch_north = float(raw_slot.get("approachNorthM", north))
+                launch_up = float(raw_slot.get("approachUpM", up))
+                device_type = "UAV"
+            else:
+                approach_east = float(raw_slot.get("approachEastM", east))
+                approach_north = float(raw_slot.get("approachNorthM", north))
+                distance = math.hypot(approach_east - east, approach_north - north)
+                # Sixteen metres clears the rendered hull and the slow docking
+                # zone, while remaining far closer than the old 140-200 m
+                # offshore approach anchor.
+                ratio = min(1.0, 16.0 / max(distance, 1e-9))
+                launch_east = east + (approach_east - east) * ratio
+                launch_north = north + (approach_north - north) * ratio
+                launch_up = float(raw_slot.get("approachUpM", up))
+                device_type = "USV"
+            launch_poses.append({
+                "deviceCode": code,
+                "deviceType": device_type,
+                "eastM": coordinate(launch_east, "eastM"),
+                "northM": coordinate(launch_north, "northM"),
+                "upM": coordinate(launch_up, "upM"),
+                "headingDeg": float(raw_slot.get("headingDeg", 0.0)),
+                "speedMps": 0.0,
+                "state": "SHORE_RELEASE",
+                "valid": True,
+            })
+        if base_algorithm == "GB_SFLA_CS" or bool(config.get("adaptiveMultiTarget", False)):
+            planner_config["initialPoses"] = [*launch_poses, *target_poses]
+            planner_config["shoreDeploymentMode"] = "SAFE_RELEASE"
+        else:
+            # The legacy vendor controller has no executed-pose handoff. Its
+            # separate compatibility path retains the original assembly gate.
+            planner_config["initialPoses"] = target_poses
+    if config.get("algorithmCommandProfile") == "escort-20261020":
+        if base_algorithm != "ESCORT_GUARD":
+            raise ValueError("Command profile requires ESCORT_GUARD")
+        adapter = CommandEscortAdapter(run_id, planner_config)
+    elif base_algorithm == "GB_SFLA_CS":
+        adapter = (AdaptiveCaptureAdapter(run_id, planner_config)
+                   if int(config.get("targetCount", 1)) > 1 else CaptureAdapter(run_id, planner_config))
+    elif bool(config.get("adaptiveMultiTarget", False)):
+        adapter = AdaptiveEscortAdapter(run_id, planner_config)
+    else:
+        adapter = EscortAdapter(run_id, planner_config)
+    return SingleDeviceControlAdapter(adapter, algorithm)
+
+
 def main() -> int:
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
@@ -378,7 +479,7 @@ def main() -> int:
     parser.add_argument("--config", default="{}")
     parser.add_argument("--config-base64", default="")
     parser.add_argument("--config-file", default="")
-    parser.add_argument("--fps", type=float, default=6.0)
+    parser.add_argument("--fps", type=float, default=10.0)
     parser.add_argument("--autostart", action="store_true")
     parser.add_argument("--command-protocol", choices=("legacy", "v1"), default="legacy")
     parser.add_argument("--runtime-ref", default="")
@@ -389,19 +490,7 @@ def main() -> int:
     else:
         config_text = base64.b64decode(args.config_base64).decode("utf-8") if args.config_base64 else args.config
     config = json.loads(config_text)
-    base_algorithm = args.algorithm.removesuffix("_SINGLE_DEVICE")
-    if base_algorithm == "GB_SFLA_CS":
-        adapter = (
-            AdaptiveCaptureAdapter(args.run_id, config)
-            if int(config.get("targetCount", 1)) > 1
-            else CaptureAdapter(args.run_id, config)
-        )
-    elif bool(config.get("adaptiveMultiTarget", False)):
-        adapter = AdaptiveEscortAdapter(args.run_id, config)
-    else:
-        adapter = EscortAdapter(args.run_id, config)
-    # Both algorithm families support fleet and individual control; keep legacy IDs valid.
-    adapter = SingleDeviceControlAdapter(adapter, args.algorithm)
+    adapter = build_adapter(args.algorithm, args.run_id, config)
     if args.command_protocol == "v1":
         if not args.runtime_ref or not args.runtime_generation:
             parser.error("--runtime-ref and --runtime-generation are required with --command-protocol v1")
@@ -415,7 +504,7 @@ def main() -> int:
     ).start()
     preview_enabled = bool(config.get("previewEnabled", False)) and not args.autostart
     state = "RUNNING" if args.autostart else "PREVIEW" if preview_enabled else "PREPARED"
-    adapter.set_mission_active(state != "PREVIEW")
+    adapter.set_mission_active(state == "RUNNING" if config.get("startFromShore") is True else state != "PREVIEW")
     emit({"event": "runtimeReady", "runId": args.run_id, "algorithmCode": args.algorithm, "state": state})
     # Publish the authoritative initial pose while the run is still prepared.
     # The UI uses this frame to align Unity's generated scene before START;

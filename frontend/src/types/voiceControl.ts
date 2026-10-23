@@ -1,12 +1,15 @@
+import type { AlgorithmPresetParameters } from '@/services/algorithmPresets'
 export type VoiceIntent =
   | 'MISSION_START'
   | 'MISSION_PAUSE'
   | 'MISSION_RESUME'
   | 'MISSION_STOP'
   | 'SINGLE_DEVICE_CONTROL'
+  | 'COMMAND_SEQUENCE'
+  | 'ALGORITHM_PRESET'
 
 export type VoiceAction = 'START' | 'PAUSE' | 'RESUME' | 'STOP'
-export type VoicePlanAction = VoiceAction | 'DEVICE_COMMAND'
+export type VoicePlanAction = VoiceAction | 'DEVICE_COMMAND' | 'SEQUENCE' | 'ALGORITHM_PRESET'
 export type DeviceCommandType = 'UAV_HOVER' | 'UAV_RESUME' | 'UAV_RETURN' | 'UAV_LAND' | 'USV_HOLD' | 'USV_RESUME' | 'USV_RETURN' | 'USV_STOP'
 export type VoiceRuntimeState =
   | 'PREPARED' | 'PREVIEW' | 'RUNNING' | 'PAUSED' | 'STOPPED'
@@ -25,9 +28,9 @@ export interface VoiceRuntimeContext {
   runtimeGeneration: string
   contextVersion: number
   stateVersion: number
-  runtimeScope: 'MISSION_CENTER'
-  runtimeKind: 'STANDALONE_ALGORITHM'
-  executionBackend: 'PYTHON_SIMULATION'
+  runtimeScope: 'MISSION_CENTER' | 'SYSTEM_OVERVIEW'
+  runtimeKind: 'STANDALONE_ALGORITHM' | 'REAL_MISSION'
+  executionBackend: 'PYTHON_SIMULATION' | 'ROS_GATEWAY'
   algorithmRunId: string
   missionId: null
   missionRunId: null
@@ -52,10 +55,30 @@ export interface VoiceFrozenPlan {
   contextVersion: number
   stateVersion: number
   action: VoicePlanAction
+  parameters?: AlgorithmPresetParameters
   targetDeviceCode?: string
   deviceCommandType?: DeviceCommandType
+  steps?: VoiceSequencePlanStep[]
   explicitDeviceCodes: string[]
   policyVersion: 'voice-p0.v1'
+}
+
+export interface VoiceSequencePlanStep {
+  waitForPrevious?: boolean
+  index: number
+  action: VoiceAction | 'DEVICE_COMMAND' | 'WAIT' | 'ALGORITHM_PRESET'
+  parameters?: AlgorithmPresetParameters
+  targetDeviceCode?: string
+  deviceCommandType?: DeviceCommandType
+  waitSeconds?: number
+}
+
+export interface VoiceSequenceExecutionStep extends VoiceSequencePlanStep {
+  state: 'PENDING' | VoiceExecutionState
+  executionId: string | null
+  errorCode: string | null
+  startedAt?: string
+  completedAt?: string
 }
 
 export interface VoiceProposal {
@@ -76,6 +99,13 @@ export interface VoicePlanGuardRequest {
   expectedPlanHash: string
 }
 
+export interface PresetExecution {
+  commandId: string
+  presetId: number
+  status: 'WAITING_DEPLOYMENT' | 'WAITING_EXECUTION' | 'WAITING_DEVICE' | 'EXECUTED' | 'FAILED' | 'SUPERSEDED' | 'CANCELLED'
+  errorCode: string | null
+}
+
 export interface VoiceExecution {
   executionId: string
   proposalId: string
@@ -88,6 +118,10 @@ export interface VoiceExecution {
   errorCode: string | null
   timedOutAt: string | null
   presentationStatus: VoicePresentationStatus
+  presetExecution?: PresetExecution
+  currentStepIndex?: number
+  sequenceStatus?: 'EXECUTING_START' | 'WAITING_STEP_PRECONDITION' | 'EXECUTING_DEVICE_COMMAND' | 'SUCCEEDED' | 'FAILED'
+  steps?: VoiceSequenceExecutionStep[]
   createdAt: string
   updatedAt: string
 }

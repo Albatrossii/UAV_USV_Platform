@@ -57,6 +57,11 @@ class VoiceHttpTests {
         }
 
         @Bean
+        SystemOverviewVoiceContextService systemOverviewVoiceContextService() {
+            return org.mockito.Mockito.mock(SystemOverviewVoiceContextService.class);
+        }
+
+        @Bean
         DataSource ds() {
             var ds = new JdbcDataSource();
             ds.setURL("jdbc:h2:mem:" + VoiceJson.uuid() + ";MODE=MySQL;DB_CLOSE_DELAY=-1");
@@ -210,7 +215,7 @@ class VoiceHttpTests {
     @Test void allEndpointsDenyAnonymousAndAllPostsRequireCsrf() throws Exception {
         String id=VoiceJson.uuid();
         String[] reads={"/contexts","/contexts/"+id,"/commands/"+id,"/executions/"+id,"/contexts/"+id+"/presentation/binding"};
-        String[] writes={"/commands/proposals","/commands/"+id+"/confirm","/commands/"+id+"/cancel","/contexts/"+id+"/presentation/bindings","/contexts/"+id+"/presentation/challenges","/contexts/"+id+"/presentation/reports"};
+        String[] writes={"/commands/proposals","/commands/"+id+"/confirm","/commands/"+id+"/cancel","/contexts/system-overview/sync","/contexts/"+id+"/presentation/bindings","/contexts/"+id+"/presentation/challenges","/contexts/"+id+"/presentation/reports"};
         for(String suffix:reads)mvc.perform(get("/api/voice"+suffix)).andExpect(status().isUnauthorized()).andExpect(jsonPath("$.code").value("UNAUTHORIZED"));
         for(String suffix:writes){
             String path="/api/voice"+suffix;
@@ -288,7 +293,7 @@ class VoiceHttpTests {
     }
     @Test void everyVoicePostRejectsOversizedAndWrongMediaWithoutWrites() throws Exception {
         String id=VoiceJson.uuid();
-        for(String path:java.util.List.of("/api/voice/commands/proposals","/api/voice/commands/"+id+"/confirm","/api/voice/commands/"+id+"/cancel","/api/voice/contexts/"+id+"/presentation/bindings","/api/voice/contexts/"+id+"/presentation/challenges","/api/voice/contexts/"+id+"/presentation/reports")) {
+        for(String path:java.util.List.of("/api/voice/commands/proposals","/api/voice/commands/"+id+"/confirm","/api/voice/commands/"+id+"/cancel","/api/voice/contexts/system-overview/sync","/api/voice/contexts/"+id+"/presentation/bindings","/api/voice/contexts/"+id+"/presentation/challenges","/api/voice/contexts/"+id+"/presentation/reports")) {
             mvc.perform(post(path).servletPath(path).with(user("alice").roles("ADMIN")).with(csrf()).header("Idempotency-Key",VoiceJson.uuid()).contentType("application/json").content("x".repeat(16385))).andExpect(status().isPayloadTooLarge());
             mvc.perform(post(path).servletPath(path).with(user("alice").roles("ADMIN")).with(csrf()).header("Idempotency-Key",VoiceJson.uuid()).contentType("text/plain").content("{}")).andExpect(status().isUnsupportedMediaType());
         }

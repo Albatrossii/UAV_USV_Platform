@@ -108,6 +108,16 @@ class EscortDefenseCoordinator:
         target = a.protected[threat.protected_index]
         dx, dy = target.x - threat.x, target.y - threat.y
         ux, uy = unit(dx, dy)
+        if getattr(a, "_shore_assembly_pending", False) and threat.detected_frame is None:
+            # The established encounter starts when the escorted hull departs.
+            # While its detail is arriving, contacts keep navigating around
+            # their original encounter distance with bounded real motion.
+            # No target is teleported, frozen, or granted detection by a timer.
+            radius = a._shore_encounter_radii[threat.code]
+            radial = max(-.8, min(.8, (math.hypot(dx, dy) - radius) / 12.0))
+            side = 1.0 if a.threats.index(threat) % 2 == 0 else -1.0
+            px, py = unit(ux * radial - uy * side, uy * radial + ux * side)
+            return px, py, min(2.2, threat.cruise_speed)
         # Shared time-to-boundary feedback; closer attackers slow down without
         # receiving a fabricated detection event or teleporting onto a circle.
         closure = (threat.cruise_speed if self.screens else
@@ -158,6 +168,7 @@ class EscortDefenseCoordinator:
                     while remaining:
                         assigned = {code for s in self.screens.values() for code in s.codes}
                         pool = [v for v in a.vehicles if v.kind == kind and v.assigned_threat is None
+                                and v.code not in a._unavailable_codes
                                 and v.code not in assigned and v.role not in {"CAPTURE", "CONTAINMENT"}]
                         if not pool:
                             self.capacity_ok = False
@@ -289,7 +300,8 @@ class EscortDefenseCoordinator:
         forward_withdrawal = bool(self.screens) and self.mode == "WITHDRAWAL"
         if not self.screens:
             speed = min(1.5, a.usv_cruise*.55) if a._escort_departure_distance() < DEPARTURE_DISTANCE else 0.0
-            vx, vy = speed, 0.0
+            route_x, route_y = a._escort_route_axis()
+            vx, vy = speed * route_x, speed * route_y
             p.state = "ESCORTING"
         else:
             # Keep withdrawing while the screen is being established/reverses.
@@ -350,7 +362,8 @@ class EscortDefenseCoordinator:
                 t.response_dispatched, t.response_motion_frames = True, 5
                 a._emit_tactical_event("GUARD_RESPONSE_DISPATCHED",t,"守卫组已出动",
                                       "、".join(s.codes)+" 正在前出建立本方向屏障。")
-            valid = bool(members) and len([v for v in members if v.kind=="USV"]) >= 2
+            valid = (bool(members) and not any(v.code in a._unavailable_codes for v in members)
+                     and len([v for v in members if v.kind=="USV"]) >= 2)
             for v in members:
                 g = self.goal(v)
                 facing = math.degrees(math.atan2(t.y-v.y,t.x-v.x))
