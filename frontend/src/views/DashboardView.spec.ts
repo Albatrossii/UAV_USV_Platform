@@ -53,6 +53,7 @@ describe('DashboardView Unity overlay', () => {
           ConsoleLayout: { template: '<div><slot /></div>' },
           PointCloudOverviewPanel: true,
           VehicleGlyph: true,
+          VoiceP0ControlPanel: { template: '<div data-test="overview-voice-control">真实任务语音控制</div>' },
         },
       },
     })
@@ -61,7 +62,10 @@ describe('DashboardView Unity overlay', () => {
     expect(wrapper.find('.overview-taskbar').exists()).toBe(true)
     expect(wrapper.find('.overview-device-deck').exists()).toBe(true)
     expect(wrapper.find('[data-unity-runtime-viewport="dashboard"]').exists()).toBe(true)
-    expect(wrapper.find('.vf-config-panel').exists()).toBe(false)
+    expect(wrapper.find('.overview-mission-console').exists()).toBe(false)
+    expect(wrapper.get('[aria-label="任务控制台"]').text()).toContain('真实任务语音控制')
+    expect(wrapper.findAll('[data-test="overview-voice-control"]')).toHaveLength(1)
+    expect(wrapper.get('[data-test="node-communication-panel"]')).toBeTruthy()
     expect(wrapper.emitted('workspace-status')?.slice(-1)[0]?.[0]).toMatchObject({
       deviceContext: '全局态势',
       statuses: expect.arrayContaining([expect.objectContaining({ label: 'ROS 离线' })]),

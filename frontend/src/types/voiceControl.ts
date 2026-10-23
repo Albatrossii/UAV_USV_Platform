@@ -28,9 +28,9 @@ export interface VoiceRuntimeContext {
   runtimeGeneration: string
   contextVersion: number
   stateVersion: number
-  runtimeScope: 'MISSION_CENTER'
-  runtimeKind: 'STANDALONE_ALGORITHM'
-  executionBackend: 'PYTHON_SIMULATION'
+  runtimeScope: 'MISSION_CENTER' | 'SYSTEM_OVERVIEW'
+  runtimeKind: 'STANDALONE_ALGORITHM' | 'REAL_MISSION'
+  executionBackend: 'PYTHON_SIMULATION' | 'ROS_GATEWAY'
   algorithmRunId: string
   missionId: null
   missionRunId: null

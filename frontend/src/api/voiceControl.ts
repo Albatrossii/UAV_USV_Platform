@@ -118,6 +118,17 @@ export async function fetchVoiceContexts(): Promise<VoiceRuntimeContext[]> {
   return response.data.data
 }
 
+export async function syncSystemOverviewVoiceContext(payload: {
+  missionId: number
+  runtimeInstanceId: string
+}): Promise<VoiceRuntimeContext> {
+  const token = await fetchCsrfToken()
+  const response = await http.post<ApiResponse<VoiceRuntimeContext>>('/voice/contexts/system-overview/sync', payload, {
+    headers: { [token.headerName]: token.token },
+  })
+  return response.data.data
+}
+
 export async function fetchVoiceContext(runtimeRef: string): Promise<VoiceRuntimeContext> {
   if (mockEnabled) {
     if (runtimeRef !== mockContext.runtimeRef) throw new ApiClientError('运行实例不存在', 404, 'RUNTIME_NOT_FOUND')

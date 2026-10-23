@@ -51,7 +51,9 @@ declare module 'vue' {
     RouterView: typeof import('vue-router')['RouterView']
     SimulationRuntimeHost: typeof import('./components/unity/SimulationRuntimeHost.vue')['default']
     SimulationUnityWebglPanel: typeof import('./components/unity/SimulationUnityWebglPanel.vue')['default']
+    TaskConsoleShell: typeof import('./components/workspace/TaskConsoleShell.vue')['default']
     UnifiedVehicleControl: typeof import('./components/control/UnifiedVehicleControl.vue')['default']
+    UnifiedWorkspaceShell: typeof import('./components/workspace/UnifiedWorkspaceShell.vue')['default']
     UnityRuntimeHost: typeof import('./components/unity/UnityRuntimeHost.vue')['default']
     UnityWebglPanel: typeof import('./components/unity/UnityWebglPanel.vue')['default']
     VehicleGlyph: typeof import('./components/control/VehicleGlyph.vue')['default']
@@ -59,7 +61,10 @@ declare module 'vue' {
     VoiceIntelligenceInput: typeof import('./components/voice/VoiceIntelligenceInput.vue')['default']
     VoiceP0ControlPanel: typeof import('./components/voice/VoiceP0ControlPanel.vue')['default']
     WebSocketQualityCard: typeof import('./components/monitoring/WebSocketQualityCard.vue')['default']
+    WorkspaceBottomPanelShell: typeof import('./components/workspace/WorkspaceBottomPanelShell.vue')['default']
     WorkspaceHeader: typeof import('./components/layout/WorkspaceHeader.vue')['default']
+    WorkspaceToolbarShell: typeof import('./components/workspace/WorkspaceToolbarShell.vue')['default']
+    WorkspaceViewportShell: typeof import('./components/workspace/WorkspaceViewportShell.vue')['default']
   }
   export interface GlobalDirectives {
     vLoading: typeof import('element-plus/es')['ElLoadingDirective']

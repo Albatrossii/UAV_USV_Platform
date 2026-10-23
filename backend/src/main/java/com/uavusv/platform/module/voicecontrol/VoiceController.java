@@ -10,16 +10,19 @@ import org.springframework.web.bind.annotation.*;
 public class VoiceController {
     private final VoiceCommandApplicationService app;
     private final VoicePresentationService presentation;
+    private final SystemOverviewVoiceContextService systemOverviewContexts;
     private final VoiceJson json;
     private final VoiceTime time;
 
     public VoiceController(
             VoiceCommandApplicationService app,
             VoicePresentationService presentation,
+            SystemOverviewVoiceContextService systemOverviewContexts,
             VoiceJson json,
             VoiceTime time) {
         this.app = app;
         this.presentation = presentation;
+        this.systemOverviewContexts = systemOverviewContexts;
         this.json = json;
         this.time = time;
     }
@@ -47,6 +50,11 @@ public class VoiceController {
     @GetMapping("/contexts/{ref}")
     public ResponseEntity<ObjectNode> context(@PathVariable String ref) {
         return response(200, app.context(ref));
+    }
+
+    @PostMapping(value = "/contexts/system-overview/sync", consumes = "application/json")
+    public ResponseEntity<ObjectNode> syncSystemOverview(@RequestBody String body) {
+        return response(200, systemOverviewContexts.sync(json.read(body)));
     }
 
     @GetMapping("/commands/{id}")

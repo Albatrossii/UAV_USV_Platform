@@ -5,6 +5,7 @@ import { useRoute } from 'vue-router'
 import ConsoleLayout from '@/components/layout/ConsoleLayout.vue'
 import WorkspaceHeader from '@/components/layout/WorkspaceHeader.vue'
 import type { WorkspaceHeaderState } from '@/components/layout/workspaceHeader'
+import UnifiedWorkspaceShell from '@/components/workspace/UnifiedWorkspaceShell.vue'
 import DashboardView from '@/views/DashboardView.vue'
 import VirtualFleetConfigView from '@/views/VirtualFleetConfigView.vue'
 
@@ -68,67 +69,17 @@ onBeforeUnmount(() => {
 <template>
   <ConsoleLayout title="系统总览" eyebrow="UAV-USV" :show-refresh="false" :default-sidebar-collapsed="true" workspace-navigation immersive>
   <WorkspaceHeader :active-workspace="simulationActive ? 'simulation' : 'overview'" :state="activeHeader" />
-  <div class="overview-workspace-stack" :class="{ 'simulation-active': simulationActive }">
-    <section
-      class="overview-workspace-pane overview-pane"
-      :class="simulationActive ? 'is-inactive' : 'is-active'"
-      :aria-hidden="simulationActive"
-      :inert="simulationActive ? true : undefined"
-    >
-      <DashboardView embedded @workspace-status="overviewHeader = $event" />
-    </section>
+  <UnifiedWorkspaceShell
+    :active-workspace="simulationActive ? 'simulation' : 'overview'"
+    :simulation-mounted="simulationMounted"
+  >
+    <template #overview>
+      <DashboardView embedded shared-shell :active="!simulationActive" @workspace-status="overviewHeader = $event" />
+    </template>
 
-    <section
-      v-if="simulationMounted"
-      class="overview-workspace-pane simulation-pane"
-      :class="simulationActive ? 'is-active' : 'is-inactive'"
-      :aria-hidden="!simulationActive"
-      :inert="!simulationActive ? true : undefined"
-    >
-      <VirtualFleetConfigView embedded @workspace-status="simulationHeader = $event" />
-    </section>
-  </div>
+    <template #simulation>
+      <VirtualFleetConfigView embedded shared-shell :active="simulationActive" @workspace-status="simulationHeader = $event" />
+    </template>
+  </UnifiedWorkspaceShell>
   </ConsoleLayout>
 </template>
-
-<style scoped>
-:global(html:has(.workspace-navigation)) {
-  /* Both workspaces share the same width even when only one needs scrolling. */
-  scrollbar-gutter: stable;
-}
-
-.overview-workspace-stack {
-  position: relative;
-  min-width: 0;
-  margin-top: 10px;
-  overflow: hidden;
-  background: #061113;
-  isolation: isolate;
-}
-
-.overview-workspace-pane {
-  width: 100%;
-  min-width: 0;
-  backface-visibility: hidden;
-  contain: layout paint style;
-}
-
-.overview-workspace-pane.is-active {
-  position: relative;
-  z-index: 2;
-  visibility: visible;
-  opacity: 1;
-  pointer-events: auto;
-  transform: translate3d(0, 0, 0);
-}
-
-.overview-workspace-pane.is-inactive {
-  position: absolute;
-  inset: 0;
-  z-index: 0;
-  visibility: hidden;
-  opacity: 0;
-  pointer-events: none;
-  transform: translate3d(-110%, 0, 0);
-}
-</style>

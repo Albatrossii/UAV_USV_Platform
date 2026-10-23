@@ -9,6 +9,8 @@ import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
+import java.time.Duration;
+import java.time.Instant;
 
 @Service
 public class RuntimeContextRegistry {
@@ -118,9 +120,23 @@ public class RuntimeContextRegistry {
                 && time.nanos() - ch.sceneNanos <= 10_000_000_000L;
     }
 
+    public boolean systemOverview(ObjectNode c) {
+        return c != null && "SYSTEM_OVERVIEW".equals(c.path("runtimeScope").asText());
+    }
+
+    public boolean freshSystemOverview(ObjectNode c) {
+        if (!systemOverview(c)) return false;
+        try {
+            Instant heartbeat = Instant.parse(c.path("lastHeartbeatReceivedAt").asText());
+            return Duration.between(heartbeat, time.now()).abs().compareTo(Duration.ofSeconds(5)) <= 0;
+        } catch (RuntimeException ignored) {
+            return false;
+        }
+    }
+
     public ObjectNode view(ObjectNode c) {
         var v = publicView(c);
-        v.put("sceneReady", freshScene(c));
+        v.put("sceneReady", systemOverview(c) ? c.path("sceneReady").asBoolean() : freshScene(c));
         return v;
     }
 
@@ -143,13 +159,17 @@ public class RuntimeContextRegistry {
         boolean capable = false;
         for (var n : c.path("capabilities")) capable |= n.asText().equals(action);
         if (!capable) throw new VoiceFailure(422, "UNSUPPORTED_CAPABILITY");
-        var ch = channel(c.path("_id").asText());
-        if (ch == null
-                || ch.faulted
-                || !ch.alive.getAsBoolean()
-                || ch.heartbeatNanos == null
-                || time.nanos() - ch.heartbeatNanos > 5_000_000_000L)
-            throw VoiceFailure.conflict("RUNTIME_UNAVAILABLE");
+        if (systemOverview(c)) {
+            if (!freshSystemOverview(c)) throw VoiceFailure.conflict("HEARTBEAT_STALE");
+        } else {
+            var ch = channel(c.path("_id").asText());
+            if (ch == null
+                    || ch.faulted
+                    || !ch.alive.getAsBoolean()
+                    || ch.heartbeatNanos == null
+                    || time.nanos() - ch.heartbeatNanos > 5_000_000_000L)
+                throw VoiceFailure.conflict("RUNTIME_UNAVAILABLE");
+        }
         var allowed =
                 switch (action) {
                     case "START" -> Set.of("PREPARED", "PREVIEW");
@@ -164,17 +184,20 @@ public class RuntimeContextRegistry {
         boolean localSimulationResume = action.equals("RESUME")
                 && "STANDALONE_ALGORITHM".equals(c.path("runtimeKind").asText())
                 && "PYTHON_SIMULATION".equals(c.path("executionBackend").asText());
-        // Starting a new run needs a fresh rendered scene. A local simulation
+        // Starting a new simulation run needs a fresh rendered scene. A local simulation
         // resume only needs the same live, paused algorithm instance; renderer
-        // recovery can catch up from its latest frame after the command.
-        if (scene
-                && ((action.equals("START")
-                                && (!freshScene(c)
-                                        || c.path("latestFrameSequence").asLong() < 1))
-                        || (action.equals("RESUME")
-                                && !localSimulationResume
-                                && !freshScene(c))))
-            throw VoiceFailure.conflict("SCENE_NOT_READY");
+        // recovery can catch up from its latest frame after the command. A real
+        // system-overview mission does not have a scene-generation prerequisite.
+        if (scene && !systemOverview(c)) {
+            if ((action.equals("START")
+                                    && (!freshScene(c)
+                                            || c.path("latestFrameSequence").asLong() < 1))
+                            || (action.equals("RESUME")
+                                    && !localSimulationResume
+                                    && !freshScene(c))) {
+                throw VoiceFailure.conflict("SCENE_NOT_READY");
+            }
+        }
     }
 
     /** Backwards-compatible test seam for generic mission-context fixtures. */
@@ -196,10 +219,12 @@ public class RuntimeContextRegistry {
         access.require(c.path("_owner").asLong(), true);
         if (!PROTOCOL.equals(c.path("protocolVersion").asText()))
             throw new VoiceFailure(422, "PROTOCOL_UNSUPPORTED");
-        if (!Set.of("ESCORT_GUARD", "GB_SFLA_CS", "ESCORT_GUARD_SINGLE_DEVICE", "GB_SFLA_CS_SINGLE_DEVICE")
+        if (!systemOverview(c)
+                && !Set.of("ESCORT_GUARD", "GB_SFLA_CS", "ESCORT_GUARD_SINGLE_DEVICE", "GB_SFLA_CS_SINGLE_DEVICE")
                 .contains(c.path("_algorithmCode").asText()))
             throw new VoiceFailure(422, "UNSUPPORTED_TARGETING");
-        if (requireRunning && !"RUNNING".equals(c.path("state").asText()))
+        if (requireRunning && !("RUNNING".equals(c.path("state").asText())
+                || (systemOverview(c) && "PAUSED".equals(c.path("state").asText()))))
             throw VoiceFailure.conflict("INVALID_STATE");
         boolean capable = false;
         for (var n : c.path("capabilities")) capable |= "DEVICE_COMMAND".equals(n.asText());
@@ -214,6 +239,10 @@ public class RuntimeContextRegistry {
         if (!Set.of("UAV_HOVER", "UAV_RESUME", "UAV_RETURN", "UAV_LAND",
                 "USV_HOLD", "USV_RESUME", "USV_RETURN", "USV_STOP").contains(commandType))
             throw new VoiceFailure(422, "UNSUPPORTED_CAPABILITY");
+        if (systemOverview(c)) {
+            if (!freshSystemOverview(c)) throw VoiceFailure.conflict("HEARTBEAT_STALE");
+            return;
+        }
         var ch = channel(c.path("_id").asText());
         if (ch == null || ch.faulted || !ch.alive.getAsBoolean())
             throw VoiceFailure.conflict("RUNTIME_UNAVAILABLE");

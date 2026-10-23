@@ -304,6 +304,49 @@ describe('VoiceP0ControlPanel presentation recovery UI', () => {
     wrapper.unmount()
   })
 
+  it('allows system-overview capture and START without a generated Unity scene', async () => {
+    const wrapper = mountPanel('NOT_REQUIRED')
+    const store = useVoiceControlStore()
+    const overviewContext: VoiceRuntimeContext = {
+      ...context,
+      runtimeScope: 'SYSTEM_OVERVIEW',
+      runtimeKind: 'REAL_MISSION',
+      executionBackend: 'ROS_GATEWAY',
+      algorithmRunId: 'SYSTEM_OVERVIEW:42',
+      missionId: 42,
+      state: 'PREPARED',
+      sceneReady: false,
+    }
+    store.contexts = [overviewContext]
+    store.selectedRuntimeRef = overviewContext.runtimeRef
+    await wrapper.setProps({
+      refined: true,
+      sceneRequired: false,
+      runtimeHint: {
+        algorithmRunId: overviewContext.algorithmRunId,
+        state: overviewContext.state,
+        sceneReady: false,
+        deviceCodes: ['UAV-001', 'USV-001'],
+        latestFrameSequence: 0,
+      },
+    })
+    await nextTick()
+
+    let input = wrapper.getComponent(VoiceIntelligenceInput)
+    const disabledReason = input.props('actionDisabledReason') as (action: string) => string
+    expect(disabledReason('START')).toBe('')
+
+    store.contexts = []
+    await wrapper.setProps({ runtimeHint: { ...wrapper.props('runtimeHint'), algorithmRunId: '' } })
+    await nextTick()
+    input = wrapper.getComponent(VoiceIntelligenceInput)
+    expect(input.props('submissionDisabled')).toBe(true)
+    expect(input.props('allowCaptureWithoutContext')).toBe(true)
+    expect((input.get('button[aria-label="开始录音"]').element as HTMLButtonElement).disabled).toBe(false)
+    expect(wrapper.text()).toContain('无需生成场景即可录音和识别')
+    wrapper.unmount()
+  })
+
   it('parses independently of a legacy runtime while keeping proposal submission blocked', async () => {
     const wrapper = mountPanel('NOT_REQUIRED')
     const store = useVoiceControlStore()

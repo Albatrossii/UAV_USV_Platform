@@ -2,7 +2,6 @@
 import { computed, onActivated, onBeforeUnmount, onDeactivated, onMounted, provide, reactive, ref, watch } from 'vue'
 import {
   AudioLines,
-  ChevronLeft,
   ChevronRight,
   CircleStop,
   Eye,
@@ -18,6 +17,7 @@ import {
 import ConsoleLayout from '@/components/layout/ConsoleLayout.vue'
 import ConsoleNavigationRail from '@/components/layout/ConsoleNavigationRail.vue'
 import type { WorkspaceHeaderState } from '@/components/layout/workspaceHeader'
+import TaskConsoleShell from '@/components/workspace/TaskConsoleShell.vue'
 import NodeCommunicationPanel from '@/components/monitoring/NodeCommunicationPanel.vue'
 import CompactNodeViewBar from '@/components/monitoring/CompactNodeViewBar.vue'
 import CommandGroupSummary from '@/components/monitoring/CommandGroupSummary.vue'
@@ -77,7 +77,11 @@ type ScenarioInitialPose = {
 
 type TacticalEvent = SimulationTacticalNotice
 
-const props = withDefaults(defineProps<{ embedded?: boolean }>(), { embedded: false })
+const props = withDefaults(defineProps<{
+  embedded?: boolean
+  sharedShell?: boolean
+  active?: boolean
+}>(), { embedded: false, sharedShell: false, active: true })
 const emit = defineEmits<{ 'workspace-status': [state: WorkspaceHeaderState] }>()
 
 type VirtualFleetRecoverySnapshot = {
@@ -1802,6 +1806,10 @@ watch((): WorkspaceHeaderState => ({
 <template>
   <component
     :is="props.embedded ? 'div' : ConsoleLayout"
+    :class="{
+      'workspace-embedded-root': props.embedded,
+      'workspace-shared-content-root': props.sharedShell,
+    }"
     v-bind="props.embedded ? {} : {
       title: '算法仿真',
       eyebrow: 'VIRTUAL FLEET / UNITY BRIDGE V3',
@@ -1828,22 +1836,20 @@ watch((): WorkspaceHeaderState => ({
             :collapsed="leftPanelCollapsed"
             @toggle="setLeftPanelCollapsed(!leftPanelCollapsed)"
           />
-          <button v-if="props.embedded && leftPanelCollapsed" class="vf-drawer-reopen" type="button" aria-label="展开总控" title="展开任务控制台" @click="setLeftPanelCollapsed(false)">
-            <ChevronRight :size="17" /><span>任务控制台</span>
-          </button>
-          <section class="vf-config-panel" aria-label="任务控制台" :inert="leftPanelCollapsed ? true : undefined">
-            <div class="vf-panel-head">
-              <div><h3>任务控制台</h3><span>V3 PROTOCOL</span></div>
-              <button type="button" title="收起总控" aria-label="收起总控" @click="setLeftPanelCollapsed(true)">
-                <ChevronLeft :size="17" />
-              </button>
-            </div>
-            <details class="vf-voice-config vf-scenario-config">
+          <TaskConsoleShell
+            :collapsed="leftPanelCollapsed"
+            @collapse="setLeftPanelCollapsed(true)"
+            @expand="setLeftPanelCollapsed(false)"
+          >
+            <Teleport defer to="#shared-workspace-console-content" :disabled="!props.sharedShell">
+              <div v-show="props.active || !props.sharedShell" class="workspace-console-content simulation-console-content">
+            <details class="vf-voice-config vf-scenario-config task-console-section">
               <summary class="vf-scenario-summary">
                 <span class="vf-scenario-title"><AudioLines :size="16" />语音控制</span>
                 <span class="vf-scenario-summary-right">语音 / 文本<ChevronRight class="vf-scenario-arrow" :size="12" /></span>
               </summary>
               <VoiceP0ControlPanel
+                v-if="props.active || !props.sharedShell"
                 ref="voiceControlPanel"
                 refined
                 compact
@@ -1853,7 +1859,7 @@ watch((): WorkspaceHeaderState => ({
                 @presentation-message="sendPresentationMessage"
               />
             </details>
-            <details class="vf-scenario-config">
+            <details class="vf-scenario-config task-console-section">
               <summary class="vf-scenario-summary">
                 <span class="vf-scenario-title"><LayoutGrid :size="16" />场景配置</span>
                 <span class="vf-scenario-summary-right">
@@ -1919,7 +1925,9 @@ watch((): WorkspaceHeaderState => ({
               target-source="算法仿真 · 当前场景"
               @select="selectMonitoringDevice"
             />
-          </section>
+              </div>
+            </Teleport>
+          </TaskConsoleShell>
         </aside>
 
         <div ref="simulationMain" class="vf-main-column">
@@ -1938,7 +1946,9 @@ watch((): WorkspaceHeaderState => ({
             <button v-if="frameFailures > 0" type="button" @click="nextFramePollAt = 0; pollAlgorithmFrame()">立即查询</button>
           </p>
         <section class="vf-stage-panel" :class="{ expanded: webglExpanded }">
-          <div class="vf-stage-top">
+          <div class="vf-stage-top-source">
+          <Teleport defer to="#shared-workspace-toolbar-content" :disabled="!props.sharedShell">
+          <div v-show="props.active || !props.sharedShell" class="vf-stage-top simulation-toolbar-content">
           <div class="vf-stage-head">
             <div class="vf-mission-heading">
               <h3>海空协同任务</h3>
@@ -1972,9 +1982,17 @@ watch((): WorkspaceHeaderState => ({
             </div>
           </div>
           </div>
-          <div class="vf-unity-stage" data-simulation-viewport></div>
-          <CommandGroupSummary :metrics="missionMetrics" />
-          <div class="vf-live-strip">
+          </Teleport>
+          </div>
+          <Teleport defer to="#shared-workspace-viewport-content" :disabled="!props.sharedShell">
+          <div
+            v-show="props.active || !props.sharedShell"
+            class="workspace-viewport-content simulation-viewport-content"
+            :class="{ expanded: webglExpanded }"
+          >
+            <div class="vf-unity-stage" data-simulation-viewport></div>
+            <CommandGroupSummary :metrics="missionMetrics" />
+            <div class="vf-live-strip">
             <span><i></i>阶段 <strong>{{ missionPhaseLabel }}</strong></span>
             <span>可见目标 <strong>{{ visibleTargetCount }}</strong></span>
             <span v-if="isCaptureAlgorithm">行动距离 <strong>{{ Number(missionMetrics.targetTravelDistanceM ?? 0).toFixed(0) }} m</strong></span>
@@ -1988,7 +2006,15 @@ watch((): WorkspaceHeaderState => ({
               <span class="hostile"><i></i>{{ isCaptureAlgorithm ? '围捕目标' : '敌方威胁船' }}</span>
             </div>
           </div>
+          </div>
+          </Teleport>
         </section>
+        <Teleport defer to="#shared-workspace-bottom-content" :disabled="!props.sharedShell">
+        <div
+          v-show="props.active || !props.sharedShell"
+          class="workspace-bottom-content simulation-bottom-content"
+          :class="{ 'is-shared': props.sharedShell }"
+        >
         <CompactNodeViewBar
           :rows="compactNodeRows" :selected-device="selectedDevice"
           :follow-device="cameraMode === 'device-follow' ? cameraFollowDevice : ''"
@@ -1999,12 +2025,67 @@ watch((): WorkspaceHeaderState => ({
           @resize-end="endNodeBarResize"
         />
         </div>
+        </Teleport>
+        </div>
       </div>
     </div>
   </component>
 </template>
 
 <style scoped>
+.workspace-embedded-root { width: 100%; height: 100%; min-width: 0; min-height: 0; }
+.workspace-console-content { display: flex; min-width: 0; flex-direction: column; gap: 10px; }
+.simulation-toolbar-content {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  background: transparent !important;
+  border: 0 !important;
+}
+.workspace-shared-content-root .vf-workbench.vf-unified-workbench { display: block; height: 100%; }
+.workspace-shared-content-root .vf-config-drawer,
+.workspace-shared-content-root .vf-stage-top-source { display: none !important; }
+.workspace-shared-content-root .vf-main-column { width: 100%; height: 100%; }
+.workspace-shared-content-root .vf-stage-panel { flex: 1 1 0; }
+.workspace-viewport-content,
+.workspace-bottom-content { box-sizing: border-box; width: 100%; height: 100%; min-width: 0; min-height: 0; }
+.simulation-viewport-content { display: flex; position: relative; flex-direction: column; overflow: hidden; }
+.simulation-bottom-content { flex: 0 0 auto; overflow: hidden; }
+.simulation-bottom-content :deep(.cnv-bar) {
+  width: 100%;
+  max-width: 100%;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+.simulation-bottom-content.is-shared :deep(.cnv-bar) {
+  height: 100% !important;
+  max-height: 100%;
+  flex-basis: 100% !important;
+}
+.simulation-viewport-content .vf-live-strip {
+  box-sizing: border-box;
+  flex: 0 0 34px;
+  height: 34px;
+  min-height: 34px;
+  max-height: 34px;
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  overflow-y: hidden;
+  white-space: nowrap;
+}
+.simulation-viewport-content.expanded {
+  position: fixed;
+  inset: 10px;
+  z-index: 2100;
+  width: auto;
+  height: auto;
+  background: #031015;
+  border: 1px solid rgba(108,228,213,.3);
+  border-radius: 8px;
+  box-shadow: 0 0 0 100vmax rgba(0,0,0,.82);
+}
+
 .vf-recovery-notice { margin: 0; padding: 8px 14px; color: #ffd487; background: #253020; font-size: 12px; }
 .vf-recovery-notice button { margin-left: 12px; color: inherit; background: transparent; border: 1px solid #806c42; border-radius: 4px; cursor: pointer; }
 .virtual-fleet-page { display: flex; height: calc(100dvh - 70px); min-height: 0; gap: 12px; overflow: hidden; flex-direction: column; }
@@ -2428,11 +2509,12 @@ watch((): WorkspaceHeaderState => ({
 /* Only the external logo, system navigation and header move into the shared shell.
    Keep the task console and every simulation control in their original work area. */
 .virtual-fleet-page.vf-embedded-page {
-  height: calc(100dvh - 102px);
-  min-height: 560px;
+  height: 100%;
+  min-height: 0;
 }
 .vf-embedded-page .vf-workbench.vf-unified-workbench {
-  --vf-left-width: clamp(238px, calc(20vw - 48px), 317px);
+  --vf-left-width: var(--workspace-console-width, clamp(238px, calc(20vw - 48px), 317px));
+  gap: var(--workspace-column-gap, 10px);
 }
 .vf-embedded-page .vf-config-drawer {
   grid-template-columns: minmax(0, 1fr);
@@ -2444,11 +2526,14 @@ watch((): WorkspaceHeaderState => ({
   height: 100%;
 }
 @container workspace (max-width: 1350px) {
-  .vf-embedded-page .vf-workbench.vf-unified-workbench { --vf-left-width: 257px; }
+  .vf-embedded-page .vf-workbench.vf-unified-workbench {
+    --vf-left-width: var(--workspace-console-width, 257px);
+  }
 }
 @container workspace (max-width: 1100px) {
-  .virtual-fleet-page.vf-embedded-page { height: calc(100dvh - 118px); }
-  .vf-embedded-page .vf-workbench.vf-unified-workbench { --vf-left-width: 238px; }
+  .vf-embedded-page .vf-workbench.vf-unified-workbench {
+    --vf-left-width: var(--workspace-console-width, 238px);
+  }
 }
 @container workspace (max-width: 760px) {
   .virtual-fleet-page.vf-embedded-page { height: auto; min-height: 0; }
@@ -2456,5 +2541,20 @@ watch((): WorkspaceHeaderState => ({
   .vf-embedded-page .vf-config-drawer.collapsed .vf-config-panel { position: absolute; }
   .vf-embedded-page .vf-config-drawer.collapsed .vf-drawer-reopen { position: relative; flex-direction: row; height: 48px; }
   .vf-embedded-page .vf-config-drawer.collapsed .vf-drawer-reopen span { writing-mode: horizontal-tb; }
+}
+
+/* Embedded overview and simulation use the same external stage geometry. */
+.vf-embedded-page .vf-main-column { gap: var(--workspace-panel-gap, 8px); }
+.vf-embedded-page .vf-stage-top {
+  box-sizing: border-box;
+  flex: 0 0 var(--workspace-stage-toolbar-height, auto);
+  height: var(--workspace-stage-toolbar-height, auto);
+  min-height: 0;
+  overflow: hidden;
+}
+.vf-embedded-page [data-test="compact-node-view-bar"] {
+  height: var(--workspace-footer-height, auto) !important;
+  flex-basis: var(--workspace-footer-height, auto) !important;
+  overflow: hidden;
 }
 </style>

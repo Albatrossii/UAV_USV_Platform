@@ -1,7 +1,9 @@
 <script setup lang="ts">
 import {
   Anchor,
+  AudioLines,
   CircleStop,
+  ChevronRight,
   LocateFixed,
   Navigation,
   PlaneLanding,
@@ -17,12 +19,16 @@ import { useRoute } from 'vue-router'
 import ConsoleLayout from '@/components/layout/ConsoleLayout.vue'
 import type { WorkspaceHeaderState } from '@/components/layout/workspaceHeader'
 import VehicleGlyph from '@/components/control/VehicleGlyph.vue'
+import NodeCommunicationPanel from '@/components/monitoring/NodeCommunicationPanel.vue'
 import PointCloudOverviewPanel from '@/components/sensor/PointCloudOverviewPanel.vue'
+import TaskConsoleShell from '@/components/workspace/TaskConsoleShell.vue'
+import VoiceP0ControlPanel from '@/components/voice/VoiceP0ControlPanel.vue'
 import type { VehicleQuickCommand } from '@/components/control/VehicleQuickControl.vue'
 import { controlAlgorithmRun, fetchAlgorithms, prepareAlgorithmRun } from '@/api/algorithm'
 import { executeMissionAction, fetchMission, fetchMissions } from '@/api/mission'
 import type { MissionAction } from '@/api/mission'
 import { issueRuntimeCommand } from '@/api/runtimeControl'
+import { syncSystemOverviewVoiceContext } from '@/api/voiceControl'
 import type { RuntimeCommandStatus, RuntimeCommandType } from '@/api/runtimeControl'
 import { issueSingleDeviceCommand } from '@/services/singleDeviceControl'
 import { useMonitoringStore } from '@/stores/monitoring'
@@ -44,6 +50,7 @@ import { normalizeOperationalState } from '@/utils/runtimeOperationalState'
 import { resolveActiveRun } from '@/utils/missionRun'
 import type { AlgorithmDefinition, MissionDetail, MissionStatus } from '@/types/mission'
 import type { PointCloudLatest } from '@/types/sensor'
+import type { VoiceMockRuntimeHint, VoiceRuntimeContext } from '@/types/voiceControl'
 
 type UnityMessage = {
   type: string
@@ -54,7 +61,11 @@ type UnityMessage = {
 
 type OverviewRuntimeMode = 'VIRTUAL_SIMULATION' | 'REAL'
 
-const props = withDefaults(defineProps<{ embedded?: boolean }>(), { embedded: false })
+const props = withDefaults(defineProps<{
+  embedded?: boolean
+  sharedShell?: boolean
+  active?: boolean
+}>(), { embedded: false, sharedShell: false, active: true })
 const emit = defineEmits<{ 'workspace-status': [state: WorkspaceHeaderState] }>()
 
 class PostMissionAlgorithmRuntimeError extends Error {
@@ -68,6 +79,7 @@ const monitoringStore = useMonitoringStore()
 const route = useRoute()
 const realtimeStore = useRealtimeStore()
 const activeExperimentStore = useActiveExperimentStore()
+const overviewConsoleCollapsed = ref(false)
 const realMissionRuntimeStore = useRealMissionRuntimeStore()
 const overviewAlgorithmFallbacks: AlgorithmDefinition[] = [
   {
@@ -138,6 +150,8 @@ const overviewDeploymentAcknowledged = ref(false)
 let poseFrameSequence = 0
 let unityPoseRunId = ''
 let freshnessTimer: number | null = null
+let overviewVoiceContextTimer: number | null = null
+const overviewVoiceContext = ref<VoiceRuntimeContext | null>(null)
 const unityInstanceId = 'overview-unity-01'
 let lastRealOverviewScenarioKey = ''
 
@@ -271,6 +285,15 @@ const selectableDevices = computed(() => {
     } as RuntimeNode
   })
 })
+
+const overviewNodeCodes = computed(() => selectableDevices.value.map(device => device.code.toUpperCase()))
+const overviewTrackedTargets = computed(() => (trajectoryStore.frame?.agents ?? [])
+  .filter(agent => agent.type !== 'UAV' && agent.type !== 'USV')
+  .map(agent => ({
+    id: agent.code,
+    label: '任务目标',
+    state: agent.state || 'UNKNOWN',
+  })))
 
 const quickControlDevices = computed(() => {
   if (overviewMissionDevices.value.length) return overviewMissionDevices.value
@@ -412,6 +435,29 @@ const overviewRosMissionPhase = computed(() => {
 const overviewRuntimeModeLabel = computed(() =>
   overviewRuntimeMode.value === 'VIRTUAL_SIMULATION' ? '虚拟仿真' : '真实任务',
 )
+const overviewVoiceDeviceCodes = computed(() => overviewNodeCodes.value.map(code => code.toUpperCase()))
+const overviewVoiceRuntimeHint = computed<VoiceMockRuntimeHint>(() => ({
+  algorithmRunId: overviewVoiceContext.value?.algorithmRunId ?? '',
+  state: overviewVoiceContext.value?.state ?? 'PREVIEW',
+  sceneReady: overviewVoiceContext.value?.sceneReady ?? false,
+  deviceCodes: overviewVoiceDeviceCodes.value,
+  latestFrameSequence: overviewVoiceContext.value?.latestFrameSequence ?? 0,
+}))
+const overviewVoiceUnitySession = computed(() => ({
+  // SYSTEM_OVERVIEW execution is acknowledged by ROS/runtime-control. It does
+  // not use the simulation-only Unity presentation binding protocol.
+  connected: false,
+  unityInstanceId,
+  sceneRevision: 0,
+}))
+
+async function syncOverviewVoiceContext() {
+  if (!props.active || overviewRuntimeMode.value !== 'REAL' || !overviewMissionId.value) return
+  overviewVoiceContext.value = await syncSystemOverviewVoiceContext({
+    missionId: overviewMissionId.value,
+    runtimeInstanceId: unityInstanceId,
+  })
+}
 const overviewMissionActionLabel = computed(() =>
   overviewMissionCanPrepare.value
     ? '进入待执行'
@@ -725,6 +771,7 @@ async function loadOverviewMission() {
   }
   const detail = await fetchMission(mission.id)
   applyOverviewMissionDetail(detail)
+  if (props.active) void syncOverviewVoiceContext().catch(() => undefined)
   return detail
 }
 
@@ -1487,6 +1534,9 @@ onMounted(() => {
   selectedOrDefaultDeviceCode()
   unityViewportStore.show('dashboard')
   freshnessTimer = window.setInterval(() => { freshnessClock.value = Date.now() }, 500)
+  overviewVoiceContextTimer = window.setInterval(() => {
+    void syncOverviewVoiceContext().catch(() => undefined)
+  }, 3000)
   void monitoringStore.refresh({}, true).then(pushPoseFrameToUnity)
   monitoringStore.connectEvents()
   void loadOverviewMission().catch(() => undefined)
@@ -1512,10 +1562,19 @@ onDeactivated(() => {
 onBeforeUnmount(() => {
   if (unityViewportStore.target === 'dashboard') unityViewportStore.park()
   if (freshnessTimer !== null) window.clearInterval(freshnessTimer)
+  if (overviewVoiceContextTimer !== null) window.clearInterval(overviewVoiceContextTimer)
   if (trajectoryToggleTimer !== null) window.clearTimeout(trajectoryToggleTimer)
   if (cameraToolsTimer !== null) window.clearTimeout(cameraToolsTimer)
   monitoringStore.disconnectEvents()
 })
+
+watch(
+  () => [props.active, overviewMissionId.value ?? 0] as const,
+  ([active, missionId]) => {
+    if (active && missionId > 0) void syncOverviewVoiceContext().catch(() => undefined)
+  },
+  { immediate: true },
+)
 
 watch(
   () => [
@@ -1657,7 +1716,14 @@ watch((): WorkspaceHeaderState => ({
 </script>
 
 <template>
-  <component :is="props.embedded ? 'div' : ConsoleLayout" v-bind="props.embedded ? {} : { title: '系统总览', eyebrow: 'MISSION OVERVIEW', showRefresh: false, immersive: true }">
+  <component
+    :is="props.embedded ? 'div' : ConsoleLayout"
+    v-bind="props.embedded ? {} : { title: '系统总览', eyebrow: 'MISSION OVERVIEW', showRefresh: false, immersive: true }"
+    :class="{
+      'workspace-embedded-root': props.embedded,
+      'workspace-shared-content-root': props.sharedShell,
+    }"
+  >
     <section class="overview-console overview-hf" aria-label="海空协同仿真总览">
       <header v-if="!props.embedded" class="overview-hf-statusbar">
         <div class="overview-current-view">
@@ -1677,8 +1743,48 @@ watch((): WorkspaceHeaderState => ({
         </div>
       </header>
 
+      <div class="overview-unified-workbench" :class="{ 'left-collapsed': overviewConsoleCollapsed }">
+        <aside class="overview-task-console-drawer" :class="{ collapsed: overviewConsoleCollapsed }">
+          <TaskConsoleShell
+            :collapsed="overviewConsoleCollapsed"
+            @collapse="overviewConsoleCollapsed = true"
+            @expand="overviewConsoleCollapsed = false"
+          >
+            <Teleport defer to="#shared-workspace-console-content" :disabled="!props.sharedShell">
+              <div v-show="props.active || !props.sharedShell" class="workspace-console-content overview-console-content">
+            <details class="task-console-section overview-voice-control">
+              <summary>
+                <span class="task-console-section-title"><AudioLines :size="16" />语音控制</span>
+                <span class="task-console-section-meta">语音 / 文本<ChevronRight :size="12" /></span>
+              </summary>
+              <VoiceP0ControlPanel
+                v-if="props.active || !props.sharedShell"
+                refined
+                compact
+                :scene-required="false"
+                :runtime-hint="overviewVoiceRuntimeHint"
+                :unity-session="overviewVoiceUnitySession"
+              />
+            </details>
+
+            <NodeCommunicationPanel
+              :default-open="true"
+              :device-codes="overviewNodeCodes"
+              :selected-device="selectedDeviceCode"
+              :targets="overviewTrackedTargets"
+              target-source="系统总览 · 当前任务"
+              @select="selectDevice"
+            />
+              </div>
+            </Teleport>
+          </TaskConsoleShell>
+        </aside>
+
+        <div class="overview-main-column">
       <section class="overview-stage-panel">
-        <div class="overview-taskbar">
+        <div class="overview-taskbar-source">
+          <Teleport defer to="#shared-workspace-toolbar-content" :disabled="!props.sharedShell">
+            <div v-show="props.active || !props.sharedShell" class="overview-taskbar overview-toolbar-content">
           <div class="overview-taskbar-title">
             <h3>海空协同任务</h3>
             <span :title="overviewMissionName">{{ overviewMissionName }}</span>
@@ -1722,9 +1828,15 @@ watch((): WorkspaceHeaderState => ({
               {{ overviewMissionActionLabel }}
             </button>
           </div>
+            </div>
+          </Teleport>
         </div>
 
-        <div class="overview-stage-viewport-shell">
+        <Teleport defer to="#shared-workspace-viewport-content" :disabled="!props.sharedShell">
+        <div
+          v-show="props.active || !props.sharedShell"
+          class="workspace-viewport-content overview-viewport-content overview-stage-viewport-shell"
+        >
           <PointCloudOverviewPanel v-if="route.query.workspace !== 'simulation'" @frame="forwardPointCloudFrameToUnity" />
           <div class="overview-unity-stage unity-runtime-viewport" data-unity-runtime-viewport="dashboard">
             <div v-if="!unityBridgeStore.connected" class="unity-runtime-placeholder">
@@ -1789,9 +1901,15 @@ watch((): WorkspaceHeaderState => ({
             </section>
           </Teleport>
         </div>
+        </Teleport>
       </section>
 
-      <section class="overview-device-deck" aria-label="六载具实时状态">
+      <Teleport defer to="#shared-workspace-bottom-content" :disabled="!props.sharedShell">
+      <section
+        v-show="props.active || !props.sharedShell"
+        class="workspace-bottom-content overview-bottom-content overview-device-deck"
+        aria-label="六载具实时状态"
+      >
         <header class="overview-section-title">
           <h3>设备控制</h3>
           <span>点击设备卡片切换观察视角与快捷指令</span>
@@ -1864,7 +1982,176 @@ watch((): WorkspaceHeaderState => ({
           </button>
         </div>
       </section>
+      </Teleport>
+        </div>
+      </div>
 
     </section>
   </component>
 </template>
+
+<style scoped>
+.workspace-embedded-root,
+.workspace-embedded-root > .overview-console { width: 100%; height: 100%; min-width: 0; min-height: 0; }
+.workspace-console-content { display: flex; min-width: 0; flex-direction: column; gap: 10px; }
+.overview-toolbar-content {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  background: transparent !important;
+  border: 0 !important;
+}
+.workspace-shared-content-root .overview-unified-workbench { display: block; height: 100%; }
+.workspace-shared-content-root .overview-task-console-drawer,
+.workspace-shared-content-root .overview-taskbar-source { display: none !important; }
+.workspace-shared-content-root .overview-main-column { width: 100%; height: 100%; }
+.workspace-shared-content-root .overview-stage-panel { flex: 1 1 0; }
+.workspace-viewport-content,
+.workspace-bottom-content { box-sizing: border-box; width: 100%; height: 100%; min-width: 0; min-height: 0; }
+.overview-viewport-content { border: 0; border-radius: 0; background: transparent; }
+.overview-viewport-content .overview-unity-stage,
+.overview-viewport-content .overview-unity-stage.unity-webgl-panel {
+  width: 100%;
+  height: 100% !important;
+  min-height: 0 !important;
+  flex: 1 1 0;
+  aspect-ratio: auto !important;
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+}
+.overview-bottom-content {
+  container: overview-deck / size;
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+}
+
+.overview-unified-workbench {
+  display: grid;
+  grid-template-columns: var(--workspace-console-width, clamp(238px, calc(20vw - 48px), 317px)) minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+  box-sizing: border-box;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  gap: var(--workspace-column-gap, 10px);
+  overflow: hidden;
+  transition: grid-template-columns 240ms cubic-bezier(.22,.8,.3,1);
+}
+
+.overview-unified-workbench.left-collapsed { grid-template-columns: 48px minmax(0, 1fr); }
+.overview-task-console-drawer {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  contain: layout paint;
+}
+.overview-main-column {
+  display: flex;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+  gap: var(--workspace-panel-gap, 8px);
+  overflow: hidden;
+}
+.overview-stage-panel {
+  display: flex;
+  min-height: 0;
+  flex: 1 1 0;
+  flex-direction: column;
+}
+.overview-taskbar {
+  box-sizing: border-box;
+  flex: 0 0 var(--workspace-stage-toolbar-height, auto);
+  height: var(--workspace-stage-toolbar-height, auto);
+  min-height: 0;
+  padding: 5px 12px;
+  gap: 6px 10px;
+  overflow: hidden;
+}
+.overview-taskbar-title h3 { margin-bottom: 2px; font-size: 17px; }
+.overview-taskbar-title > span { font-size: 10px; }
+.overview-taskbar-algorithm { padding-inline: 9px; }
+.overview-taskbar-algorithm select,
+.overview-taskbar-views button,
+.overview-taskbar-action button { min-height: 29px; height: 29px; font-size: 11px; }
+.overview-taskbar-views button { padding-inline: 8px; }
+.overview-taskbar-action { gap: 8px; }
+.overview-taskbar-state { gap: 5px; font-size: 10px; }
+.overview-stage-viewport-shell {
+  display: flex;
+  min-height: 0;
+  flex: 1 1 0;
+}
+.overview-hf .overview-unity-stage,
+.overview-hf .overview-unity-stage.unity-webgl-panel {
+  height: 100% !important;
+  min-height: 0 !important;
+  aspect-ratio: auto !important;
+}
+.overview-device-deck {
+  box-sizing: border-box;
+  height: var(--workspace-footer-height, auto);
+  min-height: 0;
+  flex: 0 0 var(--workspace-footer-height, auto);
+  overflow: hidden;
+}
+.overview-device-deck .overview-fleet-ribbon {
+  height: calc(100% - 28px);
+  min-height: 0;
+  overflow: hidden;
+  grid-auto-rows: minmax(0, 1fr);
+}
+.overview-device-deck .overview-fleet-card {
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
+@container overview-deck (max-height: 220px) {
+  .overview-device-deck { padding: 7px 9px 8px; }
+  .overview-section-title { padding-bottom: 6px; }
+  .overview-fleet-card { display: grid; grid-template-rows: auto minmax(0, 1fr); padding: 7px 8px; }
+  .overview-card-identity { min-height: 0; margin: 3px 0 0; overflow: hidden; }
+  .overview-card-identity .overview-fleet-symbol {
+    width: clamp(26px, 30cqh, 40px);
+    height: clamp(26px, 30cqh, 40px);
+  }
+  .overview-card-coordinates,
+  .overview-fleet-card > footer { display: none; }
+}
+
+@container overview-deck (max-width: 900px) {
+  .overview-fleet-ribbon { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+
+@container overview-deck (max-width: 520px) {
+  .overview-fleet-ribbon { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .overview-section-title > span { display: none; }
+}
+
+@container workspace (max-width: 760px) {
+  .overview-unified-workbench,
+  .overview-unified-workbench.left-collapsed {
+    height: auto;
+    min-height: 0;
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto auto;
+    overflow: visible;
+  }
+  .overview-task-console-drawer { min-height: 0; height: auto; }
+  .overview-task-console-drawer:not(.collapsed) { min-height: 520px; }
+  .overview-task-console-drawer.collapsed { height: 48px; }
+  .overview-main-column { height: auto; overflow: visible; }
+  .overview-taskbar,
+  .overview-device-deck { height: auto; flex-basis: auto; }
+  .overview-stage-viewport-shell { min-height: 320px; }
+}
+</style>

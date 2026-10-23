@@ -66,7 +66,7 @@ public class VoiceDispatcher {
     public void recover() {
         // The platform owns local child pipes; deployment is one backend process per database.
         for (var c : s.locked(() -> s.query("SELECT data_json FROM voice_runtime_context")))
-            if (r.channel(c.path("_id").asText()) == null)
+            if (!r.systemOverview(c) && r.channel(c.path("_id").asText()) == null)
                 r.ended(c.path("_id").asText(), c.path("runtimeGeneration").asText());
         s.locked(
                 () -> {
@@ -95,6 +95,8 @@ public class VoiceDispatcher {
             for (var e : all) {
                 if ("SEQUENCE".equals(e.path("action").asText())) continue;
                 String ref = e.path("runtimeRef").asText();
+                var context = s.locked(() -> s.get("voice_runtime_context", ref));
+                if (r.systemOverview(context)) continue;
                 var ch = r.channel(ref);
                 if (ch == null) continue;
                 synchronized (ch.lock) {

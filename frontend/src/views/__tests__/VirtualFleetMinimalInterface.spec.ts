@@ -146,7 +146,10 @@ describe('VirtualFleetConfigView minimal simulation interface', () => {
     expect(wrapper.get('.vf-config-panel').findAll('input')).toHaveLength(4)
     expect(wrapper.find('.vf-config-panel [data-test="node-communication-panel"]').exists()).toBe(true)
     expect(wrapper.getComponent({ name: 'NodeCommunicationPanel' }).props('defaultOpen')).toBe(true)
-    const modules = wrapper.findAll('.vf-config-panel > details, .vf-config-panel > [data-test="node-communication-panel"]')
+    const modules = wrapper.findAll(
+      '.vf-config-panel .workspace-console-content > details, '
+      + '.vf-config-panel .workspace-console-content > [data-test="node-communication-panel"]',
+    )
     expect(modules.map(module => module.element)).toEqual([
       wrapper.get('.vf-voice-config').element,
       wrapper.get(scenarioSelector).element,

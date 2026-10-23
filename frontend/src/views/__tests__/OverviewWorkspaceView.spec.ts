@@ -5,6 +5,11 @@ import { createMemoryHistory, createRouter } from 'vue-router'
 
 import ConsoleLayout from '@/components/layout/ConsoleLayout.vue'
 import WorkspaceHeader from '@/components/layout/WorkspaceHeader.vue'
+import TaskConsoleShell from '@/components/workspace/TaskConsoleShell.vue'
+import UnifiedWorkspaceShell from '@/components/workspace/UnifiedWorkspaceShell.vue'
+import WorkspaceBottomPanelShell from '@/components/workspace/WorkspaceBottomPanelShell.vue'
+import WorkspaceToolbarShell from '@/components/workspace/WorkspaceToolbarShell.vue'
+import WorkspaceViewportShell from '@/components/workspace/WorkspaceViewportShell.vue'
 import DashboardView from '@/views/DashboardView.vue'
 import OverviewWorkspaceView from '@/views/OverviewWorkspaceView.vue'
 import VirtualFleetConfigView from '@/views/VirtualFleetConfigView.vue'
@@ -21,7 +26,11 @@ vi.mock('@/views/DashboardView.vue', async () => {
   return {
     default: defineComponent({
       name: 'DashboardView',
-      props: { embedded: { type: Boolean, default: false } },
+      props: {
+        embedded: { type: Boolean, default: false },
+        sharedShell: { type: Boolean, default: false },
+        active: { type: Boolean, default: true },
+      },
       emits: ['workspace-status'],
       setup(_, { emit }) {
         const draft = ref('')
@@ -45,7 +54,11 @@ vi.mock('@/views/VirtualFleetConfigView.vue', async () => {
   return {
     default: defineComponent({
       name: 'VirtualFleetConfigView',
-      props: { embedded: { type: Boolean, default: false } },
+      props: {
+        embedded: { type: Boolean, default: false },
+        sharedShell: { type: Boolean, default: false },
+        active: { type: Boolean, default: true },
+      },
       emits: ['workspace-status'],
       setup(_, { emit }) {
         const draft = ref('')
@@ -102,18 +115,33 @@ describe('OverviewWorkspaceView shared outer shell', () => {
 
   it('renders one navigation and one shared header while prewarming embedded simulation content', async () => {
     const { wrapper } = await createWorkspace()
+    const shell = wrapper.get('[data-workspace-shell-contract="v1"]')
+    expect(shell.classes()).toContain('unified-workspace-contract')
+    expect(shell.findAll('.overview-workspace-pane')).toHaveLength(1)
+    expect(wrapper.findAllComponents(UnifiedWorkspaceShell)).toHaveLength(1)
+    expect(wrapper.findAllComponents(TaskConsoleShell)).toHaveLength(1)
+    expect(wrapper.findAllComponents(WorkspaceToolbarShell)).toHaveLength(1)
+    expect(wrapper.findAllComponents(WorkspaceViewportShell)).toHaveLength(1)
+    expect(wrapper.findAllComponents(WorkspaceBottomPanelShell)).toHaveLength(1)
+    expect(wrapper.findAll('#shared-workspace-viewport-content')).toHaveLength(1)
+    expect(wrapper.findAll('#shared-workspace-bottom-content')).toHaveLength(1)
     expect(wrapper.findAllComponents(ConsoleLayout)).toHaveLength(1)
     expect(wrapper.findAllComponents(WorkspaceHeader)).toHaveLength(1)
     expect(wrapper.findAll('[aria-label="主导航"]')).toHaveLength(1)
     expect(wrapper.findAll('.console-brand')).toHaveLength(1)
     expect(wrapper.findAll('.console-sidebar-user')).toHaveLength(1)
     expect(wrapper.getComponent(DashboardView).props('embedded')).toBe(true)
+    expect(wrapper.getComponent(DashboardView).props('sharedShell')).toBe(true)
+    expect(wrapper.getComponent(DashboardView).props('active')).toBe(true)
     expect(wrapper.findComponent(VirtualFleetConfigView).exists()).toBe(false)
 
     await vi.advanceTimersByTimeAsync(1250)
     await flushPromises()
 
+    expect(shell.findAll('.overview-workspace-pane')).toHaveLength(2)
     expect(wrapper.getComponent(VirtualFleetConfigView).props('embedded')).toBe(true)
+    expect(wrapper.getComponent(VirtualFleetConfigView).props('sharedShell')).toBe(true)
+    expect(wrapper.getComponent(VirtualFleetConfigView).props('active')).toBe(false)
     expect(wrapper.findAllComponents(ConsoleLayout)).toHaveLength(1)
     expect(wrapper.findAllComponents(WorkspaceHeader)).toHaveLength(1)
     expect(wrapper.findAll('[aria-label="主导航"]')).toHaveLength(1)
@@ -240,5 +268,43 @@ describe('OverviewWorkspaceView shared outer shell', () => {
     expect(lifecycle.overviewMounted).toBe(1)
     expect(lifecycle.simulationMounted).toBe(1)
     expect(lifecycle.overviewUnmounted + lifecycle.simulationUnmounted).toBe(0)
+  })
+
+  it('keeps one shared task console and preserves its collapse state across workspace switches', async () => {
+    const { wrapper, router } = await createWorkspace()
+    const shell = wrapper.getComponent(UnifiedWorkspaceShell)
+    const shellUid = shell.vm.$.uid
+
+    await wrapper.get('.shared-console-drawer button[aria-label="收起总控"]').trigger('click')
+    expect(shell.classes()).toContain('console-collapsed')
+
+    await router.push('/?workspace=simulation')
+    await flushPromises()
+    expect(wrapper.getComponent(UnifiedWorkspaceShell).vm.$.uid).toBe(shellUid)
+    expect(wrapper.getComponent(UnifiedWorkspaceShell).classes()).toContain('console-collapsed')
+    expect(wrapper.getComponent(DashboardView).props('active')).toBe(false)
+    expect(wrapper.getComponent(VirtualFleetConfigView).props('active')).toBe(true)
+
+    await wrapper.get('.shared-console-drawer button[aria-label="展开总控"]').trigger('click')
+    expect(wrapper.getComponent(UnifiedWorkspaceShell).classes()).not.toContain('console-collapsed')
+  })
+
+  it('keeps the same four shared region instances through workspace switches', async () => {
+    const { wrapper, router } = await createWorkspace()
+    const consoleShell = wrapper.getComponent(TaskConsoleShell).vm.$.uid
+    const toolbarShell = wrapper.getComponent(WorkspaceToolbarShell).vm.$.uid
+    const viewportShell = wrapper.getComponent(WorkspaceViewportShell).vm.$.uid
+    const bottomShell = wrapper.getComponent(WorkspaceBottomPanelShell).vm.$.uid
+
+    await vi.advanceTimersByTimeAsync(1250)
+    await router.push('/?workspace=simulation')
+    await flushPromises()
+    await router.push('/')
+    await flushPromises()
+
+    expect(wrapper.getComponent(TaskConsoleShell).vm.$.uid).toBe(consoleShell)
+    expect(wrapper.getComponent(WorkspaceToolbarShell).vm.$.uid).toBe(toolbarShell)
+    expect(wrapper.getComponent(WorkspaceViewportShell).vm.$.uid).toBe(viewportShell)
+    expect(wrapper.getComponent(WorkspaceBottomPanelShell).vm.$.uid).toBe(bottomShell)
   })
 })

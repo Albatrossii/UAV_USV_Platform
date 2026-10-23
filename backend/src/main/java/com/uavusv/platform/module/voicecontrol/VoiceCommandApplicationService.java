@@ -363,7 +363,8 @@ public class VoiceCommandApplicationService {
                 .putNull("timedOutAt");
         e.put(
                 "presentationStatus",
-                Set.of("START", "RESUME").contains(e.path("action").asText())
+                !r.systemOverview(c)
+                        && Set.of("START", "RESUME").contains(e.path("action").asText())
                         ? "PENDING"
                         : "NOT_REQUIRED");
         e.put("createdAt", t.stamp()).put("updatedAt", t.stamp());

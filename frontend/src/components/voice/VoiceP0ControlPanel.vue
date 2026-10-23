@@ -41,8 +41,9 @@ const props = withDefaults(defineProps<{
   unitySession: UnityPresentationSession
   refined?: boolean
   compact?: boolean
+  sceneRequired?: boolean
   frame?: AlgorithmRuntimeFrame | null
-}>(), { refined: false, compact: false })
+}>(), { refined: false, compact: false, sceneRequired: true })
 const emit = defineEmits<{ presentationMessage: [message: UnityPresentationOutgoing] }>()
 const store = useVoiceControlStore()
 const authStore = useAuthStore()
@@ -124,6 +125,7 @@ const runtimeEnded = computed(() => !!context.value && (
     && execution.value.runtimeGeneration === context.value.runtimeGeneration
     && execution.value.action === 'STOP' && execution.value.state === 'SUCCEEDED')
 ))
+const systemOverviewContext = computed(() => context.value?.runtimeScope === 'SYSTEM_OVERVIEW')
 const activeVoiceContext = computed(() => context.value && !runtimeEnded.value ? context.value : null)
 const presetProgress = computed<PresetExecution | null>(() => {
   const result = execution.value
@@ -299,7 +301,10 @@ const refinedConfirmReason = computed(() => {
   if (!heartbeatFresh.value) return '设备连接暂时中断，请稍后重试'
   if (plan.action === 'ALGORITHM_PRESET') return context.value?.state === 'RUNNING' && context.value.capabilities.includes('ALGORITHM_PRESET') && heartbeatFresh.value ? '' : '请先启动指令版仿真并等待连接就绪'
   if (plan.action === 'DEVICE_COMMAND') {
-    if (!context.value?.capabilities.includes('DEVICE_COMMAND') || context.value.state !== 'RUNNING') return '当前运行不接受单设备控制'
+    if (!context.value?.capabilities.includes('DEVICE_COMMAND')
+      || !(context.value.state === 'RUNNING' || (systemOverviewContext.value && context.value.state === 'PAUSED'))) {
+      return '当前运行不接受单设备控制'
+    }
     if (!heartbeatFresh.value) return '设备连接暂时中断，请稍后重试'
     return ''
   }
@@ -343,8 +348,10 @@ const presentationCanResync = computed(() => execution.value?.state === 'SUCCEED
   && ['START', 'RESUME'].includes(execution.value.action)
   && execution.value.presentationStatus === 'STALE')
 const contextSummary = computed(() => context.value
-  ? `运行 ${context.value.algorithmRunId} · ${context.value.state} · 帧 ${context.value.latestFrameSequence} · 心跳${heartbeatFresh.value ? '正常' : '失效'}`
-  : '未发现可控制的算法实例，请重新生成场景；若提示运行被占用，请联系管理员清理旧运行。')
+  ? `${systemOverviewContext.value ? '真实任务' : '运行'} ${context.value.algorithmRunId} · ${context.value.state} · ${systemOverviewContext.value ? '上下文' : `帧 ${context.value.latestFrameSequence}`} · 心跳${heartbeatFresh.value ? '正常' : '失效'}`
+  : props.sceneRequired
+    ? '未发现可控制的运行上下文，请重新生成场景或刷新任务；若提示运行被占用，请联系管理员清理旧运行。'
+    : '正在加载真实任务控制上下文；录音和识别可直接使用，执行提案将在任务上下文就绪后开放。')
 
 watch(() => [execution.value?.proposalId, execution.value?.state], ([proposalId, state]) => {
   if (proposalId !== automaticProposalId.value || !state) return
@@ -392,8 +399,8 @@ function disabledReason(action: VoiceAction, ignoreActiveProposal = false) {
   if (!heartbeatFresh.value) return '算法心跳超过 5 秒或尚未建立'
   if (props.runtimeHint.deviceCodes.length === 0) return '尚未生成可冻结的设备集合'
   if (props.runtimeHint.deviceCodes.length > 200) return '设备集合超过 P0 上限 200'
-  if (action === 'START' && !context.value.sceneReady) return 'Unity 场景尚未就绪'
-  if (action === 'RESUME' && !isLocalSimulationResume(action) && !context.value.sceneReady) return 'Unity 场景尚未就绪'
+  if (props.sceneRequired && action === 'START' && !context.value.sceneReady) return 'Unity 场景尚未就绪'
+  if (props.sceneRequired && action === 'RESUME' && !isLocalSimulationResume(action) && !context.value.sceneReady) return 'Unity 场景尚未就绪'
   if ((!ignoreActiveProposal && activeProposal.value) || commandInFlight.value) return '请先处理当前指令'
   return ''
 }
@@ -1224,9 +1231,9 @@ onBeforeUnmount(() => {
     <div class="refined-content">
       <p v-if="voiceP0MockEnabled" class="refined-notice">当前为本地演示模式，不连接真实设备。</p>
       <p v-if="authStore.user?.role !== 'ADMIN'" class="refined-notice" role="alert">当前账号没有控制权限，请使用管理员账号。</p>
-      <p v-else-if="!runtimeHint.algorithmRunId" class="refined-notice" role="status">请先生成场景；后端准备成功后将自动连接语音控制。</p>
-      <p v-else-if="!context" class="refined-notice" role="status">正在核对当前场景的控制上下文；若连接失败，请重新连接。</p>
-      <p v-else-if="runtimeEnded" class="refined-notice" role="status">本轮运行已结束，当前画面已保留。重新生成场景后可继续控制。</p>
+      <p v-else-if="!runtimeHint.algorithmRunId" class="refined-notice" role="status">{{ sceneRequired ? '请先生成场景；后端准备成功后将自动连接语音控制。' : '无需生成场景即可录音和识别；正在加载真实任务上下文，连接后可预览并确认指令。' }}</p>
+      <p v-else-if="!context" class="refined-notice" role="status">{{ sceneRequired ? '正在核对当前场景的控制上下文；若连接失败，请重新连接。' : '正在核对真实任务控制上下文；录音和识别仍可使用。' }}</p>
+      <p v-else-if="runtimeEnded" class="refined-notice" role="status">{{ sceneRequired ? '本轮运行已结束，当前画面已保留。重新生成场景后可继续控制。' : '本轮任务已结束；仍可录音和识别，新任务上下文就绪后可继续控制。' }}</p>
       <p v-else-if="!heartbeatFresh" class="refined-notice" role="status">设备连接暂时中断，恢复后可继续控制。</p>
       <p v-if="recoveryPending" class="refined-notice" role="status">正在核对上一次请求，请稍候。</p>
       <p v-else-if="responseUnknown" class="refined-notice" role="alert">上次请求结果尚未确认。请核对结果，不要重复下发指令。</p>
@@ -1250,6 +1257,7 @@ onBeforeUnmount(() => {
         :direct-execute-input="autoExecuteSimulationVoice"
         :allow-mock-submission="voiceP0MockEnabled"
         :submission-disabled="refinedSubmissionDisabled || refinedAutomaticRunning"
+        :allow-capture-without-context="!sceneRequired && !activeVoiceContext"
         :action-disabled-reason="refinedActionDisabledReason"
         @draft-change="beginRefinedInput"
         @candidate="handleVoiceCandidate"
@@ -1314,7 +1322,7 @@ onBeforeUnmount(() => {
       </p>
       <dl>
         <div><dt>任务状态</dt><dd>{{ context?.state ?? '未连接' }}</dd></div>
-        <div><dt>场景状态</dt><dd>{{ context?.sceneReady ? 'READY' : 'WAITING' }}</dd></div>
+        <div><dt>{{ sceneRequired ? '场景状态' : '场景要求' }}</dt><dd>{{ sceneRequired ? (context?.sceneReady ? 'READY' : 'WAITING') : '无需生成' }}</dd></div>
         <div><dt>接入设备</dt><dd>{{ runtimeHint.deviceCodes.length }} 台</dd></div>
       </dl>
     </article>
@@ -1427,7 +1435,7 @@ onBeforeUnmount(() => {
             </li>
           </ol>
         </dd></div>
-        <div><dt>当前仿真</dt><dd>运行 {{ context?.algorithmRunId ?? '-' }} / {{ context?.state ?? '-' }}</dd></div>
+        <div><dt>当前运行</dt><dd>{{ systemOverviewContext ? '真实任务' : '仿真运行' }} {{ context?.algorithmRunId ?? '-' }} / {{ context?.state ?? '-' }}</dd></div>
         <div><dt>设备快照</dt><dd>{{ proposal.plan.explicitDeviceCodes.length }} 个：{{ proposal.plan.explicitDeviceCodes.join('、') }}</dd></div>
       </dl>
       <details>

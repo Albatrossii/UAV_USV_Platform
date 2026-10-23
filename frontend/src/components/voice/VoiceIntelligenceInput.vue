@@ -32,6 +32,7 @@ const props = withDefaults(defineProps<{
   directExecuteInput?: boolean
   allowMockSubmission?: boolean
   submissionDisabled?: boolean
+  allowCaptureWithoutContext?: boolean
   refined?: boolean
   compact?: boolean
   proposalReady?: boolean
@@ -40,7 +41,7 @@ const props = withDefaults(defineProps<{
   actionDisabledReason?: (action: VoiceAction) => string
 }>(), {
   adapter: undefined, runtimeContext: null, automationRuntime: null, operatorScope: '', inputDisabled: false,
-  autoExecuteSpeech: false, allowMockSubmission: false, submissionDisabled: false, actionDisabledReason: undefined,
+  autoExecuteSpeech: false, allowMockSubmission: false, submissionDisabled: false, allowCaptureWithoutContext: false, actionDisabledReason: undefined,
   refined: false, compact: false, proposalReady: false, algorithmPresetsEnabled: false,
 })
 const emit = defineEmits<{
@@ -109,6 +110,7 @@ const simulationSpeechRuntime = computed(() => automaticSpeech.value
   && isLocalVoiceSimulation(props.automationRuntime) ? props.automationRuntime : null)
 const busy = computed(() => permissionPending.value || ['TRANSCRIBING', 'PARSING'].includes(stage.value))
 const blocked = computed(() => props.inputDisabled || accessDenied.value)
+const captureBlocked = computed(() => props.submissionDisabled && !props.allowCaptureWithoutContext)
 const candidate = computed(() => result.value?.status === 'CANDIDATE' ? result.value : null)
 const candidateDisabledReason = computed(() => {
   if (blocked.value) return '当前账号没有语音控制权限'
@@ -259,9 +261,9 @@ watch([
 }, { flush: 'sync' })
 watch(stage, () => { stageStartedAt.value = performance.now(); stageElapsed.value = 0 }, { flush: 'sync' })
 
-// A dispatch lock acquired while speech is in flight invalidates that utterance,
-// even if the other execution finishes before its ASR/parse response arrives.
-watch(() => props.submissionDisabled, disabled => {
+// Missing task context may allow capture-only use, while a real dispatch lock
+// still invalidates speech in flight so it cannot submit after a later unlock.
+watch(captureBlocked, disabled => {
   if (!disabled || !(permissionPending.value || stage.value === 'RECORDING'
     || pending.value?.kind === 'audio' || (pending.value?.kind === 'text' && pending.value.origin === 'speech'))) return
   epoch++
@@ -416,7 +418,7 @@ function handleParsed(parsed: VoiceParseResult, input: VoiceParseRequest, origin
 
 async function runRequest() {
   if (!pending.value || blocked.value || busy.value || coolingDown.value) return
-  if (props.submissionDisabled && (pending.value.kind === 'audio' || pending.value.origin === 'speech')) return
+  if (captureBlocked.value && (pending.value.kind === 'audio' || pending.value.origin === 'speech')) return
   const current = pending.value
   if (current.kind === 'text' && rejectNegatedInput(current.input.text, current.origin)) {
     pending.value = null
@@ -462,7 +464,7 @@ async function runRequest() {
           : transcriptIsRealAsr && automaticSpeech.value
             ? '语音已识别，正在解析指令。'
             : '请核对识别文字后再解析。'
-      if (automaticSpeech.value && !recordingWasCutOff && transcriptIsRealAsr && transcript.text.trim() && !props.submissionDisabled) {
+      if (automaticSpeech.value && !recordingWasCutOff && transcriptIsRealAsr && transcript.text.trim() && !captureBlocked.value) {
         if (rejectNegatedInput(transcript.text, 'speech')) return
         stage.value = 'PARSING'
         const parseInput: VoiceParseRequest = {
@@ -561,7 +563,7 @@ function preferredAudioType() {
     .find(type => MediaRecorder.isTypeSupported(type)) ?? ''
 }
 async function startRecording(testOnly = false) {
-  if (blocked.value || props.submissionDisabled || busy.value || coolingDown.value || pending.value || recorder) return
+  if (blocked.value || captureBlocked.value || busy.value || coolingDown.value || pending.value || recorder) return
   emit('draftChange')
   automaticallySubmitted.value = false
   message.value = ''
@@ -584,7 +586,7 @@ async function startRecording(testOnly = false) {
         autoGainControl: microphoneProcessing.value,
       },
     })
-    if (ticket !== epoch || blocked.value || props.submissionDisabled) { acquired.getTracks().forEach(track => track.stop()); return }
+    if (ticket !== epoch || blocked.value || captureBlocked.value) { acquired.getTracks().forEach(track => track.stop()); return }
     stream = acquired
     microphoneName.value = acquired.getAudioTracks?.()[0]?.label || '默认麦克风'
     void refreshMicrophones()
@@ -613,7 +615,7 @@ async function startRecording(testOnly = false) {
       if (recorder === active) recorder = null
       if (stream === acquired) stream = null
       stage.value = 'IDLE'
-      if (blocked.value || props.submissionDisabled) {
+      if (blocked.value || captureBlocked.value) {
         message.value = '当前指令仍在处理，请稍后重新录音。'
         return
       }
@@ -677,7 +679,7 @@ function chooseAudioFile(event: Event) {
   const input = event.target as HTMLInputElement
   const file = input.files?.[0]
   input.value = ''
-  if (!file || blocked.value || props.submissionDisabled || busy.value || coolingDown.value || pending.value || stage.value === 'RECORDING') return
+  if (!file || blocked.value || captureBlocked.value || busy.value || coolingDown.value || pending.value || stage.value === 'RECORDING') return
   emit('draftChange')
   automaticallySubmitted.value = false
   result.value = null
@@ -703,7 +705,7 @@ function chooseAudioFile(event: Event) {
   void runRequest()
 }
 async function presetText(text: string) {
-  if (busy.value || blocked.value || props.submissionDisabled || props.proposalReady) return
+  if (busy.value || blocked.value || captureBlocked.value || props.proposalReady) return
   draft.value = text
   await parseDraft()
 }
@@ -711,7 +713,7 @@ defineExpose({ presetText })
 
 async function parseDraft() {
   if (busy.value || coolingDown.value || pending.value || blocked.value || stage.value === 'RECORDING' || !draft.value.trim() || textLength.value > 200
-    || (props.refined && (props.submissionDisabled || props.proposalReady || automaticallySubmitted.value))) return
+    || (props.refined && (captureBlocked.value || props.proposalReady || automaticallySubmitted.value))) return
   parseElapsedMs = 0
   pending.value = { kind: 'text', origin: 'manual', input: {
     requestId: crypto.randomUUID(), text: draft.value, locale: 'zh-CN',
@@ -756,7 +758,7 @@ onBeforeUnmount(() => { microphoneDeviceEpoch++ })
       <section class="refined-capture" :class="{ recording: stage === 'RECORDING' }" aria-label="语音录入">
         <div class="refined-mic-orbit">
           <button class="refined-mic" type="button" :aria-label="stage === 'RECORDING' ? '停止录音' : '开始录音'"
-            :aria-pressed="stage === 'RECORDING'" :disabled="stage !== 'RECORDING' && (busy || coolingDown || !!pending || blocked || submissionDisabled)"
+            :aria-pressed="stage === 'RECORDING'" :disabled="stage !== 'RECORDING' && (busy || coolingDown || !!pending || blocked || captureBlocked)"
             @click="stage === 'RECORDING' ? stopRecording() : startRecording()">
             <Square v-if="stage === 'RECORDING'" :size="compact ? 16 : 27" aria-hidden="true" />
             <Mic v-else :size="compact ? 18 : 29" aria-hidden="true" />
@@ -789,7 +791,7 @@ onBeforeUnmount(() => { microphoneDeviceEpoch++ })
           :disabled="busy || stage === 'RECORDING' || !!pending" />降噪与回声消除</label>
         <div class="microphone-test-actions">
           <button type="button" :disabled="busy || stage === 'RECORDING'" @click="refreshMicrophones">刷新设备</button>
-          <button type="button" :disabled="busy || !!pending || blocked || submissionDisabled || coolingDown || stage === 'RECORDING'"
+          <button type="button" :disabled="busy || !!pending || blocked || captureBlocked || coolingDown || stage === 'RECORDING'"
             @click="startRecording(true)">仅录音测试</button>
         </div>
         <p v-if="microphoneDeviceMessage">{{ microphoneDeviceMessage }}</p>
@@ -828,7 +830,7 @@ onBeforeUnmount(() => { microphoneDeviceEpoch++ })
       <slot />
       <div v-if="!proposalReady && !automaticallySubmitted && !automaticSpeechDraft && (!compact || draft.trim())" class="refined-action-area">
         <button class="refined-preview" type="button"
-          :disabled="busy || coolingDown || !!pending || blocked || submissionDisabled || stage === 'RECORDING' || !draft.trim() || textLength > 200" @click="parseDraft">
+          :disabled="busy || coolingDown || !!pending || blocked || captureBlocked || stage === 'RECORDING' || !draft.trim() || textLength > 200" @click="parseDraft">
           <span>{{ stage === 'PARSING' ? '正在处理…' : directExecuteInput ? '执行' : '预览指令' }}</span><ArrowRight :size="17" aria-hidden="true" />
         </button>
       </div>
@@ -841,7 +843,7 @@ onBeforeUnmount(() => { microphoneDeviceEpoch++ })
     <textarea v-model="draft" rows="3" placeholder="录音未能明确识别时，可在此修改指令后重试" :disabled="busy || !!pending || blocked || stage === 'RECORDING'" />
     <p v-if="textLength > 200" role="alert">识别文字共 {{ textLength }} 字，请编辑至 200 字以内再解析；文字未截断。</p>
     <div class="controls">
-      <button v-if="stage !== 'RECORDING'" type="button" :disabled="busy || coolingDown || !!pending || blocked || submissionDisabled" @click="startRecording()">
+      <button v-if="stage !== 'RECORDING'" type="button" :disabled="busy || coolingDown || !!pending || blocked || captureBlocked" @click="startRecording()">
         <Mic :size="13" />开始录音
       </button>
       <button v-else class="recording" type="button" @click="stopRecording"><Square :size="12" />停止录音</button>
@@ -851,7 +853,7 @@ onBeforeUnmount(() => { microphoneDeviceEpoch++ })
     </div>
     <label v-if="autoExecuteSpeech" class="audio-file-test">
       选择录音文件进行仿真链路测试
-      <input type="file" accept="audio/wav,audio/mpeg,audio/mp4,audio/ogg,audio/webm,.wav,.mp3,.m4a,.mp4,.ogg,.webm" :disabled="busy || coolingDown || !!pending || blocked || submissionDisabled || stage === 'RECORDING'" @change="chooseAudioFile" />
+      <input type="file" accept="audio/wav,audio/mpeg,audio/mp4,audio/ogg,audio/webm,.wav,.mp3,.m4a,.mp4,.ogg,.webm" :disabled="busy || coolingDown || !!pending || blocked || captureBlocked || stage === 'RECORDING'" @change="chooseAudioFile" />
     </label>
     <p v-if="autoExecuteSpeech" class="file-test-note">文件会经过真实识别和指令解析；明确口令可能自动启动本地仿真任务。</p>
     <p class="status"><b>{{ statusLabel }}<template v-if="['RECORDING', 'TRANSCRIBING', 'PARSING'].includes(stage)"> · {{ stageElapsed }} 秒</template></b><span>{{ message }}<template v-if="coolingDown"> · {{ cooldownSeconds }} 秒后可重试</template></span></p>

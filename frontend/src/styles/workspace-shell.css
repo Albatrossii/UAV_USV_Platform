@@ -1,0 +1,55 @@
+/*
+ * Unified workspace shell contract (v1).
+ *
+ * This is the only source of truth for the geometry and visual chrome shared
+ * by the overview and simulation workspaces. Region components may consume
+ * these tokens, but must not redeclare them.
+ */
+.unified-workspace-contract {
+  /* Geometry */
+  --workspace-console-width: clamp(238px, calc(20vw - 48px), 317px);
+  --workspace-frame-height: calc(100dvh - 102px);
+  --workspace-frame-min-height: 560px;
+  --workspace-stage-toolbar-height: 54px;
+  --workspace-footer-height: 130px;
+  --workspace-column-gap: 10px;
+  --workspace-panel-gap: 8px;
+
+  /* Shared visual chrome. The simulation shell is the v1 visual reference. */
+  --workspace-page-background: #061113;
+  --workspace-panel-background: rgba(8, 25, 30, .94);
+  --workspace-console-background: #0b2025;
+  --workspace-console-section-background: #10282c;
+  --workspace-toolbar-background: linear-gradient(100deg, #112b32, #091e27);
+  --workspace-footer-background: #0a2028;
+  --workspace-panel-border: rgba(108, 228, 213, .18);
+  --workspace-strong-border: #31525b;
+  --workspace-panel-radius: 8px;
+  --workspace-footer-radius: 7px;
+  --workspace-text-primary: #dff8f4;
+  --workspace-text-muted: #81aab2;
+  --workspace-accent: #70dfcf;
+}
+
+@container workspace (max-width: 1350px) {
+  .unified-workspace-contract { --workspace-console-width: 257px; }
+}
+
+@container workspace (max-width: 1100px) {
+  .unified-workspace-contract {
+    --workspace-console-width: 238px;
+    --workspace-frame-height: calc(100dvh - 118px);
+    --workspace-frame-min-height: 700px;
+    --workspace-stage-toolbar-height: 94px;
+    --workspace-footer-height: 206px;
+  }
+}
+
+@container workspace (max-width: 760px) {
+  .unified-workspace-contract {
+    --workspace-frame-height: auto;
+    --workspace-frame-min-height: 0px;
+    --workspace-stage-toolbar-height: auto;
+    --workspace-footer-height: auto;
+  }
+}
