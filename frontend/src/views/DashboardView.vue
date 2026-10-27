@@ -1755,7 +1755,7 @@ watch((): WorkspaceHeaderState => ({
             <details class="task-console-section overview-voice-control">
               <summary>
                 <span class="task-console-section-title"><AudioLines :size="16" />语音控制</span>
-                <span class="task-console-section-meta">语音 / 文本<ChevronRight :size="12" /></span>
+                <span class="task-console-section-meta">语音 / 文本<ChevronRight class="task-console-section-arrow" :size="12" /></span>
               </summary>
               <VoiceP0ControlPanel
                 v-if="props.active || !props.sharedShell"
@@ -1768,7 +1768,7 @@ watch((): WorkspaceHeaderState => ({
             </details>
 
             <NodeCommunicationPanel
-              :default-open="true"
+              :default-open="false"
               :device-codes="overviewNodeCodes"
               :selected-device="selectedDeviceCode"
               :targets="overviewTrackedTargets"

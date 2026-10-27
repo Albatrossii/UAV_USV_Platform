@@ -64,8 +64,12 @@ describe('DashboardView Unity overlay', () => {
     expect(wrapper.find('[data-unity-runtime-viewport="dashboard"]').exists()).toBe(true)
     expect(wrapper.find('.overview-mission-console').exists()).toBe(false)
     expect(wrapper.get('[aria-label="任务控制台"]').text()).toContain('真实任务语音控制')
+    expect(wrapper.get('.overview-voice-control > summary .task-console-section-title').text()).toBe('语音控制')
+    expect(wrapper.get('.overview-voice-control > summary .task-console-section-meta').text()).toBe('语音 / 文本')
+    expect(wrapper.find('.overview-voice-control > summary .task-console-section-arrow').exists()).toBe(true)
     expect(wrapper.findAll('[data-test="overview-voice-control"]')).toHaveLength(1)
     expect(wrapper.get('[data-test="node-communication-panel"]')).toBeTruthy()
+    expect((wrapper.get('[data-test="nodes-panel"]').element as HTMLDetailsElement).open).toBe(false)
     expect(wrapper.emitted('workspace-status')?.slice(-1)[0]?.[0]).toMatchObject({
       deviceContext: '全局态势',
       statuses: expect.arrayContaining([expect.objectContaining({ label: 'ROS 离线' })]),

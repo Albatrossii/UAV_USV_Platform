@@ -144,10 +144,37 @@ const emit = defineEmits<{
   cursor: pointer;
   list-style: none;
 }
+:deep(.task-console-section > summary:hover) { background: #153138; }
+:deep(.task-console-section > summary:focus-visible) { outline: 2px solid #a6fff2; outline-offset: -3px; }
 :deep(.task-console-section > summary::-webkit-details-marker) { display: none; }
 :deep(.task-console-section[open] > summary) { border-bottom: 1px solid #2b4b51; }
-:deep(.task-console-section .task-console-section-title) { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; }
-:deep(.task-console-section .task-console-section-meta) { color: #91b0b5; font-size: 10px; text-align: right; }
+:deep(.task-console-section .task-console-section-title) {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+:deep(.task-console-section .task-console-section-title svg) { flex-shrink: 0; color: #70dfcf; }
+:deep(.task-console-section .task-console-section-meta) {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  color: #91b0b5;
+  font-size: 10px;
+  text-align: right;
+  white-space: nowrap;
+}
+:deep(.task-console-section .task-console-section-arrow) {
+  flex-shrink: 0;
+  color: #80bbb7;
+  transition: transform 150ms ease;
+}
+:deep(.task-console-section[open] > summary .task-console-section-arrow) { transform: rotate(90deg); }
 :deep(.task-console-section .task-console-section-body) { padding: 10px; }
 :deep(.task-console-preparation-note) { margin: 0; color: #91b0b5; font-size: 10px; line-height: 1.75; }
 

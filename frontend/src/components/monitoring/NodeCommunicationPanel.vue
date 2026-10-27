@@ -11,7 +11,7 @@ const props = withDefaults(defineProps<{
   targets?: Array<{ id: string; label: string; state: string }>
   targetSource?: string
   defaultOpen?: boolean
-}>(), { selectedDevice: '', targets: () => [], targetSource: '算法仿真 · 当前场景', defaultOpen: true })
+}>(), { selectedDevice: '', targets: () => [], targetSource: '算法仿真 · 当前场景', defaultOpen: false })
 const emit = defineEmits<{ select: [code: string] }>()
 const monitor = inject(nodeMonitoringKey, null) ?? useNodeMonitoring()
 const expandedCode = ref('')
