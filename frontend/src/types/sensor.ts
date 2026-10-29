@@ -39,6 +39,35 @@ export interface RadarOverview {
   spectrumPowersDbm: number[]
 }
 
+export interface San60SpatialTrackSample {
+  p: number[]
+  dbm: number
+  time: number
+  latitude?: number
+  longitude?: number
+  altitude_m?: number
+}
+
+export interface San60SpatialData {
+  track: San60SpatialTrackSample[]
+  cells: number[][]
+  field: number[][]
+  hotspot?: { p: number[]; dbm: number } | null
+  source?: { p: number[]; label?: string } | null
+  reason?: string
+  span?: number[]
+  voxel_size?: number
+}
+
+export interface San60SpatialOverview {
+  connected: boolean
+  updatedAtMs: number
+  sequence: number | null
+  vehicleId: string
+  streamId: string
+  spatial: San60SpatialData | null
+}
+
 export interface PointCloudFrame {
   schema_version: string
   message_type: 'pointcloud_frame'

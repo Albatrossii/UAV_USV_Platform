@@ -20,18 +20,7 @@ declare module 'vue' {
     CooperativeSituationHud: typeof import('./components/mission/CooperativeSituationHud.vue')['default']
     ElAlert: typeof import('element-plus/es')['ElAlert']
     ElButton: typeof import('element-plus/es')['ElButton']
-    ElCheckbox: typeof import('element-plus/es')['ElCheckbox']
-    ElDialog: typeof import('element-plus/es')['ElDialog']
-    ElForm: typeof import('element-plus/es')['ElForm']
-    ElFormItem: typeof import('element-plus/es')['ElFormItem']
     ElInput: typeof import('element-plus/es')['ElInput']
-    ElInputNumber: typeof import('element-plus/es')['ElInputNumber']
-    ElOption: typeof import('element-plus/es')['ElOption']
-    ElPagination: typeof import('element-plus/es')['ElPagination']
-    ElSelect: typeof import('element-plus/es')['ElSelect']
-    ElTable: typeof import('element-plus/es')['ElTable']
-    ElTableColumn: typeof import('element-plus/es')['ElTableColumn']
-    ElTag: typeof import('element-plus/es')['ElTag']
     ExperimentArchive: typeof import('./components/voice/ExperimentArchive.vue')['default']
     HelloWorld: typeof import('./components/HelloWorld.vue')['default']
     LocalAsrInput: typeof import('./components/voice/LocalAsrInput.vue')['default']
@@ -49,6 +38,7 @@ declare module 'vue' {
     RadarPpiCanvas: typeof import('./components/sensor/RadarPpiCanvas.vue')['default']
     RouterLink: typeof import('vue-router')['RouterLink']
     RouterView: typeof import('vue-router')['RouterView']
+    San60SpatialCanvas: typeof import('./components/sensor/San60SpatialCanvas.vue')['default']
     SimulationRuntimeHost: typeof import('./components/unity/SimulationRuntimeHost.vue')['default']
     SimulationUnityWebglPanel: typeof import('./components/unity/SimulationUnityWebglPanel.vue')['default']
     SpectrumWaterfall3D: typeof import('./components/vision/SpectrumWaterfall3D.vue')['default']
@@ -66,8 +56,5 @@ declare module 'vue' {
     WorkspaceHeader: typeof import('./components/layout/WorkspaceHeader.vue')['default']
     WorkspaceToolbarShell: typeof import('./components/workspace/WorkspaceToolbarShell.vue')['default']
     WorkspaceViewportShell: typeof import('./components/workspace/WorkspaceViewportShell.vue')['default']
-  }
-  export interface GlobalDirectives {
-    vLoading: typeof import('element-plus/es')['ElLoadingDirective']
   }
 }

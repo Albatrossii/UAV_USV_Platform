@@ -3,6 +3,7 @@ package com.uavusv.platform.module.sensor.controller;
 import com.uavusv.platform.common.api.ApiResponse;
 import com.uavusv.platform.module.sensor.dto.RadarOverviewResponse;
 import com.uavusv.platform.module.sensor.dto.PointCloudLatestResponse;
+import com.uavusv.platform.module.sensor.dto.San60SpatialResponse;
 import com.uavusv.platform.module.sensor.service.SensorRuntimeService;
 import java.time.Clock;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -24,6 +25,11 @@ public class SensorController {
     @GetMapping("/radar")
     public ApiResponse<RadarOverviewResponse> radar() {
         return ApiResponse.success(sensorRuntimeService.radarOverview());
+    }
+
+    @GetMapping("/san60/spatial")
+    public ApiResponse<San60SpatialResponse> san60Spatial() {
+        return ApiResponse.success(sensorRuntimeService.san60SpatialOverview());
     }
 
     @GetMapping("/pointcloud/latest")

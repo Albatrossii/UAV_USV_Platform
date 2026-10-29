@@ -4,6 +4,8 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch 
 
 import ConsoleLayout from '@/components/layout/ConsoleLayout.vue'
 import SpectrumWaterfall3D from '@/components/vision/SpectrumWaterfall3D.vue'
+import San60SpatialCanvas from '@/components/sensor/San60SpatialCanvas.vue'
+import { fetchSan60SpatialOverview } from '@/api/sensor'
 import { useRadarSensorStore } from '@/stores/radarSensor'
 import { useUnityBridgeStore } from '@/stores/unityBridge'
 import { useVisualSensorStore } from '@/stores/visualSensor'
@@ -11,7 +13,7 @@ import { useGimbalMoveStopGuard } from '@/composables/useGimbalMoveStopGuard'
 import { createSerialRequestQueue } from '@/composables/createSerialRequestQueue'
 import { fetchGimbalCameraFrame, fetchGimbalCameraStatus, sendGimbalCameraCommand } from '@/api/gimbalCamera'
 import type { GimbalCameraCommand, GimbalCameraStatus } from '@/types/gimbalCamera'
-import type { RadarItem } from '@/types/sensor'
+import type { RadarItem, San60SpatialOverview } from '@/types/sensor'
 import type { VisualSensor } from '@/types/visualSensor'
 
 const DETECTOR_ID = 'electronic_detector_01'
@@ -41,6 +43,8 @@ const gimbalBusy = ref(false)
 const gimbalRecording = ref(false)
 const gimbalMessage = ref('等待云台协议网关')
 const spectrumHistory = shallowRef<SpectrumHistoryFrame[]>([])
+const activeSpatialMode = ref<'waterfall' | 'spatial'>('waterfall')
+const spatialSnapshot = ref<San60SpatialOverview | null>(null)
 let statusTimer: number | undefined
 let spectrumTimer: number | undefined
 let gimbalTimer: number | undefined
@@ -54,6 +58,8 @@ const gimbalCommandQueue = createSerialRequestQueue()
 let gimbalMoveRenewTimer: number | undefined
 let activeGimbalDirection: string | null = null
 let radarRefreshing = false
+let spatialTimer: number | undefined
+let spatialRefreshing = false
 let viewActive = false
 let lastSpectrumKey = ''
 const gimbalMoveStopGuard = useGimbalMoveStopGuard(() => {
@@ -70,6 +76,7 @@ const sensors = computed(() => overview.value.sensors)
 const frames = computed(() => store.channels.SYSTEM_OVERVIEW.frameUrls)
 const stats = computed(() => store.streamStats)
 const radar = computed(() => radarStore.overview)
+const spatialAvailable = computed(() => Boolean(spatialSnapshot.value?.spatial?.track.length || spatialSnapshot.value?.spatial?.cells.length))
 const detectorSelected = computed(() => activeSourceId.value === DETECTOR_ID)
 const activeCamera = computed(() => sensors.value.find(item => item.cameraId === activeSourceId.value) ?? null)
 const totalSources = computed(() => sensors.value.length + 1)
@@ -237,6 +244,18 @@ async function refreshRadar() {
   }
 }
 
+async function refreshSpatial() {
+  if (!viewActive || spatialRefreshing) return
+  spatialRefreshing = true
+  try {
+    spatialSnapshot.value = await fetchSan60SpatialOverview()
+  } catch {
+    // Keep the latest spectrum and camera views available if spatial replay is offline.
+  } finally {
+    spatialRefreshing = false
+  }
+}
+
 async function selectSource(sourceId: string) {
   if (activeSourceId.value === sourceId) return
   activeSourceId.value = sourceId
@@ -365,7 +384,7 @@ onMounted(async () => {
   viewActive = true
   gimbalMoveStopGuard.attach()
   store.connectFrameStream()
-  await Promise.all([store.refreshOverview(), radarStore.refresh(true)])
+  await Promise.all([store.refreshOverview(), radarStore.refresh(true), refreshSpatial()])
   void refreshGimbalStatus()
   if (!viewActive) return
   focusedCameraId.value = overview.value.focusedCameraId || sensors.value[0]?.cameraId || 'uav_01'
@@ -380,6 +399,7 @@ onMounted(async () => {
     void store.refreshFrames()
   }, 2500)
   spectrumTimer = window.setInterval(() => void refreshRadar(), 100)
+  spatialTimer = window.setInterval(() => void refreshSpatial(), 2000)
   gimbalTimer = window.setInterval(() => void refreshGimbalStatus(), 3000)
   gimbalFrameTimer = window.setInterval(() => void refreshGimbalFrame(), 100)
 })
@@ -411,6 +431,7 @@ onBeforeUnmount(() => {
   if (spectrumTimer) window.clearInterval(spectrumTimer)
   if (gimbalTimer) window.clearInterval(gimbalTimer)
   if (gimbalFrameTimer) window.clearInterval(gimbalFrameTimer)
+  if (spatialTimer) window.clearInterval(spatialTimer)
   if (gimbalFrameUrl.value) URL.revokeObjectURL(gimbalFrameUrl.value)
   store.disconnectFrameStream()
   store.disposeFrames('SYSTEM_OVERVIEW')
@@ -439,21 +460,23 @@ onBeforeUnmount(() => {
           </div>
           <div v-if="activeVisionMode === 'relay'" class="combined-mode" aria-label="二维与三维联合探测视图">
             <span>2D 实时频谱</span><i>+</i><span>3D 时频趋势</span>
+            <button type="button" :class="{ active: activeSpatialMode === 'spatial' }" :disabled="!spatialAvailable" :title="spatialAvailable ? '查看 SAN60 空间轨迹与功率体素' : '等待 SAN60 BAG 空间测量数据'" @click="activeSpatialMode = activeSpatialMode === 'spatial' ? 'waterfall' : 'spatial'">{{ spatialAvailable ? '空间态势' : '空间待数据' }}</button>
           </div>
           <button class="fullscreen-button" type="button" @click="openFullscreen"><Maximize2 :size="15" />全屏</button>
         </div>
       </header>
 
-      <div v-if="activeVisionMode === 'relay'" class="stage-grid">
-        <div class="main-column">
+      <div v-if="activeVisionMode === 'relay'" class="stage-grid" :class="{ 'spatial-focus': detectorSelected && activeSpatialMode === 'spatial' }">
+        <div class="main-column" :class="{ 'spatial-mode': detectorSelected && activeSpatialMode === 'spatial' }">
           <section class="primary-viewer" :class="{ 'camera-mode': !detectorSelected }">
             <div class="source-identity">
-              <span>{{ detectorSelected ? 'ELECTRONIC DETECTOR · 2D + 3D' : 'OPTICAL CAMERA · LIVE' }}</span>
+              <span>{{ detectorSelected ? `ELECTRONIC DETECTOR · ${activeSpatialMode === 'spatial' ? 'SPACE' : '2D + 3D'}` : 'OPTICAL CAMERA · LIVE' }}</span>
               <b>{{ detectorSelected ? '电子探测仪 01' : (activeCamera ? channelLabel(activeCamera) : '视觉通道') }}</b>
             </div>
 
             <div v-if="detectorSelected" class="detector-canvas">
-              <template v-if="spectrumActive">
+              <San60SpatialCanvas v-if="activeSpatialMode === 'spatial' && spatialAvailable" :snapshot="spatialSnapshot" />
+              <template v-else-if="spectrumActive">
                 <aside class="detector-summary spectrum-summary">
                   <article><span>扫描频段</span><b>{{ formatGhz(radar?.spectrumStartHz, 2) }} — {{ formatGhz(radar?.spectrumStopHz, 2) }}</b></article>
                   <article><span>峰值频率</span><b>{{ formatGhz(radar?.spectrumPeakHz) }}</b></article>
@@ -521,7 +544,7 @@ onBeforeUnmount(() => {
           </section>
 
           <footer class="source-metrics">
-            <article><span class="metric-icon"><ScanLine :size="15" /></span><p><small>当前信号源</small><b>{{ detectorSelected ? '电子探测仪 01 · 2D + 3D' : activeCamera?.displayName }}</b></p></article>
+            <article><span class="metric-icon"><ScanLine :size="15" /></span><p><small>当前信号源</small><b>{{ detectorSelected ? `电子探测仪 01 · ${activeSpatialMode === 'spatial' ? '空间态势' : '2D + 3D'}` : activeCamera?.displayName }}</b></p></article>
             <article><span class="metric-icon"><Radio :size="15" /></span><p><small>端到端延迟</small><b>{{ detectorSelected ? detectorUpdatedAgo : `${activeCamera?.latencyMs?.toFixed(0) || '--'} ms` }}</b></p></article>
             <article><span class="metric-icon"><Zap :size="15" /></span><p><small>数据刷新率</small><b>{{ detectorSelected ? (spectrumHistoryRate ? `${spectrumHistoryRate.toFixed(1)} Hz` : (radar?.connected ? '实时数据' : '-- Hz')) : `${activeCamera?.fps?.toFixed(1) || stats?.measuredFps?.toFixed(1) || '--'} FPS` }}</b></p></article>
             <article><span class="metric-icon"><Crosshair :size="15" /></span><p><small>接收状态</small><b>{{ detectorSelected ? (radar?.connected ? '电子探测在线' : '等待数据') : (activeCamera?.status === 'ONLINE' ? '实时接收中' : '等待画面') }}</b></p></article>
@@ -583,7 +606,8 @@ onBeforeUnmount(() => {
 .top-chip{display:flex;align-items:center;gap:6px;padding:8px 10px;border:1px solid #24505a;border-radius:6px;color:#82a6aa;font-size:11px}.top-chip.online{color:#55e5b2}
 .vision-mode-switch{display:flex;gap:3px;padding:3px;border:1px solid #24505a;border-radius:7px;background:#061a20}.vision-mode-switch button{height:28px;padding:0 10px;border:0;border-radius:5px;background:transparent;color:#82a6aa;cursor:pointer;font-size:10px}.vision-mode-switch button.active{background:#0d3a40;color:#63e2d4}
 .vision-stage{height:max(590px,calc(100dvh - 160px));overflow:hidden;border:1px solid #17424d;border-radius:12px;background:#031319ed;box-shadow:inset 0 0 90px #0006,0 14px 50px #0005;color:#e9fbfa}.stage-header{display:flex;height:70px;align-items:center;justify-content:space-between;gap:18px;padding:0 18px 0 20px;border-bottom:1px solid #123a43}.stage-heading{display:flex;min-width:0;align-items:center;gap:14px}.stage-icon{display:grid;width:38px;height:38px;flex:0 0 auto;place-items:center;border:1px solid #347078;border-radius:9px;background:#0a292e;color:#5ce0d0}.stage-heading b{display:block;font-size:16px}.stage-heading small{display:block;margin-top:4px;color:#72989c;font-size:11px}.stage-actions{display:flex;align-items:center;gap:8px}.combined-mode{display:flex;height:36px;align-items:center;gap:8px;padding:0 11px;border:1px solid #28565e;border-radius:7px;background:#061a20;color:#8ab0b2;font-size:10px;font-weight:800}.combined-mode span:first-child{color:#63e2d4}.combined-mode span:last-child{color:#9ccfff}.combined-mode i{color:#527a7e;font-style:normal}.fullscreen-button{display:flex;height:36px;align-items:center;gap:6px;padding:0 11px;border:1px solid #24505a;border-radius:7px;background:#06171b;color:#a7c4c6;cursor:pointer;font-size:11px}.fullscreen-button:hover{border-color:#5ce0d0;color:#fff}
-.stage-grid{display:grid;grid-template-columns:minmax(0,1fr) 360px;gap:12px;height:calc(100% - 70px);padding:12px}.main-column{display:grid;grid-template-rows:minmax(0,1fr) 88px;gap:10px;min-width:0;min-height:0}.primary-viewer{position:relative;min-width:0;min-height:0;overflow:hidden;border:1px solid #28616c;border-radius:9px;background:radial-gradient(circle at 50% 45%,#092f35,#041920 62%,#021015);isolation:isolate}.primary-viewer::after{position:absolute;z-index:20;inset:0;border:1px solid #57ded01d;box-shadow:inset 0 0 70px #000a;content:"";pointer-events:none}.primary-viewer:fullscreen{width:100vw;height:100vh;border:0;border-radius:0}.source-identity{position:absolute;z-index:30;top:14px;left:14px;display:flex;align-items:center;gap:9px;padding:7px 10px;border:1px solid #31636a;border-radius:6px;background:#031317e8}.source-identity span{color:#5ce0d0;font-size:9px;font-weight:900;letter-spacing:.08em}.source-identity b{font-size:12px}
+.combined-mode button{height:25px;padding:0 8px;border:1px solid #2b6267;border-radius:5px;background:#0a272d;color:#7faeb0;cursor:pointer;font-size:9px}.combined-mode button.active{border-color:#5ce0d0;background:#5ce0d0;color:#03181c}.combined-mode button:disabled{opacity:.45;cursor:not-allowed}
+.stage-grid{display:grid;grid-template-columns:minmax(0,1fr) 360px;gap:12px;height:calc(100% - 70px);padding:12px}.main-column{display:grid;grid-template-rows:minmax(0,1fr) 88px;gap:10px;min-width:0;min-height:0}.main-column.spatial-mode{grid-template-rows:minmax(0,1fr) 72px}.primary-viewer{position:relative;min-width:0;min-height:0;overflow:hidden;border:1px solid #28616c;border-radius:9px;background:radial-gradient(circle at 50% 45%,#092f35,#041920 62%,#021015);isolation:isolate}.primary-viewer::after{position:absolute;z-index:20;inset:0;border:1px solid #57ded01d;box-shadow:inset 0 0 70px #000a;content:"";pointer-events:none}.primary-viewer:fullscreen{width:100vw;height:100vh;border:0;border-radius:0}.source-identity{position:absolute;z-index:30;top:14px;left:14px;display:flex;align-items:center;gap:9px;padding:7px 10px;border:1px solid #31636a;border-radius:6px;background:#031317e8}.source-identity span{color:#5ce0d0;font-size:9px;font-weight:900;letter-spacing:.08em}.source-identity b{font-size:12px}
 .detector-canvas,.camera-canvas{position:absolute;inset:0}.detector-summary{position:absolute;z-index:8;top:80px;left:18px;display:grid;gap:8px;width:158px}.detector-summary article{padding:9px 10px;border-left:2px solid #5ce0d0;background:#04171dcf}.detector-summary span{display:block;color:#72979a;font-size:9px}.detector-summary b{display:block;margin-top:3px;font:12px ui-monospace,Consolas,monospace}.radar-wrap{position:absolute;inset:54px 58px 22px;display:grid;place-items:center}.radar-scope{position:relative;height:min(68vh,680px);max-width:96%;max-height:96%;aspect-ratio:1;overflow:hidden;border:1px solid #3f8990;border-radius:50%;background:repeating-radial-gradient(circle,transparent 0 20%,#3b8f8d55 20.2% 20.6%,transparent 20.8% 40%),linear-gradient(90deg,transparent 49.8%,#4ca4a266 50%,transparent 50.2%),linear-gradient(transparent 49.8%,#4ca4a266 50%,transparent 50.2%),radial-gradient(circle,#0b3839 0,#061d25 69%,#031218 100%);box-shadow:0 0 55px #0c777138,inset 0 0 30px #0009}.radar-scope.offline .radar-sweep{opacity:.25;animation-play-state:paused}.radar-sweep{position:absolute;inset:0;border-radius:50%;background:conic-gradient(from 285deg,transparent 0 315deg,#59dfd344 343deg,#82fff688 357deg,transparent 360deg);animation:sweep 4s linear infinite}.bearing{position:absolute;z-index:3;color:#75a8aa;font:9px ui-monospace,monospace}.bearing.north{top:12px;left:50%;transform:translateX(-50%)}.bearing.east{top:50%;right:12px}.bearing.south{bottom:12px;left:50%;transform:translateX(-50%)}.bearing.west{top:50%;left:12px}.radar-point{position:absolute;z-index:5;width:9px;height:9px;padding:0;transform:translate(-50%,-50%);border:2px solid #ffbd4a;border-radius:50%;background:#352b0c;box-shadow:0 0 0 7px #ffbd4a18,0 0 10px #ffbd4a;cursor:pointer}.radar-point span{position:absolute;top:-18px;left:9px;color:#ffd47f;white-space:nowrap;font:9px ui-monospace,monospace}.radar-empty{position:absolute;z-index:6;top:50%;left:50%;display:grid;width:260px;transform:translate(-50%,-50%);place-items:center;gap:7px;padding:18px;color:#7aa4a6;background:#04181bd9;text-align:center}.radar-empty b{color:#b7d2d1;font-size:13px}.radar-empty small{font-size:9px}.target-alert{position:absolute;z-index:8;right:18px;bottom:18px;width:190px;padding:11px;border:1px solid #9a7130;border-radius:7px;background:#171407e8}.target-alert span{color:#ffbd4a;font-size:9px;font-weight:900}.target-alert b{display:block;margin-top:5px;font-size:13px}.target-alert small{color:#b9a172;font-size:9px}
 .spectrum-summary{top:82px;width:210px}.spectrum-summary article:first-child b{font-size:10px}.spectrum-panel{position:absolute;inset:72px 20px 28px 238px;display:grid;grid-template-rows:auto minmax(0,1fr);gap:10px;padding:14px;border:1px solid #245b65;border-radius:10px;background:linear-gradient(145deg,#06252cdd,#031319f2);box-shadow:inset 0 0 48px #0a777021}.spectrum-panel>header{display:flex;align-items:center;justify-content:space-between;color:#79aaa9;font:10px ui-monospace,Consolas,monospace;letter-spacing:.07em}.spectrum-panel>header b{color:#d5efed;font-size:11px;letter-spacing:0}.spectrum-comparison{display:grid;grid-template-columns:minmax(0,.94fr) minmax(0,1.06fr);gap:10px;min-width:0;min-height:0}.spectrum-pane{display:grid;grid-template-rows:25px minmax(0,1fr);min-width:0;min-height:0}.spectrum-pane>header{display:flex;align-items:center;justify-content:space-between;padding:0 2px;color:#cbe3e1;font-size:10px}.spectrum-pane>header span{font-weight:800}.spectrum-pane>header b{color:#648c90;font:8px ui-monospace,Consolas,monospace;letter-spacing:.04em}.spectrum-chart,.spectrum-waterfall{position:relative;min-width:0;min-height:0}.spectrum-chart{overflow:hidden;border:1px solid #1e4c55;border-radius:7px;background:linear-gradient(#54c8c81f 1px,transparent 1px),linear-gradient(90deg,#54c8c81f 1px,transparent 1px),radial-gradient(circle at 52% 44%,#0c3a3e,#04191f 68%);background-size:100% 20%,10% 100%,auto}.spectrum-chart svg{position:absolute;inset:24px 16px 32px 42px;width:calc(100% - 58px);height:calc(100% - 56px);overflow:visible}.spectrum-area{fill:url(#spectrum-fill)}.spectrum-line{fill:none;stroke:#65eadc;stroke-width:2;vector-effect:non-scaling-stroke;filter:drop-shadow(0 0 4px #55e5d7aa)}.spectrum-peak-line{stroke:#ffbd4a;stroke-width:1;stroke-dasharray:6 5;vector-effect:non-scaling-stroke}.spectrum-peak-dot{fill:#ffbd4a;stroke:#fff1bd;stroke-width:2;vector-effect:non-scaling-stroke;filter:drop-shadow(0 0 6px #ffbd4a)}.axis-label{position:absolute;color:#759b9e;font:8px ui-monospace,Consolas,monospace}.axis-label.y-max{top:10px;left:7px}.axis-label.y-min{bottom:27px;left:7px}.axis-label.x-start{bottom:9px;left:42px}.axis-label.x-stop{right:14px;bottom:9px}.peak-label{position:absolute;top:8px;max-width:130px;transform:translateX(-50%);padding:3px 5px;border:1px solid #8a662b;border-radius:4px;background:#181506e8;color:#ffd073;white-space:nowrap;font:8px ui-monospace,Consolas,monospace}
 .camera-canvas{background:radial-gradient(circle at 55% 45%,#174450 0,#0a2b35 37%,#04171e 78%)}.camera-canvas::before{position:absolute;inset:0;opacity:.18;background:linear-gradient(#73aab0 1px,transparent 1px),linear-gradient(90deg,#73aab0 1px,transparent 1px);background-size:60px 60px;content:""}.unity-runtime-anchor,.camera-canvas>img{position:absolute;z-index:2;inset:0;width:100%;height:100%}.camera-canvas>img{object-fit:contain;background:#020a0e;image-rendering:auto}.camera-empty{position:absolute;z-index:3;inset:0;display:grid;place-content:center;justify-items:center;gap:7px;color:#6e979b}.camera-empty b{color:#bad1d2;font-size:13px}.camera-empty small{font-size:10px}.camera-reticle{position:absolute;z-index:8;top:50%;left:50%;width:70px;height:70px;transform:translate(-50%,-50%);border:1px solid #bcece977;border-radius:50%;pointer-events:none}.camera-reticle::before,.camera-reticle::after{position:absolute;background:#bcece977;content:""}.camera-reticle::before{top:50%;left:-24px;width:118px;height:1px}.camera-reticle::after{top:-24px;left:50%;width:1px;height:118px}.camera-telemetry{position:absolute;z-index:10;bottom:16px;left:16px;display:flex;gap:6px}.camera-telemetry span{padding:6px 8px;border:1px solid #315b63;border-radius:4px;background:#03151bdc;color:#bad3d4;font:9px ui-monospace,monospace}

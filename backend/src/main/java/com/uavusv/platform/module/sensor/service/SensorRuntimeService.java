@@ -1,8 +1,10 @@
 package com.uavusv.platform.module.sensor.service;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.uavusv.platform.module.sensor.dto.RadarItemResponse;
 import com.uavusv.platform.module.sensor.dto.RadarOverviewResponse;
+import com.uavusv.platform.module.sensor.dto.San60SpatialResponse;
 import org.springframework.stereotype.Service;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -28,6 +30,7 @@ public class SensorRuntimeService {
     private final Map<String, RadarState> radars = new LinkedHashMap<>();
     private final Map<String, SpectrumState> spectra = new LinkedHashMap<>();
     private final Map<String, LatestPointCloudFrame> latestPointCloudFrames = new LinkedHashMap<>();
+    private San60SpatialState latestSan60Spatial;
 
     public SensorRuntimeService() {
         this(Clock.systemUTC());
@@ -149,6 +152,7 @@ public class SensorRuntimeService {
                 List.copyOf(powers)
         );
         spectra.put(cacheKey, state);
+        observeSan60SpatialFrame(data, now, vehicleId, streamId);
         if (firstFrame) {
             log.info(
                     "SAN60 spectrum stream online vehicle={} sensor={} stream={} gatewaySeq={} san60Seq={} points={} bandHz={}-{} binHz={} peakHz={} peakDbm={} tempC={}",
@@ -158,6 +162,51 @@ public class SensorRuntimeService {
             );
         }
     }
+
+    private void observeSan60SpatialFrame(JsonNode data, long receivedAtMs, String vehicleId, String streamId) {
+        JsonNode spatial = data.path("spatial");
+        if (!spatial.isObject()) {
+            return;
+        }
+        JsonNode track = spatial.path("track");
+        JsonNode cells = spatial.path("cells");
+        JsonNode field = spatial.path("field");
+        if (!track.isArray() || !cells.isArray() || !field.isArray()
+                || track.size() > 600 || cells.size() > 1800 || field.size() > 1800) {
+            return;
+        }
+        ObjectNode spatialCopy = spatial.deepCopy();
+        latestSan60Spatial = new San60SpatialState(
+                receivedAtMs,
+                optionalLong(data, "sequence"),
+                vehicleId,
+                streamId,
+                spatialCopy
+        );
+    }
+
+    public synchronized San60SpatialResponse san60SpatialOverview() {
+        if (latestSan60Spatial == null) {
+            return new San60SpatialResponse(false, 0, null, "", "", null);
+        }
+        long now = clock.millis();
+        return new San60SpatialResponse(
+                now - latestSan60Spatial.receivedAtMs <= FRESH_RADAR_MILLIS,
+                latestSan60Spatial.receivedAtMs,
+                latestSan60Spatial.sequence,
+                latestSan60Spatial.vehicleId,
+                latestSan60Spatial.streamId,
+                latestSan60Spatial.spatial.deepCopy()
+        );
+    }
+
+    private record San60SpatialState(
+            long receivedAtMs,
+            Long sequence,
+            String vehicleId,
+            String streamId,
+            JsonNode spatial
+    ) {}
 
     public synchronized RadarOverviewResponse radarOverview() {
         long now = clock.millis();

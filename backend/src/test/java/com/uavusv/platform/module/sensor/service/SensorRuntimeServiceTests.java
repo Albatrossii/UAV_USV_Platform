@@ -246,4 +246,38 @@ class SensorRuntimeServiceTests {
         assertThat(overview.spectrumPowersDbm()).containsExactly(-95.7, -91.3, -68.49, -92.5);
         assertThat(overview.updatedAt()).isEqualTo(1790411201634L);
     }
+
+    @Test
+    void retainsSan60SpatialHistoryForTheVisionPage() throws Exception {
+        SensorRuntimeService service = new SensorRuntimeService();
+        service.observeSpectrumFrame(objectMapper.readTree("""
+                {
+                  "message_type":"spectrum_frame",
+                  "sequence":88,
+                  "data":{
+                    "vehicle_id":"uav_01",
+                    "sensor_id":"san60",
+                    "stream_id":"offline_san60",
+                    "captured_at":1790411201.7,
+                    "powers_dbm":[-92.0,-70.0],
+                    "spatial":{
+                      "track":[{"p":[1.0,2.0,0.5],"dbm":-70.0,"time":1790411201.7}],
+                      "cells":[[1.0,2.0,0.5,-70.0,1]],
+                      "field":[[1.0,2.0,0.5,-70.0]],
+                      "voxel_size":2.0
+                    }
+                  }
+                }
+                """));
+
+        var spatial = service.san60SpatialOverview();
+
+        assertThat(spatial.connected()).isTrue();
+        assertThat(spatial.sequence()).isEqualTo(88L);
+        assertThat(spatial.vehicleId()).isEqualTo("uav_01");
+        assertThat(spatial.streamId()).isEqualTo("offline_san60");
+        assertThat(spatial.spatial().path("track")).hasSize(1);
+        assertThat(spatial.spatial().path("cells")).hasSize(1);
+        assertThat(spatial.spatial().path("field")).hasSize(1);
+    }
 }
