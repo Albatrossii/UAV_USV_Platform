@@ -21,9 +21,9 @@ const disconnect = vi.fn()
 const observe = vi.fn()
 const wrappers: VueWrapper[] = []
 
-async function setup(availableHeight = 1000) {
+async function setup(availableHeight = 1000, fixedSizing = false) {
   const wrapper = mount(CompactNodeViewBar, { props: {
-    rows, selectedDevice: 'uav-01', followDevice: '', controlsReady: true, availableHeight,
+    rows, selectedDevice: 'uav-01', followDevice: '', controlsReady: true, availableHeight, fixedSizing,
   } })
   wrappers.push(wrapper)
   await nextTick()
@@ -164,6 +164,20 @@ describe('CompactNodeViewBar', () => {
     await grip(wrapper).trigger('dblclick')
     expect(height(wrapper)).toBe(72)
     expect(grip(wrapper).attributes('aria-valuetext')).toContain('自动')
+  })
+
+  it('hides manual sizing and remains automatic in a fixed shared shell', async () => {
+    const wrapper = await setup(2000, true)
+    expect(wrapper.find('.cnv-sizing').exists()).toBe(false)
+    expect(wrapper.find('[role="separator"]').exists()).toBe(false)
+    expect(styleNumber(wrapper, '--node-card-height')).toBe(72)
+    await wrapper.setProps({ fixedSizing: false })
+    expect(wrapper.find('.cnv-sizing').exists()).toBe(true)
+    await wrapper.get('input[type="range"]').setValue('100')
+    expect(styleNumber(wrapper, '--node-card-height')).toBe(100)
+    await wrapper.setProps({ fixedSizing: true })
+    expect(wrapper.find('.cnv-sizing').exists()).toBe(false)
+    expect(styleNumber(wrapper, '--node-card-height')).toBe(72)
   })
 
   it('resizes all rows with pointer capture and releases listeners and capture on unmount', async () => {

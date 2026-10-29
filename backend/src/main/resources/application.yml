@@ -33,6 +33,12 @@ management:
       show-details: never
 
 app:
+  gimbal-camera:
+    enabled: ${APP_GIMBAL_CAMERA_ENABLED:false}
+    gateway-url: ${APP_GIMBAL_CAMERA_GATEWAY_URL:}
+    gateway-token: ${APP_GIMBAL_CAMERA_GATEWAY_TOKEN:}
+    stream-enabled: ${APP_GIMBAL_CAMERA_STREAM_ENABLED:true}
+    stream-websocket-url: ${APP_GIMBAL_CAMERA_STREAM_WS_URL:ws://10.16.88.211:8765/ws}
   voiceintelligence:
     # Keep long-lived credentials outside the repository. Spring resolves these
     # standard Aliyun environment variables at runtime; the backend then creates

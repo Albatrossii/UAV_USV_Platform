@@ -145,7 +145,10 @@ describe('VirtualFleetConfigView minimal simulation interface', () => {
     expect(wrapper.get('.vf-config-panel').text()).toContain('生成场景')
     expect(wrapper.get('.vf-config-panel').findAll('input')).toHaveLength(4)
     expect(wrapper.find('.vf-config-panel [data-test="node-communication-panel"]').exists()).toBe(true)
-    expect(wrapper.getComponent({ name: 'NodeCommunicationPanel' }).props('defaultOpen')).toBe(true)
+    expect(wrapper.getComponent({ name: 'NodeCommunicationPanel' }).props('defaultOpen')).toBe(false)
+    expect(wrapper.get('.vf-voice-config > summary .task-console-section-title').text()).toBe('语音控制')
+    expect(wrapper.get('.vf-voice-config > summary .task-console-section-meta').text()).toBe('语音 / 文本')
+    expect(wrapper.find('.vf-voice-config > summary .task-console-section-arrow').exists()).toBe(true)
     const modules = wrapper.findAll(
       '.vf-config-panel .workspace-console-content > details, '
       + '.vf-config-panel .workspace-console-content > [data-test="node-communication-panel"]',

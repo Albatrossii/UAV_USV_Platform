@@ -38,6 +38,15 @@ describe('NodeCommunicationPanel', () => {
   })
   afterEach(() => { vi.useRealTimers() })
 
+  it('starts folded when no initial state is provided', async () => {
+    const wrapper = mount(NodeCommunicationPanel, {
+      props: { deviceCodes: ['UAV-001', 'USV-001'] },
+    })
+    await flushPromises()
+    expect((wrapper.get('[data-test="nodes-panel"]').element as HTMLDetailsElement).open).toBe(false)
+    wrapper.unmount()
+  })
+
   it('merges targets into one node panel and removes the platform-channel display', async () => {
     const wrapper = await setup([node()])
     const panel = wrapper.get('[data-test="nodes-panel"]')

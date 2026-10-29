@@ -1844,9 +1844,9 @@ watch((): WorkspaceHeaderState => ({
             <Teleport defer to="#shared-workspace-console-content" :disabled="!props.sharedShell">
               <div v-show="props.active || !props.sharedShell" class="workspace-console-content simulation-console-content">
             <details class="vf-voice-config vf-scenario-config task-console-section">
-              <summary class="vf-scenario-summary">
-                <span class="vf-scenario-title"><AudioLines :size="16" />语音控制</span>
-                <span class="vf-scenario-summary-right">语音 / 文本<ChevronRight class="vf-scenario-arrow" :size="12" /></span>
+              <summary>
+                <span class="task-console-section-title"><AudioLines :size="16" />语音控制</span>
+                <span class="task-console-section-meta">语音 / 文本<ChevronRight class="task-console-section-arrow" :size="12" /></span>
               </summary>
               <VoiceP0ControlPanel
                 v-if="props.active || !props.sharedShell"
@@ -1860,11 +1860,11 @@ watch((): WorkspaceHeaderState => ({
               />
             </details>
             <details class="vf-scenario-config task-console-section">
-              <summary class="vf-scenario-summary">
-                <span class="vf-scenario-title"><LayoutGrid :size="16" />场景配置</span>
-                <span class="vf-scenario-summary-right">
+              <summary>
+                <span class="task-console-section-title"><LayoutGrid :size="16" />场景配置</span>
+                <span class="task-console-section-meta">
                   <span>{{ state.uavCount }} UAV · {{ state.usvCount }} USV</span>
-                  <ChevronRight class="vf-scenario-arrow" :size="12" />
+                  <ChevronRight class="task-console-section-arrow" :size="12" />
                 </span>
               </summary>
               <div class="vf-scenario-body">
@@ -1918,7 +1918,7 @@ watch((): WorkspaceHeaderState => ({
               </div>
             </details>
             <NodeCommunicationPanel
-              :default-open="true"
+              :default-open="false"
               :device-codes="sceneDeviceCodes"
               :selected-device="selectedDevice"
               :targets="simulationTargets"
@@ -2019,6 +2019,7 @@ watch((): WorkspaceHeaderState => ({
           :rows="compactNodeRows" :selected-device="selectedDevice"
           :follow-device="cameraMode === 'device-follow' ? cameraFollowDevice : ''"
           :controls-ready="cameraControlsReady" :available-height="simulationAvailableHeight"
+          :fixed-sizing="props.sharedShell"
           @select="followNodeDevice"
           @resize="trackNodeBarResize"
           @resize-start="unityPanel?.beginViewportTransition()"
@@ -2115,17 +2116,6 @@ watch((): WorkspaceHeaderState => ({
 .vf-config-panel { display: flex; flex-direction: column; gap: 10px; padding: 0 2px 2px 0; scrollbar-width: thin; scrollbar-color: #365451 transparent; }
 .vf-config-panel > * { flex-shrink: 0; }
 .vf-config-panel > .vf-panel-head { margin: 0; padding: 0 2px; }
-.vf-scenario-config { min-width: 0; border: 1px solid #31575c; border-radius: 7px; overflow: hidden; background: #0c2227; }
-.vf-scenario-summary { display: flex; min-height: 49px; padding: 11px 10px; align-items: center; justify-content: space-between; gap: 8px; color: #e4f5f3; background: #10282d; cursor: pointer; list-style: none; }
-.vf-scenario-summary::-webkit-details-marker { display: none; }
-.vf-scenario-summary:hover { background: #153138; }
-.vf-scenario-summary:focus-visible { outline: 2px solid #a6fff2; outline-offset: -3px; }
-.vf-scenario-title { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; white-space: nowrap; }
-.vf-scenario-title svg { color: #70dfcf; }
-.vf-scenario-summary-right { display: inline-flex; align-items: center; gap: 6px; color: #9cbcc0; font-size: 10px; white-space: nowrap; }
-.vf-scenario-arrow { color: #80bbb7; transition: transform 150ms ease; }
-.vf-scenario-config[open] > .vf-scenario-summary { border-bottom: 1px solid #2b4c51; }
-.vf-scenario-config[open] > .vf-scenario-summary .vf-scenario-arrow { transform: rotate(90deg); }
 .vf-scenario-body { padding: 10px; }
 .vf-scenario-body > label:first-child { margin-top: 0; }
 .vf-panel-head, .vf-stage-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
@@ -2360,7 +2350,6 @@ watch((): WorkspaceHeaderState => ({
   overscroll-behavior: contain;
 }
 .vf-unified-workbench .vf-panel-head { min-height: 44px; padding: 0; }
-.vf-unified-workbench .vf-scenario-summary { min-height: 42px; padding-block: 9px; }
 .vf-unified-workbench .vf-voice-config > :deep(.voice-compact) { padding: 10px; }
 .vf-unified-workbench .vf-stage-panel { min-width: 0; }
 .vf-unified-workbench .vf-unity-stage,

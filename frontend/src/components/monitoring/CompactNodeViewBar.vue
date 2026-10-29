@@ -11,7 +11,9 @@ const props = withDefaults(defineProps<{
   controlsReady: boolean
   /** Height shared by the Unity stage and this bar, excluding other toolbars. */
   availableHeight: number
-}>(), { followDevice: '' })
+  /** Keep automatic sizing and hide manual controls inside the unified workspace shell. */
+  fixedSizing?: boolean
+}>(), { followDevice: '', fixedSizing: false })
 const emit = defineEmits<{
   select: [code: string]
   resize: [height: number]
@@ -77,6 +79,7 @@ function selectNode(code: string) {
   if (props.controlsReady) emit('select', code)
 }
 function setHeight(value: number) {
+  if (props.fixedSizing) return
   if (Number.isFinite(value)) preferredHeight.value = Math.round(Math.max(MIN_CARD_HEIGHT, Math.min(maximumCardHeight.value, value)))
 }
 function changeSize(event: Event) {
@@ -85,6 +88,9 @@ function changeSize(event: Event) {
 function resetSize() {
   preferredHeight.value = null
 }
+watch(() => props.fixedSizing, fixed => {
+  if (fixed) resetSize()
+}, { immediate: true })
 function resizeWithKeyboard(event: KeyboardEvent) {
   if (event.key === 'Enter') {
     event.preventDefault()
@@ -100,7 +106,7 @@ function resizeWithKeyboard(event: KeyboardEvent) {
 
 let drag: { pointerId: number; target: HTMLElement; y: number; height: number; rows: number } | null = null
 function startResize(event: PointerEvent) {
-  if (event.button !== 0 || drag) return
+  if (props.fixedSizing || event.button !== 0 || drag) return
   const target = event.currentTarget as HTMLElement
   if (typeof target.setPointerCapture !== 'function') return
   event.preventDefault()
@@ -164,6 +170,7 @@ onBeforeUnmount(() => {
 <template>
   <section ref="panel" class="cnv-bar" :class="{ resizing }" :style="panelStyle" data-test="compact-node-view-bar" aria-label="节点视角">
     <div
+      v-if="!props.fixedSizing"
       class="cnv-resize-grip" role="separator" tabindex="0" aria-orientation="horizontal"
       aria-label="调整节点卡片高度" :aria-controls="gridId" :aria-valuemin="MIN_CARD_HEIGHT"
       :aria-valuemax="maximumCardHeight" :aria-valuenow="cardHeight" :aria-valuetext="sizingDescription"
@@ -177,7 +184,7 @@ onBeforeUnmount(() => {
         <h2>节点视角</h2><span>{{ props.rows.length }} 个节点</span>
         <span class="cnv-view-status" aria-live="polite">{{ !props.controlsReady ? '等待场景就绪' : props.followDevice ? `跟随 ${props.followDevice}` : '点击卡片切换视角' }}</span>
       </div>
-      <div class="cnv-sizing">
+      <div v-if="!props.fixedSizing" class="cnv-sizing">
         <label :for="sliderId">大小</label>
         <input :id="sliderId" type="range" :min="MIN_CARD_HEIGHT" :max="maximumCardHeight" :value="cardHeight" aria-label="节点卡片高度" :aria-valuetext="sizingDescription" @input="changeSize" />
         <output :for="sliderId">{{ cardHeight }}px</output>
