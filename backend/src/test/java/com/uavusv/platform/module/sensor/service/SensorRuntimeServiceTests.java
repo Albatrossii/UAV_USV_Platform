@@ -280,4 +280,27 @@ class SensorRuntimeServiceTests {
         assertThat(spatial.spatial().path("cells")).hasSize(1);
         assertThat(spatial.spatial().path("field")).hasSize(1);
     }
+
+    @Test
+    void readsSpatialDataFromGatewayFrameWrapper() throws Exception {
+        SensorRuntimeService service = new SensorRuntimeService();
+        service.observeSpectrumFrame(objectMapper.readTree("""
+                {
+                  "message_type":"spectrum_frame",
+                  "sequence":91,
+                  "frame":{"data":{
+                    "vehicle_id":"uav_01",
+                    "stream_id":"wrapped_san60",
+                    "powers_dbm":[-80.0],
+                    "sequence":7,
+                    "spatial":{"track":[],"cells":[],"field":[]}
+                  }}
+                }
+                """));
+
+        var spatial = service.san60SpatialOverview();
+        assertThat(spatial.connected()).isTrue();
+        assertThat(spatial.streamId()).isEqualTo("wrapped_san60");
+        assertThat(spatial.spatial().path("track")).isEmpty();
+    }
 }

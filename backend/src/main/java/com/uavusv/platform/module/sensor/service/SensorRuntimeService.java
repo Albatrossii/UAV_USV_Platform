@@ -106,9 +106,7 @@ public class SensorRuntimeService {
     }
 
     public synchronized void observeSpectrumFrame(JsonNode frame) {
-        JsonNode data = frame.has("data") && frame.path("data").isObject()
-                ? frame.path("data")
-                : frame;
+        JsonNode data = spectrumData(frame);
         JsonNode powersNode = data.path("powers_dbm");
         if (!powersNode.isArray() || powersNode.isEmpty()) {
             return;
@@ -152,7 +150,11 @@ public class SensorRuntimeService {
                 List.copyOf(powers)
         );
         spectra.put(cacheKey, state);
-        observeSan60SpatialFrame(data, now, vehicleId, streamId);
+        Long spatialSequence = optionalLong(data, "sequence");
+        if (spatialSequence == null) {
+            spatialSequence = optionalLong(frame, "sequence");
+        }
+        observeSan60SpatialFrame(data, now, vehicleId, streamId, spatialSequence);
         if (firstFrame) {
             log.info(
                     "SAN60 spectrum stream online vehicle={} sensor={} stream={} gatewaySeq={} san60Seq={} points={} bandHz={}-{} binHz={} peakHz={} peakDbm={} tempC={}",
@@ -163,7 +165,34 @@ public class SensorRuntimeService {
         }
     }
 
-    private void observeSan60SpatialFrame(JsonNode data, long receivedAtMs, String vehicleId, String streamId) {
+    /**
+     * Gateway deployments have used both a direct spectrum envelope and a
+     * generic {"frame": {"data": ...}} wrapper. Keep the sensor service
+     * tolerant of either shape so the bridge and ROS WebSocket share one path.
+     */
+    private static JsonNode spectrumData(JsonNode frame) {
+        JsonNode candidate = frame;
+        for (int depth = 0; depth < 3 && candidate != null && candidate.isObject(); depth++) {
+            JsonNode data = candidate.path("data");
+            if (data.isObject()) {
+                return data;
+            }
+            JsonNode nestedFrame = candidate.path("frame");
+            if (!nestedFrame.isObject()) {
+                break;
+            }
+            candidate = nestedFrame;
+        }
+        return candidate == null ? frame : candidate;
+    }
+
+    private void observeSan60SpatialFrame(
+            JsonNode data,
+            long receivedAtMs,
+            String vehicleId,
+            String streamId,
+            Long sequence
+    ) {
         JsonNode spatial = data.path("spatial");
         if (!spatial.isObject()) {
             return;
@@ -178,7 +207,7 @@ public class SensorRuntimeService {
         ObjectNode spatialCopy = spatial.deepCopy();
         latestSan60Spatial = new San60SpatialState(
                 receivedAtMs,
-                optionalLong(data, "sequence"),
+                sequence,
                 vehicleId,
                 streamId,
                 spatialCopy
