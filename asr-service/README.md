@@ -4,6 +4,52 @@
 
 ## 部署约束
 
+### 前后端与硬件组统一部署（2026-11-09）
+
+“本地模型”默认指运行前后端的当前电脑上的 Whisper Small，不与一号无人机或机载电脑绑定。
+前后端开发电脑同时保留本地 Whisper Small 和阿里云；硬件组电脑可只部署 Whisper Small，使用同一套前后端。
+识别服务的部署位置与指令最终控制的设备相互独立。
+
+首次在新电脑配置时，将 `config/aliyun-demo.example.psd1` 复制为 `config/aliyun-demo.local.psd1`，填写本机数据库配置、`LocalAsrPythonPath` 和 `LocalAsrModelPath`。
+路径留空时默认使用本仓库 `asr-service/.venv/Scripts/python.exe` 和 `asr-service/models/whisper-small`。
+`LocalAsrEnabled = $true` 时，统一启动入口会校验模型文件 SHA256、启动并预热 Whisper Small，再启动 Java 与网页；停止入口会关闭本次启动的服务，保留数据库。
+硬件组无需填写 `AliyunAppKey`、`AliyunAccessKeyId`、`AliyunAccessKeySecret`，全部留空即可。开发电脑填写这三项后，两种识别方式同时可用。
+
+```powershell
+# 项目根目录：MySQL 已启动、本机模型与依赖已部署
+& .\scripts\demo.ps1 -Action Check
+& .\scripts\demo.ps1 -Action Start
+# 另一终端关闭本次启动的前后端与本地 ASR
+& .\scripts\demo.ps1 -Action Stop
+```
+
+### 网页选择本地 / 阿里云
+
+前端真实识别入口默认选择本地模型，也可以手动选择阿里云；录音、上传与原请求恢复期间锁定来源。
+请求用 `X-ASR-Provider: local` 或 `aliyun` 指定来源，音频 multipart 格式保持不变。
+未提供此请求头的旧客户端继续使用后端 `app.voiceintelligence.provider` 配置。
+同一请求编号不能更换来源；后端缓存指纹包含实际选择的来源，切换需要结束旧请求并开始新录音。
+本地失败不会自动调用阿里云。页面只展示“待识别验证”或最近一次结果，不把模型选中状态当成在线证明。
+
+默认 Java 和 ASR 同机，通过 `127.0.0.1:18082` 通信。如果以后确实需要跨电脑部署，可选用以下配置；统一启动入口按同机部署处理：
+
+```text
+# 机载电脑：监听本机实际局域网 IPv4 地址，默认仍为 127.0.0.1
+ASR_BIND_HOST=<机载电脑局域网IPv4>
+ASR_PORT=18082
+# 模型路径、ASR_SERVICE_TOKEN、CPU线程数仍按下文配置
+
+# 地面电脑 Java：只由管理员配置目标地址，不接受网页传入地址
+APP_VOICEINTELLIGENCE_BASE_URL=http://<机载电脑局域网IPv4>:18082
+APP_VOICEINTELLIGENCE_ALLOW_REMOTE_LOCAL_ASR=true
+# APP_VOICEINTELLIGENCE_TOKEN 与 ASR_SERVICE_TOKEN 使用相同安全凭据
+```
+
+Java 需要加载本仓库 `application-local.example.yml` 对应配置。机载端端口仅向地面后端开放；跨不可信网络时使用可信 TLS 反向代理，后端支持显式端口的 HTTPS 地址。
+网页只访问 Java，云端凭据和机载服务凭据不会下发到浏览器。局域网通信不依赖公网；模型仍运行在机载电脑上。
+现有依赖锁针对 Windows x64，机载端的操作系统、CPU 架构与模型推理速度需在实际硬件上另行验证。
+切换识别来源不会改变指令解析、提案确认与设备控制通道，也不会把“起飞”新增为实机能力。
+
 - 首轮目标：mxy i5-10500 / 约16GB，Java、Python、浏览器同机。
 - Python：Windows x64 / 3.13.15，独立venv。small / CPU INT8 / 默认6线程 / beam size 2；`requirements-lock-win-py313.txt` 为nly已验证环境，mxy需重新安装核验。
 - 服务的模型指纹计算使用分块SHA256，可在mxy现有Python 3.9诊断环境运行；这不表示3.9依赖已锁定。正式部署仍以本目录Python 3.13锁文件为准。

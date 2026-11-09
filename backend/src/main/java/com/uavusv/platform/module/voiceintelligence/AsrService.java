@@ -34,7 +34,7 @@ public class AsrService {
     private final SpeechProvider provider;
     private final AsrAcceptanceStore acceptances;
     private final Clock clock;
-    private boolean occupied = false, quarantined = false;
+    private final Set<String> occupied = new HashSet<>(), quarantined = new HashSet<>();
 
     @org.springframework.beans.factory.annotation.Autowired
     public AsrService(VoiceAccess a, AsrSettings s, SpeechProvider p, AsrAcceptanceStore store) {
@@ -59,6 +59,8 @@ public class AsrService {
         access.require(user, true);
         if (!settings.isEnabled()) throw new AsrFailure(503, "VOICE_INTELLIGENCE_DISABLED");
         long started = System.nanoTime();
+        String selected = RoutingSpeechProvider.selection(audio.provider(), settings);
+        audio = new SpeechProvider.Audio(audio.requestId(), audio.locale(), audio.mime(), audio.bytes(), selected);
         String hash = fingerprint(audio);
         Key key = new Key(user, audio.requestId());
         Entry entry;
@@ -72,7 +74,7 @@ public class AsrService {
                 access.require(user, true);
                 return entry.outcome;
             }
-            if (entries.size() >= 1000 || occupied)
+            if (entries.size() >= 1000 || occupied.contains(selected))
                 throw new AsrFailure(429, "VOICE_RATE_LIMITED", 2, false);
             var q = rates.computeIfAbsent(user, k -> new ArrayDeque<>());
             Instant now = clock.instant();
@@ -114,7 +116,7 @@ public class AsrService {
             q.add(now);
             entry = new Entry(hash);
             entries.put(key, entry);
-            occupied = true;
+            occupied.add(selected);
         }
         AsrResponses.Outcome outcome;
         boolean uncertain = false;
@@ -153,8 +155,8 @@ public class AsrService {
         synchronized (this) {
             entry.outcome = outcome;
             entry.completed = clock.instant();
-            quarantined |= uncertain;
-            occupied = quarantined;
+            if (uncertain) quarantined.add(selected);
+            if (!quarantined.contains(selected)) occupied.remove(selected);
         }
         try {
             acceptances.saveOutcome(user, audio.requestId(), hash, outcome, entry.completed);
@@ -189,7 +191,7 @@ public class AsrService {
         try {
             var md = MessageDigest.getInstance("SHA-256");
             String digest = HexFormat.of().formatHex(md.digest(a.bytes()));
-            return digest + ":" + a.locale() + ":" + a.mime();
+            return digest + ":" + a.locale() + ":" + a.mime() + ":" + (a.provider() == null ? "local" : a.provider());
         } catch (NoSuchAlgorithmException e) {
             throw new IllegalStateException(e);
         }

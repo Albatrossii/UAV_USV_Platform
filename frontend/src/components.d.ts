@@ -52,6 +52,7 @@ declare module 'vue' {
     SimulationRuntimeHost: typeof import('./components/unity/SimulationRuntimeHost.vue')['default']
     SimulationUnityWebglPanel: typeof import('./components/unity/SimulationUnityWebglPanel.vue')['default']
     SpectrumWaterfall3D: typeof import('./components/vision/SpectrumWaterfall3D.vue')['default']
+    SpeechProviderPicker: typeof import('./components/voice/SpeechProviderPicker.vue')['default']
     TaskConsoleShell: typeof import('./components/workspace/TaskConsoleShell.vue')['default']
     UnifiedVehicleControl: typeof import('./components/control/UnifiedVehicleControl.vue')['default']
     UnifiedWorkspaceShell: typeof import('./components/workspace/UnifiedWorkspaceShell.vue')['default']

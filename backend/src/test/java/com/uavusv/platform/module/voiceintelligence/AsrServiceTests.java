@@ -61,6 +61,32 @@ class AsrServiceTests {
         return new SpeechProvider.Audio(id, "zh-CN", "audio/mpeg", new byte[] {1, 2, 3});
     }
 
+    @Test
+    void sameKeyCannotChangeRecognitionProvider() {
+        String id = UUID.randomUUID().toString();
+        var original = audio(id);
+        service.transcribe(1, original, System.nanoTime() + TimeUnit.SECONDS.toNanos(120));
+        var changed = new SpeechProvider.Audio(id, original.locale(), original.mime(), original.bytes(), "aliyun");
+        var failure = assertThrows(AsrFailure.class, () -> service.transcribe(
+                1, changed, System.nanoTime() + TimeUnit.SECONDS.toNanos(120)));
+        assertEquals("IDEMPOTENCY_CONFLICT", failure.code);
+        verify(provider, times(1)).transcribe(any(), anyLong());
+    }
+
+    @Test
+    void uncertainLocalWorkerDoesNotBlockExplicitCloudRequest() {
+        when(provider.transcribe(any(), anyLong())).thenThrow(
+                new AsrFailure(504, "VOICE_TRANSCRIPTION_TIMEOUT", null, true));
+        assertEquals(504, call(1, UUID.randomUUID().toString()).status());
+        doAnswer(i -> {
+            var a = (SpeechProvider.Audio) i.getArgument(0);
+            return new SpeechProvider.Transcript(a.requestId(), "暂停任务", 1000, "cloud-r1", "aliyun-asr", "cloud-test");
+        }).when(provider).transcribe(any(), anyLong());
+        var cloud = new SpeechProvider.Audio(UUID.randomUUID().toString(), "zh-CN", "audio/wav", new byte[]{1}, "aliyun");
+        assertEquals(200, service.transcribe(1, cloud, System.nanoTime() + TimeUnit.SECONDS.toNanos(120)).status());
+        assertEquals(429, assertThrows(AsrFailure.class, () -> call(1, UUID.randomUUID().toString())).status);
+    }
+
     AsrResponses.Outcome call(long user, String id) {
         return service.transcribe(
                 user, audio(id), System.nanoTime() + TimeUnit.SECONDS.toNanos(120));

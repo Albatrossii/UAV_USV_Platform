@@ -1,4 +1,4 @@
-"""D1 loopback-only, memory-only ASR. No P0/Runner/Unity imports or cloud fallback."""
+"""Memory-only ASR; loopback by default, optional explicit onboard bind address."""
 from __future__ import annotations
 
 import concurrent.futures
@@ -8,6 +8,7 @@ import hashlib
 import hmac
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import io
+import ipaddress
 import json
 import math
 import os
@@ -510,10 +511,11 @@ class Server(ThreadingHTTPServer):
     request_queue_size = 8
     allow_reuse_address = False
 
-    def __init__(self, port, runtime):
+    def __init__(self, port, runtime, host='127.0.0.1'):
+        ipaddress.IPv4Address(host)
         self.runtime = runtime
         self.connections = threading.BoundedSemaphore(8)
-        super().__init__(('127.0.0.1', port), Handler)
+        super().__init__((host, port), Handler)
 
     def process_request(self, request, address):
         if not self.connections.acquire(blocking=False):
@@ -548,7 +550,8 @@ def main():
     if not 1 <= threads <= 16:
         raise SystemExit('ASR_CPU_THREADS must be 1..16')
     runtime = Runtime(token, audit=True)
-    server = Server(int(os.environ.get('ASR_PORT', '18082')), runtime)
+    server = Server(int(os.environ.get('ASR_PORT', '18082')), runtime,
+                    os.environ.get('ASR_BIND_HOST', '127.0.0.1'))
     def initialize():
         try:
             if ASR_ENGINE == 'zipformer-streaming':

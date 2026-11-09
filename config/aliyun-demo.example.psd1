@@ -1,9 +1,17 @@
 @{
   # Copy this file to aliyun-demo.local.psd1 and fill the local-only values.
   # Never commit the local file. The startup script never prints these values.
+  # Optional: leave all three blank on computers using only local Whisper Small.
   AliyunAppKey = ''
   AliyunAccessKeyId = ''
   AliyunAccessKeySecret = ''
+
+  # Shared frontend/backend setup: local Whisper Small on THIS computer.
+  LocalAsrEnabled = $true
+  # Blank paths use asr-service/.venv and asr-service/models/whisper-small.
+  LocalAsrPythonPath = ''
+  LocalAsrModelPath = ''
+  LocalAsrPort = 18082
 
   # The database must already exist. Flyway creates and updates its tables.
   MysqlUrl = 'jdbc:mysql://127.0.0.1:3306/uav_usv_platform?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true'

@@ -30,6 +30,25 @@ import { ApiClientError } from '@/api/http'
 const requestId = '11111111-1111-4111-8111-111111111111'
 
 describe('voice intelligence backend API adapter', () => {
+  it.each(['local', 'aliyun'] as const)('sends an explicit %s provider without changing the multipart contract', async provider => {
+    mocks.post.mockResolvedValue({ data: { code: 'SUCCESS', data: {
+      requestId, text: '暂停任务', locale: 'zh-CN', durationMs: 1000,
+      provider: provider === 'local' ? 'local-asr' : 'aliyun-asr', model: 'test-model',
+    } } })
+    await transcribeLocalAudio({ requestId, locale: 'zh-CN', provider, audio: new Blob(['audio'], { type: 'audio/wav' }) })
+    const [, body, options] = mocks.post.mock.calls[0]!
+    expect(options.headers['X-ASR-Provider']).toBe(provider)
+    expect([...body.keys()]).toEqual(['requestId', 'locale', 'audio'])
+  })
+
+  it('rejects an unrequested cloud response without retrying or falling back', async () => {
+    mocks.post.mockResolvedValue({ data: { code: 'SUCCESS', data: {
+      requestId, text: '暂停任务', locale: 'zh-CN', durationMs: 1000, provider: 'aliyun-asr', model: 'test-model',
+    } } })
+    await expect(transcribeLocalAudio({ requestId, locale: 'zh-CN', provider: 'local', audio: new Blob(['audio'], { type: 'audio/wav' }) }))
+      .rejects.toMatchObject({ code: 'VOICE_MALFORMED_RESPONSE' })
+    expect(mocks.post).toHaveBeenCalledOnce()
+  })
   it('accepts a question refusal and preserves the question mark instead of treating it as a malformed response', async () => {
     mocks.post.mockResolvedValue({ data: { data: {
       status: 'NOT_ACTIONABLE', requestId, reason: 'QUESTION_ACTION',

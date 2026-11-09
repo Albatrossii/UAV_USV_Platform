@@ -1,7 +1,11 @@
 package com.uavusv.platform.module.voiceintelligence;
 
 public interface SpeechProvider {
-    record Audio(String requestId, String locale, String mime, byte[] bytes) {}
+    record Audio(String requestId, String locale, String mime, byte[] bytes, String provider) {
+        public Audio(String requestId, String locale, String mime, byte[] bytes) {
+            this(requestId, locale, mime, bytes, null);
+        }
+    }
 
     record Transcript(
             String requestId,

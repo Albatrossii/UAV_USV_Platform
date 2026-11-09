@@ -317,6 +317,34 @@ describe('voice recording duration and explicit completion', () => {
     wrapper.unmount()
   })
 
+  it('distinguishes missing audio input from a failed selected device and opens microphone settings without calling ASR', async () => {
+    const { wrapper, getUserMedia, transcribe } = setupRecording()
+    getUserMedia.mockRejectedValueOnce(new DOMException('no capture endpoint', 'NotFoundError'))
+    await wrapper.get('button[aria-label="开始录音"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.text()).toContain('未检测到可用麦克风输入')
+    expect(wrapper.text()).not.toContain('所选麦克风不可用')
+    expect((wrapper.get('.microphone-settings').element as HTMLDetailsElement).open).toBe(true)
+    expect(getUserMedia).toHaveBeenCalledOnce()
+    expect(transcribe).not.toHaveBeenCalled()
+    expect(FakeMediaRecorder.instances).toHaveLength(0)
+    wrapper.unmount()
+  })
+
+  it('clears a disconnected device after an explicit refresh without starting capture', async () => {
+    const { wrapper, getUserMedia, transcribe } = setupRecording()
+    await flushPromises()
+    await wrapper.get('select[aria-label="录音输入设备"]').setValue('headset-1')
+    vi.mocked(navigator.mediaDevices.enumerateDevices).mockResolvedValueOnce([])
+    await wrapper.findAll('button').find(button => button.text() === '刷新设备')!.trigger('click')
+    await flushPromises()
+    expect((wrapper.get('select[aria-label="录音输入设备"]').element as HTMLSelectElement).value).toBe('')
+    expect(wrapper.text()).toContain('原先选择的麦克风已不在设备列表中')
+    expect(getUserMedia).not.toHaveBeenCalled()
+    expect(transcribe).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
   it('records without AudioContext and does not stop at former silence, speech or total-duration limits', async () => {
     const { wrapper, getUserMedia, stopTrack, transcribe } = setupRecording()
     const recorder = await beginRecording(wrapper)

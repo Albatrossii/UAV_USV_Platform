@@ -6,8 +6,6 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
-import org.springframework.stereotype.Component;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -34,8 +32,6 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 
 /** One-sentence recognition. Audio stays in memory; the temporary Token never reaches the browser or logs. */
-@Component
-@ConditionalOnProperty(name = "app.voiceintelligence.provider", havingValue = "aliyun")
 public class AliyunAsrProvider implements SpeechProvider {
     private static final int SAMPLE_RATE = 16000;
     private static final int MAX_PCM = SAMPLE_RATE * 2 * 60;

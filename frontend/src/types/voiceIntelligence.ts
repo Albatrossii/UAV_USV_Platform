@@ -22,11 +22,14 @@ export type VoiceParseReason =
   | 'UNSUPPORTED_CAPABILITY'
   | 'UNSUPPORTED_TARGETING'
 
+export type VoiceSpeechProvider = 'local' | 'aliyun'
+
 export interface VoiceAudioInput {
   audio: Blob
   locale: string
   requestId: string
   signal?: AbortSignal
+  provider?: VoiceSpeechProvider
 }
 
 export interface VoiceTranscript {

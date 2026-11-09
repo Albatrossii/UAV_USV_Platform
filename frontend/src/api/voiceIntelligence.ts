@@ -173,6 +173,9 @@ async function transcribeVoiceAudioRequest(
   if (!uuidPattern.test(input.requestId) || input.locale !== 'zh-CN') {
     throw new VoiceIntelligenceError('语音识别请求标识或区域无效。', 'VOICE_INVALID_REQUEST')
   }
+  if (input.provider !== undefined && !['local', 'aliyun'].includes(input.provider)) {
+    throw new VoiceIntelligenceError('请选择本地模型或阿里云模型。', 'VOICE_INVALID_REQUEST')
+  }
   if (input.audio.size === 0) throw new VoiceIntelligenceError('没有录制到有效音频。', 'VOICE_AUDIO_EMPTY')
   if (input.audio.size > VOICE_AUDIO_MAX_BYTES) {
     throw new VoiceIntelligenceError('录音超过 5 MiB 限制，请缩短后重试。', 'VOICE_AUDIO_TOO_LARGE')
@@ -182,7 +185,8 @@ async function transcribeVoiceAudioRequest(
     throw new VoiceIntelligenceError(`暂不支持音频格式 ${contentType || 'unknown'}。`, 'VOICE_AUDIO_FORMAT_UNSUPPORTED')
   }
   try {
-    const headers = await writeHeaders(input.requestId)
+    const headers: Record<string, string> = await writeHeaders(input.requestId)
+    if (input.provider) headers['X-ASR-Provider'] = input.provider
     assertRequestActive(input.signal)
     const form = new FormData()
     form.append('requestId', input.requestId)
@@ -196,6 +200,9 @@ async function transcribeVoiceAudioRequest(
     }
     if (!isTranscript(response.data.data) || response.data.data.requestId !== input.requestId) {
       throw new VoiceIntelligenceError('语音识别响应格式或请求标识无效。', 'VOICE_MALFORMED_RESPONSE')
+    }
+    if (input.provider && response.data.data.provider !== (input.provider === 'local' ? 'local-asr' : 'aliyun-asr')) {
+      throw new VoiceIntelligenceError('实际识别来源与所选模型不一致，请核对服务配置。', 'VOICE_MALFORMED_RESPONSE')
     }
     return response.data.data
   } catch (error) {

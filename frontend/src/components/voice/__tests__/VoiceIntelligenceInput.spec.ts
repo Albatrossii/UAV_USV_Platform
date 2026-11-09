@@ -123,7 +123,7 @@ describe('VoiceIntelligenceInput', () => {
     const wrapper = backendInput(parse)
     try {
       await wrapper.get('textarea').setValue('暂停任务')
-      await wrapper.findAll('button')[1]!.trigger('click')
+      await wrapper.get('.controls button:nth-child(2)').trigger('click')
       await flushPromises()
       const retry = () => wrapper.findAll('button').find(button => /等待 .* 秒后重试|^重试原请求$/.test(button.text()))!
       expect(retry().attributes('disabled')).toBeDefined()
@@ -153,7 +153,7 @@ describe('VoiceIntelligenceInput', () => {
     const wrapper = backendInput(parse)
     try {
       await wrapper.get('textarea').setValue('暂停任务')
-      await wrapper.findAll('button')[1]!.trigger('click')
+      await wrapper.get('.controls button:nth-child(2)').trigger('click')
       await flushPromises()
       const newRequest = () => wrapper.findAll('button').find(button => button.text() === '重新发起识别（可能产生新费用）')!
       expect(newRequest().attributes('disabled')).toBeDefined()
@@ -205,7 +205,7 @@ describe('VoiceIntelligenceInput', () => {
     const wrapper = backendInput(parse)
     try {
       await wrapper.get('textarea').setValue('暂停任务')
-      await wrapper.findAll('button')[1]!.trigger('click')
+      await wrapper.get('.controls button:nth-child(2)').trigger('click')
       await flushPromises()
       expect(wrapper.text()).toContain('不要换键重发')
       expect(wrapper.text()).not.toContain('重新发起识别（可能产生新费用）')
@@ -218,7 +218,7 @@ describe('VoiceIntelligenceInput', () => {
     const parse = vi.fn().mockRejectedValueOnce(new Error('network lost')).mockImplementation(successfulParse)
     const wrapper = backendInput(parse)
     await wrapper.get('textarea').setValue(' 暂停任务 ')
-    await wrapper.findAll('button')[1]!.trigger('click')
+    await wrapper.get('.controls button:nth-child(2)').trigger('click')
     await flushPromises()
     expect((wrapper.get('textarea').element as HTMLTextAreaElement).disabled).toBe(true)
     await wrapper.findAll('button').find(b => b.text() === '使用原请求恢复查询')!.trigger('click')
@@ -237,7 +237,7 @@ describe('VoiceIntelligenceInput', () => {
     const parse = vi.fn(input => new Promise<any>(done => { resolve = async () => done(await successfulParse(input)) }))
     const wrapper = backendInput(parse)
     await wrapper.get('textarea').setValue('暂停')
-    await wrapper.findAll('button')[1]!.trigger('click')
+    await wrapper.get('.controls button:nth-child(2)').trigger('click')
     await wrapper.setProps({ operatorScope: 'operator-b' })
     resolve()
     await flushPromises()
@@ -248,7 +248,7 @@ describe('VoiceIntelligenceInput', () => {
   it('clears candidates when the runtime generation changes', async () => {
     const wrapper = backendInput(successfulParse)
     await wrapper.get('textarea').setValue('暂停')
-    await wrapper.findAll('button')[1]!.trigger('click')
+    await wrapper.get('.controls button:nth-child(2)').trigger('click')
     await flushPromises()
     await wrapper.setProps({ runtimeContext: { runtimeRef: 'new-ref', runtimeGeneration: 'new-generation', contextVersion: 0 } })
     expect(wrapper.find('.candidate').exists()).toBe(false)
@@ -259,7 +259,7 @@ describe('VoiceIntelligenceInput', () => {
     const wrapper = backendInput(successfulParse)
     await wrapper.setProps({ runtimeContext })
     await wrapper.get('textarea').setValue('暂停')
-    await wrapper.findAll('button')[1]!.trigger('click')
+    await wrapper.get('.controls button:nth-child(2)').trigger('click')
     await flushPromises()
 
     await wrapper.setProps({ runtimeContext: { ...runtimeContext } })
@@ -270,7 +270,7 @@ describe('VoiceIntelligenceInput', () => {
   it('blocks new input after server revocation', async () => {
     const wrapper = backendInput(vi.fn().mockRejectedValue(new ApiClientError('撤权', 403, 'FORBIDDEN')))
     await wrapper.get('textarea').setValue('暂停')
-    await wrapper.findAll('button')[1]!.trigger('click')
+    await wrapper.get('.controls button:nth-child(2)').trigger('click')
     await flushPromises()
     expect((wrapper.get('textarea').element as HTMLTextAreaElement).disabled).toBe(true)
     expect(wrapper.find('.candidate').exists()).toBe(false)
@@ -280,7 +280,7 @@ describe('VoiceIntelligenceInput', () => {
     const wrapper = mountInput()
     await wrapper.setProps({ allowMockSubmission: false })
     await wrapper.get('textarea').setValue('暂停')
-    await wrapper.findAll('button')[1]!.trigger('click')
+    await wrapper.get('.controls button:nth-child(2)').trigger('click')
     await flushPromises()
     expect((wrapper.get('.candidate button').element as HTMLButtonElement).disabled).toBe(true)
     wrapper.unmount()
@@ -290,14 +290,14 @@ describe('VoiceIntelligenceInput', () => {
     const wrapper = backendInput(parse)
     await wrapper.get('textarea').setValue('字'.repeat(201))
     expect(wrapper.text()).toContain('201 字')
-    await wrapper.findAll('button')[1]!.trigger('click')
+    await wrapper.get('.controls button:nth-child(2)').trigger('click')
     expect(parse).not.toHaveBeenCalled()
     wrapper.unmount()
   })
   it('keeps the transcript editable and emits only after candidate review', async () => {
     const wrapper = mountInput()
     await wrapper.get('textarea').setValue('暂停当前任务')
-    await wrapper.findAll('button')[1]!.trigger('click')
+    await wrapper.get('.controls button:nth-child(2)').trigger('click')
     await flushPromises()
 
     expect(wrapper.text()).toContain('候选指令')
@@ -355,6 +355,7 @@ describe('VoiceIntelligenceInput', () => {
       adapter: { name: 'platform-backend', mode: 'BACKEND', transcribe, parse },
       allowedActions: ['STOP'], deviceCodes: [], operatorScope: 'admin', autoExecuteSpeech: true,
     } })
+    await wrapper.findAll('.provider-options button')[1]!.trigger('click')
     const input = wrapper.get('input[type="file"]')
     Object.defineProperty(input.element, 'files', { configurable: true,
       value: [new File(['wav-sample'], 'stop.wav', { type: 'audio/wav' })] })
@@ -362,6 +363,7 @@ describe('VoiceIntelligenceInput', () => {
     await flushPromises()
 
     expect(parse).toHaveBeenCalledOnce()
+    expect(transcribe.mock.calls[0]![0].provider).toBe('aliyun')
     expect(parse.mock.calls[0]![0].text).toBe('停止任务')
     expect(wrapper.emitted('voiceCandidate')).toBeUndefined()
     expect(wrapper.emitted('candidate')).toEqual([['MISSION_STOP', expect.any(String)]])
@@ -537,7 +539,7 @@ describe('VoiceIntelligenceInput', () => {
       autoExecuteSpeech: true,
     } })
     await wrapper.get('textarea').setValue('一号无人机悬停')
-    await wrapper.findAll('button')[1]!.trigger('click')
+    await wrapper.get('.controls button:nth-child(2)').trigger('click')
     await flushPromises()
 
     expect(parse).toHaveBeenCalledOnce()
@@ -584,7 +586,7 @@ describe('VoiceIntelligenceInput', () => {
   it('blocks negated commands before proposal creation', async () => {
     const wrapper = mountInput()
     await wrapper.get('textarea').setValue('不要停止任务')
-    await wrapper.findAll('button')[1]!.trigger('click')
+    await wrapper.get('.controls button:nth-child(2)').trigger('click')
     await flushPromises()
 
     expect(wrapper.text()).toContain('检测到否定表达')
@@ -595,7 +597,7 @@ describe('VoiceIntelligenceInput', () => {
   it('does not downgrade a single-device command to a fleet action', async () => {
     const wrapper = mountInput()
     await wrapper.get('textarea').setValue('暂停一号无人艇')
-    await wrapper.findAll('button')[1]!.trigger('click')
+    await wrapper.get('.controls button:nth-child(2)').trigger('click')
     await flushPromises()
 
     expect(wrapper.text()).toContain('暂不支持指定单台设备')
@@ -720,7 +722,8 @@ describe('VoiceIntelligenceInput refined mode', () => {
     expect(wrapper.text()).not.toContain('一句话，调度海空设备')
     expect(wrapper.text()).toContain('平台语音识别')
     expect(wrapper.text()).toContain('录音后确认来源')
-    expect(wrapper.text()).not.toContain('阿里云')
+    expect(wrapper.get('.provider-status').text()).toBe('待识别验证')
+    expect(wrapper.get('.provider-options button').attributes('aria-pressed')).toBe('true')
     expect(wrapper.find('input[type="file"]').exists()).toBe(false)
     expect(wrapper.find('.result-details').exists()).toBe(false)
     expect(wrapper.find('.candidate').exists()).toBe(false)

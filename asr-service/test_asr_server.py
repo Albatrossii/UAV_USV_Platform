@@ -35,6 +35,22 @@ class FakeEngine:
 
 
 class HashTests(unittest.TestCase):
+    def test_onboard_bind_address_is_explicit_and_loopback_remains_default(self):
+        runtime = Runtime(TOKEN, FakeEngine())
+        default = Server(0, runtime)
+        onboard = None
+        try:
+            self.assertEqual(default.server_address[0], '127.0.0.1')
+            onboard = Server(0, runtime, '0.0.0.0')
+            self.assertEqual(onboard.server_address[0], '0.0.0.0')
+            with self.assertRaises(ValueError):
+                Server(0, runtime, 'not-an-ip')
+        finally:
+            default.server_close()
+            if onboard is not None:
+                onboard.server_close()
+            runtime.pool.shutdown(wait=True)
+
     def test_streaming_sha256_supports_the_deployment_interpreter(self):
         self.assertEqual(
             file_sha256(io.BytesIO(b'abc')),

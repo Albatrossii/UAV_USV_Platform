@@ -39,6 +39,12 @@ public class AsrController {
         if (body == null || deadline == null) throw AsrFailure.invalid();
         var a = AudioMultipart.parse((String) request.getAttribute(AsrIngressFilter.TYPE), body);
         if (!id.equals(a.requestId())) throw AsrFailure.invalid();
+        String selected = request.getHeader("X-ASR-Provider");
+        if (Collections.list(request.getHeaders("X-ASR-Provider")).size() > 1
+                || (selected != null && !Set.of("local", "aliyun").contains(selected)))
+            throw AsrFailure.invalid();
+        if (selected != null)
+            a = new SpeechProvider.Audio(a.requestId(), a.locale(), a.mime(), a.bytes(), selected);
         return AsrResponses.response(service.transcribe(user, a, deadline));
     }
 

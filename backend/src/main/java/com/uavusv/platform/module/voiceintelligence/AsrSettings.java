@@ -7,6 +7,10 @@ import org.springframework.stereotype.Component;
 @ConfigurationProperties(prefix = "app.voiceintelligence")
 public class AsrSettings {
     private boolean enabled = false;
+    private boolean allowRemoteLocalAsr = false;
+
+    public boolean isAllowRemoteLocalAsr() { return allowRemoteLocalAsr; }
+    public void setAllowRemoteLocalAsr(boolean value) { allowRemoteLocalAsr = value; }
     private String provider = "local",
             baseUrl = "http://127.0.0.1:18082",
             token = "",

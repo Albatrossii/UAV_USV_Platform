@@ -30,6 +30,23 @@ afterEach(() => {
 })
 
 describe('D1 isolated ASR UI', () => {
+  it('locks the selected provider during requests and retains the actual result source after switching', async () => {
+    let complete!: (result: VoiceTranscript) => void
+    const transcribe = vi.fn(() => new Promise<VoiceTranscript>(resolve => { complete = resolve }))
+    const { wrapper } = setup(transcribe)
+    expect(button(wrapper, '本地模型').attributes('aria-pressed')).toBe('true')
+    await button(wrapper, '阿里云模型').trigger('click')
+    await upload(wrapper)
+    const input = transcribe.mock.calls[0]![0] as VoiceAudioInput
+    expect(input.provider).toBe('aliyun')
+    expect(button(wrapper, '本地模型').attributes('disabled')).toBeDefined()
+    complete({ ...transcript(input), provider: 'aliyun-asr', model: 'cloud-test' })
+    await flushPromises()
+    await button(wrapper, '本地模型').trigger('click')
+    expect(button(wrapper, '本地模型').attributes('aria-pressed')).toBe('true')
+    expect(wrapper.get('.metadata').text()).toContain('aliyun-asr')
+    expect(wrapper.text()).toContain('cloud-test')
+  })
   it('displays 500 codepoints without a parser/candidate or emitted action', async () => {
     const { wrapper, transcribe } = setup(vi.fn(async input => transcript(input, '字'.repeat(500))))
     await upload(wrapper)
@@ -69,6 +86,7 @@ describe('D1 isolated ASR UI', () => {
     await flushPromises()
     expect(transcribe.mock.calls[1]![0].requestId).toBe(transcribe.mock.calls[0]![0].requestId)
     expect(transcribe.mock.calls[1]![0].audio).toBe(transcribe.mock.calls[0]![0].audio)
+    expect(transcribe.mock.calls[1]![0].provider).toBe('local')
   })
   it('expires 10 minutes from first submit, not the retry', async () => {
     const { wrapper, transcribe } = setup(vi.fn().mockRejectedValue(new Error('lost')))

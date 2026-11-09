@@ -150,6 +150,22 @@ class AsrHttpTests {
     }
 
     @Test
+    void providerHeaderIsForwardedAndInvalidSelectionRejected() throws Exception {
+        mvc.perform(request().with(user("admin").roles("ADMIN")).with(csrf().asHeader())
+                        .header("X-ASR-Provider", "aliyun"))
+                .andExpect(status().isOk());
+        verify(context.getBean(SpeechProvider.class)).transcribe(
+                argThat(a -> "aliyun".equals(a.provider())), anyLong());
+        mvc.perform(request().with(user("admin").roles("ADMIN")).with(csrf().asHeader())
+                        .header("X-ASR-Provider", "unknown"))
+                .andExpect(status().isBadRequest());
+        mvc.perform(request().with(user("admin").roles("ADMIN")).with(csrf().asHeader())
+                        .header("X-ASR-Provider", "local", "aliyun"))
+                .andExpect(status().isBadRequest());
+        verify(context.getBean(SpeechProvider.class), times(1)).transcribe(any(), anyLong());
+    }
+
+    @Test
     void csrfRequired() throws Exception {
         mvc.perform(request().with(user("admin").roles("ADMIN")))
                 .andExpect(status().isForbidden())

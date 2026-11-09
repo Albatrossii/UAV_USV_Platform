@@ -3,10 +3,12 @@ import { presetLabel, presetMatchesText, repairAlgorithmSpeech } from '@/service
 import { computed, onBeforeUnmount, onDeactivated, onMounted, ref, shallowRef, watch } from 'vue'
 import { ArrowRight, Cloud, Mic, PencilLine, Square, WandSparkles } from '@lucide/vue'
 import { createVoiceIntelligenceAdapter } from '@/services/voiceIntelligence'
+import SpeechProviderPicker from './SpeechProviderPicker.vue'
 import { voiceRecoveryInfo } from '@/services/voiceIntelligenceRecovery'
 import { normalizeVoiceAudioType, VOICE_AUDIO_MAX_BYTES } from '@/api/voiceIntelligence'
 import { evaluateSpeechRecording, SPEECH_RECORDING_HINT, SPEECH_RECORDING_MAX_MS } from '@/utils/speechRecordingPolicy'
 import { monitorMicrophoneLevel } from '@/utils/microphoneLevel'
+import { microphoneCaptureError } from '@/utils/microphoneCaptureError'
 import { normalizeVoiceDeviceTerms, repairContextualUsvHold } from '@/utils/voiceTranscriptNormalization'
 import { sequenceMatchesSpeech, splitVoiceSequence, voiceStepLabel } from '@/utils/voiceSequence'
 import { hasNegatedVoiceAction, isLocalVoiceSimulation, requiresVoiceConfirmation, voiceDeviceLabel, type VoiceAutomationRuntime } from '@/utils/voiceCommandSafety'
@@ -17,7 +19,7 @@ import type {
 import type {
   VoiceAudioInput, VoiceParseRequest, VoiceInputStage, VoiceIntelligenceAdapter,
   VoiceInterpretationRuntimeContext, VoiceParseResult,
-  VoiceIntentCandidate,
+  VoiceIntentCandidate, VoiceSpeechProvider,
 } from '@/types/voiceIntelligence'
 
 const props = withDefaults(defineProps<{
@@ -54,6 +56,9 @@ const emit = defineEmits<{
 const adapter = props.adapter ?? createVoiceIntelligenceAdapter()
 const draft = ref('')
 const transcriptProvider = ref('')
+const transcriptModel = ref('')
+const selectedProvider = ref<VoiceSpeechProvider>('local')
+const errorProvider = ref<VoiceSpeechProvider | null>(null)
 const stage = ref<VoiceInputStage>('IDLE')
 const result = ref<VoiceParseResult | null>(null)
 const message = ref('输入文字或录音，识别结果可编辑后再解析。')
@@ -92,6 +97,7 @@ const microphoneDevices = ref<MediaDeviceInfo[]>([])
 const selectedMicrophone = ref('')
 const microphoneProcessing = ref(true)
 const microphoneDeviceMessage = ref('')
+const microphoneSettingsOpen = ref(false)
 const microphoneTest = ref(false)
 const microphoneTestUrl = ref('')
 let microphoneDeviceEpoch = 0
@@ -215,9 +221,16 @@ async function refreshMicrophones() {
   try {
     const devices = await navigator.mediaDevices.enumerateDevices()
     if (ticket !== microphoneDeviceEpoch) return
-    microphoneDevices.value = devices.filter(device => device.kind === 'audioinput'
-      && device.deviceId && !['default', 'communications'].includes(device.deviceId))
-    microphoneDeviceMessage.value = ''
+    const inputs = devices.filter(device => device.kind === 'audioinput')
+    microphoneDevices.value = inputs.filter(device =>
+      device.deviceId && !['default', 'communications'].includes(device.deviceId))
+    if (selectedMicrophone.value && !inputs.some(device => device.deviceId === selectedMicrophone.value)
+        && inputs.every(device => !!device.deviceId) && !recorder) {
+      selectedMicrophone.value = ''
+      microphoneDeviceMessage.value = '原先选择的麦克风已不在设备列表中，已改为系统默认；请检查连接后重新录音。'
+    } else {
+      microphoneDeviceMessage.value = inputs.length ? '' : '浏览器尚未列出麦克风输入，请检查设备连接和网站麦克风权限。'
+    }
   } catch {
     if (ticket === microphoneDeviceEpoch) microphoneDeviceMessage.value = '无法读取设备列表，可先点击测试授予麦克风权限。'
   }
@@ -242,6 +255,8 @@ function resetInput() {
   speechFallbackAvailable.value = false
   result.value = null
   transcriptProvider.value = ''
+  transcriptModel.value = ''
+  errorProvider.value = null
   audioPipelineStartedAt = null
   audioRequestElapsedMs = 0
   parseElapsedMs = 0
@@ -441,6 +456,8 @@ async function runRequest() {
       if (ticket !== epoch || active.signal.aborted) return
       audioRequestElapsedMs += Math.round(performance.now() - asrStartedAt)
       transcriptProvider.value = transcript.provider
+      transcriptModel.value = transcript.model
+      errorProvider.value = null
       draft.value = transcript.text
       pending.value = null
       // Only real ASR providers enter the speech-to-intent flow. Test fixtures
@@ -497,6 +514,7 @@ async function runRequest() {
     pending.value = null
   } catch (error) {
     if (ticket !== epoch || active.signal.aborted) return
+    if (stage.value === 'TRANSCRIBING') errorProvider.value = current.kind === 'audio' ? current.input.provider ?? selectedProvider.value : null
     const info = voiceRecoveryInfo(error)
     if (info.forbidden) {
       resetInput()
@@ -568,6 +586,8 @@ async function startRecording(testOnly = false) {
   automaticallySubmitted.value = false
   message.value = ''
   const ticket = epoch
+  const recordingProvider = selectedProvider.value
+  errorProvider.value = null
   transcriptProvider.value = ''
   speechFallbackAvailable.value = false
   permissionPending.value = true
@@ -636,7 +656,7 @@ async function startRecording(testOnly = false) {
       parseElapsedMs = 0
       pending.value = { kind: 'audio', autoExecute: !stoppedAtLimit, input: {
         audio,
-        requestId: crypto.randomUUID(), locale: 'zh-CN',
+        requestId: crypto.randomUUID(), locale: 'zh-CN', provider: recordingProvider,
       } }
       void runRequest()
     }, { once: true })
@@ -663,11 +683,9 @@ async function startRecording(testOnly = false) {
     if (ticket !== epoch) return
     stopCapture()
     stage.value = 'ERROR'
-    message.value = error instanceof DOMException && error.name === 'NotAllowedError'
-      ? '麦克风权限被拒绝，请授权或使用文字。'
-      : error instanceof DOMException && ['NotFoundError', 'OverconstrainedError'].includes(error.name)
-        ? '所选麦克风不可用，请刷新设备列表并重新选择。'
-        : error instanceof Error ? error.message : '无法录音。'
+    message.value = microphoneCaptureError(error)
+    microphoneSettingsOpen.value = true
+    void refreshMicrophones()
   } finally {
     if (ticket === epoch) permissionPending.value = false
   }
@@ -700,7 +718,7 @@ function chooseAudioFile(event: Event) {
   audioRequestElapsedMs = 0
   parseElapsedMs = 0
   pending.value = { kind: 'audio', input: {
-    audio: new Blob([file], { type }), requestId: crypto.randomUUID(), locale: 'zh-CN',
+    audio: new Blob([file], { type }), requestId: crypto.randomUUID(), locale: 'zh-CN', provider: selectedProvider.value,
   } }
   void runRequest()
 }
@@ -737,6 +755,7 @@ onBeforeUnmount(resetInput)
 onDeactivated(resetInput)
 onMounted(() => {
   void refreshMicrophones()
+  navigator.mediaDevices?.addEventListener?.('devicechange', onMicrophoneDevicesChanged)
   elapsedTimer = window.setInterval(() => {
     if (coolingDown.value) cooldownSeconds.value = Math.max(0, Math.ceil((cooldownUntil - Date.now()) / 1000))
     if (['RECORDING', 'TRANSCRIBING', 'PARSING'].includes(stage.value)) {
@@ -746,10 +765,16 @@ onMounted(() => {
 })
 onBeforeUnmount(() => window.clearInterval(elapsedTimer))
 onBeforeUnmount(() => { microphoneDeviceEpoch++ })
+function onMicrophoneDevicesChanged() { void refreshMicrophones() }
+onBeforeUnmount(() => navigator.mediaDevices?.removeEventListener?.('devicechange', onMicrophoneDevicesChanged))
 </script>
 
 <template>
   <section class="intelligence-input" :class="{ 'is-refined': refined, 'is-compact': compact }" aria-label="语音与文本指令输入">
+    <SpeechProviderPicker v-if="adapter.mode === 'BACKEND'" v-model="selectedProvider"
+      :disabled="busy || permissionPending || stage === 'RECORDING' || !!pending || blocked || coolingDown"
+      :recognizing="stage === 'TRANSCRIBING'" :result-provider="transcriptProvider" :result-model="transcriptModel"
+      :error-provider="errorProvider" />
     <template v-if="refined">
       <div v-if="!compact" class="refined-provider" aria-live="polite">
         <span><Cloud :size="15" aria-hidden="true" />{{ speechSource.label }}</span>
@@ -774,7 +799,8 @@ onBeforeUnmount(() => { microphoneDeviceEpoch++ })
           <span>{{ microphoneStatus }}</span>
         </div>
       </section>
-      <details class="microphone-settings">
+      <details class="microphone-settings" :open="microphoneSettingsOpen"
+        @toggle="microphoneSettingsOpen = ($event.target as HTMLDetailsElement).open">
         <summary>麦克风设置与测试</summary>
         <label>输入设备
           <select v-model="selectedMicrophone" aria-label="录音输入设备"

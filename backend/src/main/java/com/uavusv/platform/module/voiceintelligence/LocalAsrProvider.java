@@ -2,8 +2,6 @@ package com.uavusv.platform.module.voiceintelligence;
 
 import com.fasterxml.jackson.databind.*;
 
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
-import org.springframework.stereotype.Component;
 
 import java.io.*;
 import java.net.*;
@@ -15,8 +13,6 @@ import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.Flow;
 
-@Component
-@ConditionalOnProperty(name = "app.voiceintelligence.provider", havingValue = "local", matchIfMissing = true)
 public class LocalAsrProvider implements SpeechProvider {
     private final AsrSettings settings;
     private final ObjectMapper json;
@@ -43,8 +39,9 @@ public class LocalAsrProvider implements SpeechProvider {
         URI base;
         try {
             base = URI.create(settings.getBaseUrl());
-            if (!"http".equals(base.getScheme())
-                    || !"127.0.0.1".equals(base.getHost())
+            if (!("http".equals(base.getScheme()) || "https".equals(base.getScheme()))
+                    || base.getHost() == null
+                    || (!"127.0.0.1".equals(base.getHost()) && !settings.isAllowRemoteLocalAsr())
                     || base.getPort() < 1
                     || base.getUserInfo() != null
                     || base.getQuery() != null

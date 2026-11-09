@@ -124,6 +124,17 @@ class LocalAsrProviderTests {
     }
 
     @Test
+    void configuredOnboardAddressRequiresExplicitOptIn() {
+        settings.setBaseUrl("http://localhost:" + server.getAddress().getPort());
+        assertEquals(503, assertThrows(AsrFailure.class, this::call).status);
+        assertEquals(0, calls.get());
+        settings.setAllowRemoteLocalAsr(true);
+        reply(200, success(id));
+        assertEquals("暂停任务", call().text());
+        assertEquals(1, calls.get());
+    }
+
+    @Test
     void timeoutQuarantinedNoRetry() {
         server.createContext(
                 "/internal/asr/transcriptions",

@@ -2,7 +2,9 @@
 import { computed, onBeforeUnmount, onDeactivated, ref, shallowRef, watch } from 'vue'
 import { transcribeAsrOnlyAudio, normalizeVoiceAudioType, VOICE_AUDIO_MAX_BYTES, LOCAL_ASR_TIMEOUT_MS } from '@/api/voiceIntelligence'
 import { voiceRecoveryInfo } from '@/services/voiceIntelligenceRecovery'
-import type { VoiceAudioInput, VoiceTranscript } from '@/types/voiceIntelligence'
+import SpeechProviderPicker from './SpeechProviderPicker.vue'
+import { microphoneCaptureError } from '@/utils/microphoneCaptureError'
+import type { VoiceAudioInput, VoiceTranscript, VoiceSpeechProvider } from '@/types/voiceIntelligence'
 
 const props = withDefaults(defineProps<{
   operatorScope: string; disabled?: boolean
@@ -10,6 +12,8 @@ const props = withDefaults(defineProps<{
 }>(), { disabled: false, transcribe: undefined })
 // Deliberately independent of P0, runtime context, parser and candidate events.
 const text = ref('')
+const selectedProvider = ref<VoiceSpeechProvider>('local')
+const errorProvider = ref<VoiceSpeechProvider | null>(null)
 const message = ref('仅录音转文字，不解析意图、不执行控制。刷新不恢复音频，旧请求可能已处理。')
 const result = shallowRef<VoiceTranscript | null>(null)
 const pending = shallowRef<VoiceAudioInput | null>(null)
@@ -62,6 +66,7 @@ function clear() {
   pending.value = null
   text.value = ''
   result.value = null
+  errorProvider.value = null
   phase.value = 'idle'
   retryable.value = false
   cooldown.value = false
@@ -106,6 +111,7 @@ async function send() {
     const response = await (props.transcribe ?? transcribeAsrOnlyAudio)({ ...pending.value, signal: controller.signal })
     if (ticket !== epoch || controller.signal.aborted) return
     result.value = response
+    errorProvider.value = null
     completedRecognitionElapsedMs.value = Math.round(performance.now() - recognitionStarted)
     text.value = response.text
     pending.value = null
@@ -115,6 +121,7 @@ async function send() {
       : '返回来自测试或未知适配器，不作为真实识别通过证据。'
   } catch (error) {
     if (ticket !== epoch || controller.signal.aborted) return
+    errorProvider.value = pending.value?.provider ?? selectedProvider.value
     const info = voiceRecoveryInfo(error)
     message.value = info.code === 'VOICE_TRANSCRIPT_TOO_LONG' ? '识别文字超过500个字符，请缩短录音重试。' : info.message
     if (info.forbidden) {
@@ -150,7 +157,8 @@ function submitAudio(audio: Blob) {
   }
   text.value = ''
   result.value = null
-  pending.value = { audio, requestId: crypto.randomUUID(), locale: 'zh-CN' }
+  errorProvider.value = null
+  pending.value = { audio, requestId: crypto.randomUUID(), locale: 'zh-CN', provider: selectedProvider.value }
   submitted = performance.now()
   expireTimer = window.setTimeout(expire, RECOVERY_MS)
   void send()
@@ -210,15 +218,7 @@ async function startRecording() {
     if (ticket !== epoch) return
     releaseCapture()
     phase.value = 'idle'
-    if (error instanceof DOMException && error.name === 'NotAllowedError') {
-      message.value = '麦克风权限被拒绝，请在浏览器中授权后再试。'
-    } else if (error instanceof DOMException && error.name === 'NotFoundError') {
-      message.value = '未检测到可用麦克风，请连接设备后重试。'
-    } else if (error instanceof DOMException && error.name === 'NotReadableError') {
-      message.value = '无法读取麦克风，请检查设备是否被其他程序占用。'
-    } else {
-      message.value = error instanceof Error ? error.message : '无法录音，请检查设备。'
-    }
+    message.value = microphoneCaptureError(error)
   }
 }
 function pickFile(event: Event) {
@@ -240,6 +240,8 @@ onDeactivated(clear)
   <section class="local-asr" aria-label="语音识别（仅转文字）">
     <header><strong>语音识别（仅转文字）</strong><span>{{ adapterLabel }}</span></header>
     <p>只转文字 · 不需要生成场景 · 不执行控制</p>
+    <SpeechProviderPicker v-model="selectedProvider" :disabled="inputLocked" :recognizing="phase === 'waiting'"
+      :result-provider="result?.provider" :result-model="result?.model" :error-provider="errorProvider" />
     <div class="asr-actions">
       <button v-if="phase === 'recording'" @click="stopRecording">停止录音（{{ elapsed }}秒）</button>
       <button v-else :disabled="inputLocked" @click="startRecording">{{ phase === 'permission' ? '等待麦克风授权' : '开始录音' }}</button>
