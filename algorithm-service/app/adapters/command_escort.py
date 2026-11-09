@@ -12,6 +12,7 @@ from app.adapters.shore_target_layout import read_escort_berth_layout
 from app.navigation.safety import SceneSafetyFilter
 from app.schemas import AgentFrame, RuntimeFrame, TargetFrame
 from app.vendor import escort_commands_20261020 as source
+from app.vendor import escort_commands_20261027 as flight_source
 
 PROFILE = "escort-20261020"
 
@@ -19,6 +20,13 @@ PROFILE = "escort-20261020"
 class _SceneEscortSimulator(source.EscortGuardSimulator):
     """Evaluate capture only after executing hull-safe scene positions."""
 
+    def _update_gbsflacs_capture_state(self):
+        if not self.scene_safety_hook():
+            return False
+        return super()._update_gbsflacs_capture_state()
+
+
+class _FlightSceneEscortSimulator(flight_source.EscortGuardSimulator):
     def _update_gbsflacs_capture_state(self):
         if not self.scene_safety_hook():
             return False
@@ -41,7 +49,11 @@ class CommandEscortAdapter(AlgorithmAdapter):
         count = self.config.get("threatCount", self.config.get("targetCount", 2))
         if isinstance(count, bool) or count not in (1, 2):
             raise ValueError("新版指令算法只支持 1 或 2 个敌船目标")
-        self.sim = _SceneEscortSimulator(seed=int(self.config.get("seed", 42)), target_count=count)
+        self.flight_preparation = self.config.get("algorithmCommandProfile") == "escort-20261027"
+        self.preset_profile = "escort-20261027" if self.flight_preparation else PROFILE
+        self.version = self.preset_profile
+        simulator = _FlightSceneEscortSimulator if self.flight_preparation else _SceneEscortSimulator
+        self.sim = simulator(seed=int(self.config.get("seed", 42)), target_count=count)
         self.sim.reset()
         self.native_origin = self.sim.own_position.copy()
         self.scene_origin = np.zeros(3)
@@ -56,6 +68,7 @@ class CommandEscortAdapter(AlgorithmAdapter):
         self.berth_layout = read_escort_berth_layout(self.config)
         if self.berth_layout:
             self._place_shore_encounter()
+        # The command edition owns its initial single-file staging line.
         self.max_steps = {}
         for p in self.sim.platforms:
             speed = float(self.config.get("uavSpeedMps" if p.kind == "UAV" else "usvSpeedMps", 5.0 if p.kind == "UAV" else 3.0))
@@ -64,7 +77,7 @@ class CommandEscortAdapter(AlgorithmAdapter):
             # Runner publishes one native step every 0.1 seconds.
             p.max_speed = min(p.max_speed, speed * 0.1 / (self.scale * self.sim.dt))
             self.max_steps[self.code_for(p.identifier)] = speed * 0.1
-            pose = poses.get(self.code_for(p.identifier))
+            pose = None if self.flight_preparation else poses.get(self.code_for(p.identifier))
             if pose:
                 p.position = self.to_native(self.initial_pose_to_local(pose))
                 p.position[2] = max(0.25, p.position[2]) if p.kind == "UAV" else 0
@@ -240,10 +253,14 @@ class CommandEscortAdapter(AlgorithmAdapter):
                 return tuple(self.to_scene(p.goal if p.goal is not None else p.position))
         return None
 
+    def start_escort(self):
+        if self.flight_preparation:
+            self.sim.start_escort()
+
     def preset_definition(self, preset_id, profile):
-        if profile != PROFILE or type(preset_id) is not int or not 0 <= preset_id <= 20:
+        if profile != self.preset_profile or type(preset_id) is not int or not 0 <= preset_id <= (30 if self.flight_preparation else 20):
             raise ValueError("PRESET_INVALID")
-        words = source.PRESET_CAPTURE_COMMANDS.get(str(preset_id), "cancel").split()
+        words = ("escort" if preset_id == 30 else (flight_source if self.flight_preparation else source).PRESET_CAPTURE_COMMANDS.get(str(preset_id), "cancel")).split()
         targets = [word for word in words[1:] if word.startswith("T")]
         if any(int(word[1:]) not in {t.threat_id for t in self.sim.spawned_threats} for word in targets):
             raise ValueError("PRESET_TARGET_MISSING")
@@ -255,7 +272,9 @@ class CommandEscortAdapter(AlgorithmAdapter):
         # operator-controlled craft contribute fictitious capture evidence.
         if self.unavailable:
             raise ValueError("PRESET_DEVICE_OVERRIDE")
-        if preset_id == 20:
+        if preset_id == 30:
+            self.sim.start_escort()
+        elif preset_id == 20:
             if not self.sim.start_gbsflacs_capture():
                 raise ValueError("PRESET_CAPTURE_NOT_READY")
         else:
@@ -264,7 +283,7 @@ class CommandEscortAdapter(AlgorithmAdapter):
             # motion, but only explicit withdrawal should erase operator groups.
             saved_groups = dict(self.sim.manual_capture_assignments) if 1 <= preset_id <= 12 else None
             try:
-                self.sim.execute_command(str(preset_id))
+                self.sim.execute_command("escort" if preset_id == 30 else str(preset_id))
             except ValueError as error:
                 raise ValueError("PRESET_REJECTED") from error
             finally:
@@ -276,7 +295,7 @@ class CommandEscortAdapter(AlgorithmAdapter):
         self.sequence += 1
         # Pause native tactical progress while an operator owns any craft; the
         # wrapper still performs the requested hover/return/rejoin movements.
-        if self.mission_active and not self.unavailable:
+        if (self.mission_active or getattr(self.sim, "startup_state", None) == "standby") and not self.unavailable:
             self._step_previous = self._scene_bodies()
             self._safety_applied = False
             self.sim.step()
@@ -309,7 +328,9 @@ class CommandEscortAdapter(AlgorithmAdapter):
                                       ("N 新建目标", "重新生成场景以新建目标")):
             message = message.replace(original, replacement)
         metrics = {
-            "algorithmCommandProfile": PROFILE, "lastPresetId": self.last_command,
+            "startupState": getattr(self.sim, "startup_state", "active"),
+            "uavAltitudeTargetsM": {self.code_for(self.sim.platforms[i].identifier): h * self.scale for i, h in getattr(self.sim, "_uav_altitude_targets", {}).items()},
+            "algorithmCommandProfile": self.preset_profile, "lastPresetId": self.last_command,
             "initialEncounterLayout": "SHORE_FORWARD" if self.berth_layout else "NATIVE",
             "algorithmMessage": message,
             "captureRadiusM": source.GBSFLACS_CAPTURE_RADIUS * self.scale,

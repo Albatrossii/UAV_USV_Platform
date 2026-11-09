@@ -185,7 +185,7 @@ describe('VirtualFleetConfigView minimal simulation interface', () => {
     setup.currentAlgorithmFrame = {
       ...frame(), algorithmCode: 'ESCORT_GUARD', phase: '算法原生中文阶段',
       metrics: {
-        algorithmCommandProfile: 'escort-20261020', algorithmMode: mode,
+        algorithmCommandProfile: 'escort-20261027', algorithmMode: mode,
         captureComplete: mode === 'CAPTURE', deploymentState: 'COMPLETE',
         missionProgress: 1, taskProgress: 1, simulationElapsedSeconds: 1551,
         capturedThreatCount: 2,

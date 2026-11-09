@@ -72,7 +72,7 @@ describe('single device command camera director', () => {
     const director = createSingleDeviceCameraDirector({ focus, overview, focusDurationMs: 5000 })
     const observation = input()
     observation.proposal!.plan.action = 'ALGORITHM_PRESET'
-    observation.proposal!.plan.parameters = { presetId: 1, presetVersion: 'escort-20261020' }
+    observation.proposal!.plan.parameters = { presetId: 1, presetVersion: 'escort-20261027' }
     observation.execution!.action = 'ALGORITHM_PRESET'
     observation.execution!.state = 'SUCCEEDED'
     observation.execution!.presetExecution = { commandId: observation.execution!.commandId, presetId: 1, status: 'WAITING_DEPLOYMENT', errorCode: null }
@@ -94,7 +94,7 @@ describe('single device command camera director', () => {
     observation.deviceCodes = ['UAV-001', 'UAV-002', 'UAV-003', 'USV-001', 'USV-002', 'USV-003']
     observation.proposal!.plan.explicitDeviceCodes = observation.deviceCodes
     observation.proposal!.plan.action = 'ALGORITHM_PRESET'
-    observation.proposal!.plan.parameters = { presetId: 13, presetVersion: 'escort-20261020' }
+    observation.proposal!.plan.parameters = { presetId: 13, presetVersion: 'escort-20261027' }
     observation.execution!.action = 'ALGORITHM_PRESET'
     observation.execution!.state = 'SUCCEEDED'
     director.observe(observation)

@@ -1,20 +1,20 @@
 import { shallowRef } from 'vue'
 import { http } from '@/api/http'
 
-export interface AlgorithmPresetParameters { presetId: number; presetVersion: 'escort-20261020' }
+export interface AlgorithmPresetParameters { presetId: number; presetVersion: 'escort-20261027' }
 export interface AlgorithmPreset { id: number; command: string; label: string; effect: string }
 export const algorithmPresets = shallowRef<AlgorithmPreset[]>([])
 export async function loadAlgorithmPresets() {
   const response = await http.get('/voice/algorithm-presets')
   const data = response.data.data
-  if (data.version !== 'escort-20261020' || !Array.isArray(data.items)) throw new Error('指令版本不匹配')
+  if (data.version !== 'escort-20261027' || !Array.isArray(data.items)) throw new Error('指令版本不匹配')
   algorithmPresets.value = data.items
 }
 export function validPreset(value: unknown): value is AlgorithmPresetParameters {
   if (!value || typeof value !== 'object') return false
   const p = value as Record<string, unknown>
-  return Object.keys(p).length === 2 && p.presetVersion === 'escort-20261020'
-    && Number.isInteger(p.presetId) && Number(p.presetId) >= 0 && Number(p.presetId) <= 20
+  return Object.keys(p).length === 2 && p.presetVersion === 'escort-20261027'
+    && Number.isInteger(p.presetId) && Number(p.presetId) >= 0 && Number(p.presetId) <= 30
 }
 export function presetLabel(p?: AlgorithmPresetParameters) {
   return algorithmPresets.value.find(item => item.id === p?.presetId)?.label ?? '算法动作'
@@ -28,6 +28,7 @@ export function presetDeviceCodes(parameters: unknown): string[] {
   const sea = ['USV-001', 'USV-002', 'USV-003']
   const chase = ['UAV-001', 'USV-001', 'UAV-002', 'USV-002', 'UAV-003', 'USV-003',
     'UAV-001', 'USV-001', 'UAV-002', 'USV-002', 'UAV-003', 'USV-003']
+  if (id >= 21 && id <= 29) return [air[Math.floor((id - 21) / 3)]!]
   if (id >= 1 && id <= 12) return [chase[id - 1]!]
   if (id === 13 || id === 16) return air
   if (id === 14 || id === 15) return sea
@@ -71,7 +72,9 @@ export function presetMatchesText(text: string, parameters: unknown): boolean {
   }
   if (algorithmPresets.value.some(item => item.id === parameters.presetId
     && (raw === clean(item.label) || raw === clean(item.label).replace(/，/gu, '')))) return true
-  const aliases: Record<string, number> = {
+  const flight = raw.match(/^第?([一二三123])号无人机(?:垂直)?(起飞|悬停|降落)$/u)
+  if (flight) return parameters.presetId === 21 + ((/^[123]$/u.test(flight[1]!) ? Number(flight[1]) : '零一二三'.indexOf(flight[1]!)) - 1) * 3 + ['起飞', '悬停', '降落'].indexOf(flight[2]!)
+  const aliases: Record<string, number> = { H: 30, h: 30, escort: 30, 编队护航: 30, 出发护航: 30, 开始护航: 30,
     恢复护航: 0, 全体撤退: 0, 撤回护航: 0, 恢复守卫: 19, 自动守卫: 19, 形成守卫阵型: 19,
     启动围捕: 20, 执行围捕: 20, 开始围捕: 20, 形成守卫队形: 19,
   }
@@ -101,7 +104,8 @@ export function presetMatchesText(text: string, parameters: unknown): boolean {
   let id = -1
   if (/^\d{1,3}$/u.test(token)) id = Number(token)
   else if (roman.includes(token.toUpperCase())) id = roman.indexOf(token.toUpperCase())
-  else if (token === '二十') id = 20
+  else if (/^二十[一二三四五六七八九]?$/u.test(token)) id = 20 + (token.length === 2 ? 0 : '零一二三四五六七八九'.indexOf(token[2]!))
+  else if (token === '三十') id = 30
   else {
     token = token.replace(/^一十/u, '十')
     if (/^十[一二三四五六七八九]?$/u.test(token)) id = 10 + (token.length === 1 ? 0 : '零一二三四五六七八九'.indexOf(token[1]!))

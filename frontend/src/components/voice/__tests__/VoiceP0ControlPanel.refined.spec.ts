@@ -655,7 +655,7 @@ describe('VoiceP0ControlPanel refined controls', () => {
       store.proposal = { ...frozen, plan: {
         ...frozen.plan, action: 'ALGORITHM_PRESET', targetDeviceCode: undefined, deviceCommandType: undefined,
         explicitDeviceCodes: [...wrapper.props('runtimeHint').deviceCodes],
-        parameters: { presetId: 13, presetVersion: 'escort-20261020' },
+        parameters: { presetId: 13, presetVersion: 'escort-20261027' },
       } }
     })
     store.confirm = vi.fn().mockImplementation(async () => {
@@ -683,7 +683,7 @@ describe('VoiceP0ControlPanel refined controls', () => {
         ...frozen.plan, action: 'SEQUENCE', targetDeviceCode: undefined, deviceCommandType: undefined,
         explicitDeviceCodes: [...wrapper.props('runtimeHint').deviceCodes],
         steps: [13, 14, 20].map((presetId, index) => ({
-          index, action: 'ALGORITHM_PRESET', parameters: { presetId, presetVersion: 'escort-20261020' },
+          index, action: 'ALGORITHM_PRESET', parameters: { presetId, presetVersion: 'escort-20261027' },
         })),
       } }
     })

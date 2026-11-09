@@ -94,7 +94,7 @@ def _command_shape_error(command: dict) -> str | None:
         return "unsupported action"
     if command.get("action") == "ALGORITHM_PRESET":
         p = command.get("parameters")
-        if not isinstance(p, dict) or set(p) != {"presetId", "presetVersion"} or type(p["presetId"]) is not int or not 0 <= p["presetId"] <= 20 or p["presetVersion"] != "escort-20261020":
+        if not isinstance(p, dict) or set(p) != {"presetId", "presetVersion"} or type(p["presetId"]) is not int or not 0 <= p["presetId"] <= 30 or p["presetVersion"] not in {"escort-20261020", "escort-20261027"}:
             return "invalid algorithm preset"
         return None
     if command.get("parameters") != {}:
@@ -324,7 +324,7 @@ def v1_main(args: argparse.Namespace, adapter, config: dict) -> int:
                     action = command["action"]
                     allowed = {"START": {"PREPARED", "PREVIEW"}, "PAUSE": {"RUNNING"},
                                "RESUME": {"PAUSED"}, "STOP": {"PREPARED", "PREVIEW", "RUNNING", "PAUSED"},
-                               "ALGORITHM_PRESET": {"RUNNING"}}[action]
+                               "ALGORITHM_PRESET": {"RUNNING", "PREVIEW", "PREPARED"}}[action]
                     if state not in allowed:
                         result(command, "REJECTED", "INVALID_STATE")
                     elif command["expectedStateVersion"] != state_version:
@@ -334,8 +334,15 @@ def v1_main(args: argparse.Namespace, adapter, config: dict) -> int:
                         preset_execution = None
                         try:
                             if action == "ALGORITHM_PRESET":
+                                if state != "RUNNING" and not 21 <= command["parameters"]["presetId"] <= 30:
+                                    raise ValueError("PRESET_REJECTED")
                                 preset_execution = adapter.execute_preset(command["parameters"]["presetId"], command["parameters"]["presetVersion"], cid)
+                                if command["parameters"]["presetId"] == 30:
+                                    adapter.set_mission_active(True)
+                                    state = "RUNNING"
                             elif action in {"START", "RESUME"}:
+                                if action == "START" and hasattr(adapter.base, "start_escort"):
+                                    adapter.base.start_escort()
                                 adapter.set_mission_active(True)
                                 state = "RUNNING"
                             elif action == "PAUSE":
@@ -357,7 +364,7 @@ def v1_main(args: argparse.Namespace, adapter, config: dict) -> int:
                             result(command, "SUCCEEDED", preset_execution=preset_execution)
         if input_closed.is_set() and commands.empty():
             return 0
-        if state == "RUNNING":
+        if state == "RUNNING" or (state in {"PREVIEW", "PREPARED"} and getattr(adapter.base, "flight_preparation", False)):
             frame = _normalize_frame_device_codes(adapter.step().to_dict())
             last_frame_sequence = int(frame.get("sequence", last_frame_sequence))
             emit({"event": "frame", "payload": frame})
@@ -447,7 +454,7 @@ def build_adapter(algorithm: str, run_id: int, config: dict):
             # The legacy vendor controller has no executed-pose handoff. Its
             # separate compatibility path retains the original assembly gate.
             planner_config["initialPoses"] = target_poses
-    if config.get("algorithmCommandProfile") == "escort-20261020":
+    if config.get("algorithmCommandProfile") in {"escort-20261020", "escort-20261027"}:
         if base_algorithm != "ESCORT_GUARD":
             raise ValueError("Command profile requires ESCORT_GUARD")
         adapter = CommandEscortAdapter(run_id, planner_config)

@@ -88,7 +88,7 @@ class AlgorithmPresetControlTests extends VoiceControlTests {
         assertEquals(7, AlgorithmPresets.parse("一号无人机追击二号敌船"));
         assertEquals(13, AlgorithmPresets.parse("执行十三号指令"));
         assertNull(AlgorithmPresets.parse("如果开始围捕"));
-        assertNull(AlgorithmPresets.parse("二十一"));
+        assertEquals(21, AlgorithmPresets.parse("二十一"));
         assertNull(AlgorithmPresets.parse("十十"));
         var context = j.object().put("_algorithmCommandProfile", AlgorithmPresets.VERSION);
         context.putArray("capabilities").add("ALGORITHM_PRESET");

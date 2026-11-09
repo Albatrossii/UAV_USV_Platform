@@ -127,7 +127,7 @@ class AlgorithmPresetParsingTests {
 
     @ParameterizedTest
     @ValueSource(strings = {
-        "执行第二十一条指令", "指令XXI", "第IIII条指令", "指令IIV", "13.5", "-13",
+        "执行第三十一条指令", "指令XXXI", "第IIII条指令", "指令IIV", "13.5", "-13",
         "执行第十十条指令", "执行一个指令", "执行两个指令", "执行十三个指令",
         "不要第十三条指令", "别执行XIII", "第13条指令是什么", "执行13号指令吗？",
         "如果需要执行第十三条指令", "执行13或14号指令", "执行13，14号指令",
@@ -136,5 +136,15 @@ class AlgorithmPresetParsingTests {
     })
     void doesNotGuessAmbiguousOrMalformedCommands(String text) {
         assertNull(AlgorithmPresets.parse(text), text);
+    }
+    @Test
+    void flightPreparationCatalogAndStrictGrammar() {
+        for (int id = 21; id <= 30; id++) assertEquals(id, AlgorithmPresets.parse(AlgorithmPresets.label(id)));
+        assertEquals(21, AlgorithmPresets.parse("一号无人机起飞"));
+        assertEquals(29, AlgorithmPresets.parse("执行第二十九号指令"));
+        assertEquals(30, AlgorithmPresets.parse("H"));
+        assertNull(AlgorithmPresets.parse("不要一号无人机起飞"));
+        assertNull(AlgorithmPresets.parse("一号无人机起飞吗？"));
+        assertNull(AlgorithmPresets.parse("四号无人机起飞"));
     }
 }

@@ -24,6 +24,8 @@ import CommandGroupSummary from '@/components/monitoring/CommandGroupSummary.vue
 import { nodeMonitoringKey, useNodeMonitoring } from '@/composables/useNodeMonitoring'
 import { buildNodeCommunicationRows } from '@/utils/nodeCommunication'
 import { ApiClientError } from '@/api/http'
+import { interpretVoiceText } from '@/api/voiceIntelligence'
+import { fetchVoiceContexts, createVoiceProposal, confirmVoiceProposal, fetchVoiceExecution } from '@/api/voiceControl'
 import VoiceP0ControlPanel from '@/components/voice/VoiceP0ControlPanel.vue'
 import {
   simulationRuntime,
@@ -1169,7 +1171,7 @@ function buildAlgorithmPrepareConfig(initialPoses: ScenarioInitialPose[]) {
     worldWidth: scenarioPlan.value.worldWidth,
     worldHeight: scenarioPlan.value.worldHeight,
     adaptiveMultiTarget: isEscortAlgorithm.value,
-    algorithmCommandProfile: isEscortAlgorithm.value ? 'escort-20261020' : undefined,
+    algorithmCommandProfile: isEscortAlgorithm.value ? 'escort-20261027' : undefined,
     singleDeviceControlEnabled: isSingleDeviceAlgorithm.value,
     startFromShore: true,
     escortStartAtBerth: isEscortAlgorithm.value,
@@ -1181,7 +1183,7 @@ function buildAlgorithmPrepareConfig(initialPoses: ScenarioInitialPose[]) {
     fleetOrigin: fleetOriginEnu,
     initialPoses,
     targetBehavior: 'MOVING',
-    previewEnabled: isCaptureAlgorithm.value,
+    previewEnabled: true,
     threatMinDistanceM: isCaptureAlgorithm.value ? 90 : 170,
     standaloneVirtualSimulation: true,
     returnInfrastructure: returnInfrastructure.value,
@@ -1214,7 +1216,7 @@ function prepareExternalAlgorithm(
       // skipping directly to the latest sequence number reported by status.
       state.sequence = 0
       addLog(`algorithm prepared: ${state.algorithm} runId=${prepareRunId}`)
-      if (isCaptureAlgorithm.value) startAlgorithmPolling()
+      startAlgorithmPolling()
       return true
     } catch (error) {
       algorithmPrepared.value = false
@@ -1227,6 +1229,50 @@ function prepareExternalAlgorithm(
     }
   })()
   return algorithmPreparePromise
+}
+
+const flightCommandBusy = ref(false)
+const flightCommandMessage = ref('')
+const flightLabels = ['起飞', '悬停', '降落']
+const flightStandby = computed(() => missionMetrics.value.startupState === 'standby')
+async function prepareFlightCommand(uav: number, action: number) {
+  if (flightCommandBusy.value || !props.active || !isEscortAlgorithm.value) return
+  flightCommandBusy.value = true
+  flightCommandMessage.value = ''
+  try {
+    if (!algorithmPrepared.value && !await prepareExternalAlgorithm()) throw new Error('算法尚未准备就绪')
+    const runtime = (await fetchVoiceContexts()).find(item => String(item.algorithmRunId) === String(state.runId))
+    if (!runtime) throw new Error('未找到当前运行实例')
+    const requestId = crypto.randomUUID()
+    const parsed = await interpretVoiceText({ requestId, text: `执行第${21 + (uav - 1) * 3 + action}号指令`, locale: 'zh-CN',
+      allowedActions: ['START', 'PAUSE', 'RESUME', 'STOP'], availableDeviceCodes: ['UAV-001', 'UAV-002', 'UAV-003', 'USV-001', 'USV-002', 'USV-003'],
+      runtimeContext: { runtimeRef: runtime.runtimeRef, runtimeGeneration: runtime.runtimeGeneration, contextVersion: runtime.contextVersion } })
+    if (parsed.status !== 'CANDIDATE' || parsed.action !== 'ALGORITHM_PRESET') throw new Error('飞行准备指令解析失败')
+    const proposal = await createVoiceProposal({ runtimeRef: runtime.runtimeRef, runtimeGeneration: runtime.runtimeGeneration,
+      expectedContextVersion: runtime.contextVersion, intent: 'ALGORITHM_PRESET' }, crypto.randomUUID(), requestId)
+    const confirmation = await confirmVoiceProposal(proposal.proposalId,
+      { expectedPlanVersion: proposal.planVersion, expectedPlanHash: proposal.planHash }, crypto.randomUUID())
+    for (let attempt = 0; attempt < 40; attempt++) {
+      const execution = await fetchVoiceExecution(confirmation.execution.executionId)
+      if (execution.state === 'SUCCEEDED') { flightCommandMessage.value = `UAV-00${uav} ${flightLabels[action]}指令已执行`; return }
+      if (['FAILED', 'REJECTED', 'INVALIDATED', 'EXPIRED'].includes(execution.state)) throw new Error(execution.errorCode ?? '指令执行失败')
+      await new Promise(resolve => window.setTimeout(resolve, 200))
+    }
+    throw new Error('回执等待超时，请核对当前状态')
+  } catch (error) { flightCommandMessage.value = error instanceof Error ? error.message : String(error) }
+  finally { flightCommandBusy.value = false }
+}
+function handleEscortKey(event: KeyboardEvent) {
+  const target = event.target as HTMLElement | null
+  if (!props.active || !isEscortAlgorithm.value || event.repeat || event.ctrlKey || event.metaKey || event.altKey
+    || target?.closest('input, textarea, select, [contenteditable="true"]')) return
+  if (event.key.toLowerCase() === 'h' && !missionActionDisabled.value && !flightCommandBusy.value) { event.preventDefault(); void startMission() }
+}
+function handleEscortFrameKey(event: MessageEvent) {
+  if (event.origin !== window.location.origin || event.data?.type !== 'escortHotkey') return
+  const frame = document.querySelector<HTMLIFrameElement>('iframe[src*="/unity-virtual-fleet/index.html"]')
+  if (event.source !== frame?.contentWindow || !props.active || !isEscortAlgorithm.value || missionActionDisabled.value || flightCommandBusy.value) return
+  void startMission()
 }
 
 async function startMission() {
@@ -1488,7 +1534,7 @@ async function pollAlgorithmFrame() {
     || Date.now() < nextFramePollAt
     || (
       state.mission !== 'RUNNING'
-      && !(isCaptureAlgorithm.value && state.mission === 'STOPPED')
+      && !(state.mission === 'STOPPED')
     )
     || !algorithmPrepared.value
     || !unityReady.value
@@ -1766,6 +1812,8 @@ watch(
 window.addEventListener('pagehide', persistRuntimeRecovery)
 
 onMounted(() => {
+  window.addEventListener('keydown', handleEscortKey)
+  window.addEventListener('message', handleEscortFrameKey)
   if (!controlDrawer.value || typeof ResizeObserver === 'undefined') return
   // In the stacked layout, controls can move the stage without resizing it.
   // Observe the whole console so folded cards and new voice receipts both align the persistent renderer.
@@ -1778,6 +1826,8 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
+  window.removeEventListener('keydown', handleEscortKey)
+  window.removeEventListener('message', handleEscortFrameKey)
   window.removeEventListener('pagehide', persistRuntimeRecovery)
   window.clearTimeout(panelTransitionTimer)
   controlDrawerObserver?.disconnect()
@@ -1843,6 +1893,16 @@ watch((): WorkspaceHeaderState => ({
           >
             <Teleport defer to="#shared-workspace-console-content" :disabled="!props.sharedShell">
               <div v-show="props.active || !props.sharedShell" class="workspace-console-content simulation-console-content">
+          <div v-if="isEscortAlgorithm && flightStandby" class="vf-flight-preparation" aria-label="无人机飞行准备">
+            <strong>无人机飞行准备</strong><p>列队准备：无人机可垂直起飞、悬停或降落；按 H 或点击编队护航后全体组队出发。</p>
+            <div v-for="uav in 3" :key="uav">
+              <strong>UAV-00{{ uav }}</strong>
+              <button v-for="(label, action) in flightLabels" :key="label" class="vf-button" type="button"
+                :disabled="flightCommandBusy" @click="prepareFlightCommand(uav, action)">{{ label }}</button>
+            </div>
+            <p v-if="flightCommandMessage" role="status">{{ flightCommandMessage }}</p>
+          </div>
+
             <details class="vf-voice-config vf-scenario-config task-console-section">
               <summary>
                 <span class="task-console-section-title"><AudioLines :size="16" />语音控制</span>
@@ -1965,8 +2025,8 @@ watch((): WorkspaceHeaderState => ({
           </div>
           <div class="vf-view-toolbar">
             <div class="vf-command-actions">
-              <button class="vf-button success" type="button" :title="state.mission === 'PAUSED' ? '继续任务' : '开始任务'" :disabled="missionActionDisabled" @click="startMission">
-                <Play :size="15" /> <span>{{ algorithmPreparing ? '准备中' : state.mission === 'PAUSED' ? '继续' : '开始' }}</span>
+              <button class="vf-button success" type="button" :title="state.mission === 'PAUSED' ? '继续任务' : isEscortAlgorithm ? '编队护航（H）' : '开始任务'" :disabled="missionActionDisabled || flightCommandBusy" @click="startMission">
+                <Play :size="15" /> <span>{{ algorithmPreparing ? '准备中' : state.mission === 'PAUSED' ? '继续' : isEscortAlgorithm ? '编队护航（H）' : '开始' }}</span>
               </button>
               <button class="vf-button" type="button" title="暂停任务" :disabled="state.mission !== 'RUNNING'" @click="pauseMission"><Pause :size="15" /><span>暂停</span></button>
               <button class="vf-button danger" type="button" title="停止任务" :disabled="state.mission === 'STOPPED'" @click="stopMission"><CircleStop :size="15" /><span>停止</span></button>
@@ -2034,6 +2094,9 @@ watch((): WorkspaceHeaderState => ({
 </template>
 
 <style scoped>
+.vf-flight-preparation { display: flex; flex-wrap: wrap; gap: 6px 16px; padding: 8px 12px; border-bottom: 1px solid #24454b; font-size: 12px; }
+.vf-flight-preparation p { width: 100%; margin: 0; color: #a5c9cc; }
+.vf-flight-preparation > div { display: flex; align-items: center; gap: 6px; }
 .workspace-embedded-root { width: 100%; height: 100%; min-width: 0; min-height: 0; }
 .workspace-console-content { display: flex; min-width: 0; flex-direction: column; gap: 10px; }
 .simulation-toolbar-content {

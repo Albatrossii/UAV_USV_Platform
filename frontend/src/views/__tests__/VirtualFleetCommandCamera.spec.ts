@@ -169,7 +169,7 @@ describe('VirtualFleetConfigView single-device command camera', () => {
     const receipt = { ...execution('SUCCEEDED'), action: 'ALGORITHM_PRESET' as const }
     const frozen = proposal('UAV-001')
     view.store.proposal = { ...frozen, status: 'CONFIRMED', executionId: receipt.executionId,
-      plan: { ...frozen.plan, action: 'ALGORITHM_PRESET', parameters: { presetId: 1, presetVersion: 'escort-20261020' } } }
+      plan: { ...frozen.plan, action: 'ALGORITHM_PRESET', parameters: { presetId: 1, presetVersion: 'escort-20261027' } } }
     view.store.execution = receipt
     await nextTick()
     expect(cameraCalls(view)).toEqual([['focusCommand', { deviceCodes: ['UAV-001'] }]])

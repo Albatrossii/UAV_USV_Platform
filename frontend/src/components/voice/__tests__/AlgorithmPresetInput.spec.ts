@@ -7,7 +7,7 @@ import type { VoiceIntelligenceAdapter } from '@/types/voiceIntelligence'
 
 describe('algorithm preset input', () => {
   it('repairs only the confirmed chase noun and preserves device and target numbers', () => {
-    const p = { presetId: 1, presetVersion: 'escort-20261020' }
+    const p = { presetId: 1, presetVersion: 'escort-20261027' }
     expect(repairChaseSpeech('一号无人机追击一号机船。')).toBe('一号无人机追击一号敌船。')
     expect(presetMatchesText('一号无人机追击一号机船。', p)).toBe(true)
     expect(repairChaseSpeech('一号无人机追击一号的船。')).toBe('一号无人机追击一号敌船。')
@@ -41,7 +41,7 @@ describe('algorithm preset input', () => {
     const adapter: VoiceIntelligenceAdapter = {
       name: 'platform-backend', mode: 'BACKEND', transcribe: vi.fn(),
       parse: async input => ({status:'CANDIDATE',requestId:input.requestId,normalizedText:input.text,
-        intent:'ALGORITHM_PRESET',action:'ALGORITHM_PRESET',parameters:{presetId:13,presetVersion:'escort-20261020'},
+        intent:'ALGORITHM_PRESET',action:'ALGORITHM_PRESET',parameters:{presetId:13,presetVersion:'escort-20261027'},
         confidence:null,provider:'local-rules',model:'rules-v1'}),
     }
     const wrapper = mount(VoiceIntelligenceInput,{props:{adapter,allowedActions:['START','PAUSE','RESUME','STOP'],deviceCodes:['UAV-001'],refined:true}})
@@ -52,10 +52,10 @@ describe('algorithm preset input', () => {
     wrapper.unmount()
   })
   it('rejects unknown versions and refuses algorithm steps in paused or stopped runs', () => {
-    expect(validPreset({presetId:20,presetVersion:'escort-20261020'})).toBe(true)
-    expect(validPreset({presetId:'20',presetVersion:'escort-20261020'})).toBe(false)
+    expect(validPreset({presetId:20,presetVersion:'escort-20261027'})).toBe(true)
+    expect(validPreset({presetId:'20',presetVersion:'escort-20261027'})).toBe(false)
     expect(validPreset({presetId:20,presetVersion:'other'})).toBe(false)
-    const steps = [{index:0,action:'START' as const},{index:1,action:'ALGORITHM_PRESET' as const,parameters:{presetId:13,presetVersion:'escort-20261020' as const}}]
+    const steps = [{index:0,action:'START' as const},{index:1,action:'ALGORITHM_PRESET' as const,parameters:{presetId:13,presetVersion:'escort-20261027' as const}}]
     expect(sequenceStateValid(steps,'PREPARED')).toBe(true)
     expect(sequenceStateValid([{index:0,action:'PAUSE'},steps[1]!],'RUNNING')).toBe(false)
   })

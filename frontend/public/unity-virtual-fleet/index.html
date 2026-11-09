@@ -969,5 +969,14 @@
         });
       });
     </script>
+    <script>
+      // Relay the escort key while the WebGL canvas owns keyboard focus.
+      window.addEventListener('keydown', function (event) {
+        if (event.key.toLowerCase() === 'h' && !event.repeat && !event.ctrlKey && !event.metaKey && !event.altKey
+            && !event.target.closest('input, textarea, select, [contenteditable="true"]')) {
+          window.parent.postMessage({ type: 'escortHotkey' }, window.location.origin);
+        }
+      });
+    </script>
   </body>
 </html>

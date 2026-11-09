@@ -8,12 +8,12 @@ import java.util.regex.*;
 
 /** Versioned public meanings of the algorithm owner's fixed presets. */
 public final class AlgorithmPresets {
-    public static final String VERSION = "escort-20261020";
+    public static final String VERSION = "escort-20261027";
     private static final String[] COMMANDS = {
         "cancel", "chase U1 T1", "chase S1 T1", "chase U2 T2", "chase S2 T2", "chase U3 T1", "chase S3 T2",
         "chase U1 T2", "chase S1 T2", "chase U2 T1", "chase S2 T1", "chase U3 T2", "chase S3 T1",
         "bind T1 U1 U2 U3", "bind T2 S1 S2 S3", "bind T1 S1 S2 S3", "bind T2 U1 U2 U3",
-        "bind T1 U1 S1 U2", "bind T2 S2 U3 S3", "guard", "capture"
+        "bind T1 U1 S1 U2", "bind T2 S2 U3 S3", "guard", "capture", "takeoff U1", "hover U1", "land U1", "takeoff U2", "hover U2", "land U2", "takeoff U3", "hover U3", "land U3", "escort"
     };
     private static final String[] LABELS = {
         "全体撤退，恢复护航", "一号无人机追击一号敌船", "一号无人艇追击一号敌船",
@@ -23,7 +23,7 @@ public final class AlgorithmPresets {
         "将一二三号无人机分配给一号敌船", "将一二三号无人艇分配给二号敌船",
         "将一二三号无人艇分配给一号敌船", "将一二三号无人机分配给二号敌船",
         "将一二号无人机和一号无人艇分配给一号敌船", "将二三号无人艇和三号无人机分配给二号敌船",
-        "形成守卫队形", "开始围捕"
+        "形成守卫队形", "开始围捕", "一号无人机垂直起飞", "一号无人机悬停", "一号无人机垂直降落", "二号无人机垂直起飞", "二号无人机悬停", "二号无人机垂直降落", "三号无人机垂直起飞", "三号无人机悬停", "三号无人机垂直降落", "编队护航"
     };
     private static final String NUMERAL = "[零〇一二两兩三四五六七八九十壹贰貳叁參肆伍陆陸柒捌玖拾IVXLCDMivxlcdm0-9]+";
     // Match the whole request: changing the spelling of a number must not
@@ -100,8 +100,11 @@ public final class AlgorithmPresets {
         }
         if (token != null) {
             int id = number(token);
-            return id >= 0 && id <= 20 ? id : null;
+            return id >= 0 && id <= 30 ? id : null;
         }
+        Matcher flight = Pattern.compile("^第?([一二三123])号无人机(?:垂直)?(起飞|悬停|降落)$").matcher(text);
+        if (flight.matches()) return 21 + (number(flight.group(1)) - 1) * 3 + List.of("起飞", "悬停", "降落").indexOf(flight.group(2));
+        if (Set.of("H", "h", "escort", "出发护航", "开始护航", "编队进行护航").contains(text)) return 30;
         // Preserve type and target number; no fuzzy repairs for tactical actions.
         Matcher chase = Pattern.compile("^第?([一二三123])号(无人机|无人艇)追击第?([一二12])号(?:敌船|目标|敌方目标)$").matcher(text);
         if (chase.matches()) {
@@ -122,7 +125,8 @@ public final class AlgorithmPresets {
         for (int i = 0; i < from.length(); i++) value = value.replace(from.charAt(i), to.charAt(i));
         if (value.matches("\\d{1,3}")) return Integer.parseInt(value);
         for (int i = 1; i < ROMAN.length; i++) if (ROMAN[i].equalsIgnoreCase(value)) return i;
-        if (value.equals("二十")) return 20;
+        if (value.matches("二十[一二三四五六七八九]?")) return 20 + (value.length() == 2 ? 0 : "零一二三四五六七八九".indexOf(value.substring(2)));
+        if (value.equals("三十")) return 30;
         if (value.startsWith("一十")) value = value.substring(1);
         if (value.matches("十[一二三四五六七八九]?")) return 10 + (value.length() == 1 ? 0 : "零一二三四五六七八九".indexOf(value.substring(1)));
         return value.length() == 1 ? "零一二三四五六七八九".indexOf(value) : -1;
@@ -131,7 +135,8 @@ public final class AlgorithmPresets {
         if (!parameters.path("presetId").isIntegralNumber() || !parameters.path("presetId").canConvertToInt()
                 || !VERSION.equals(parameters.path("presetVersion").asText())) throw VoiceFailure.conflict("PRESET_INVALID");
         int id = parameters.path("presetId").asInt(-1);
-        if (id < 0 || id > 20) throw VoiceFailure.conflict("PRESET_INVALID");
+        if (id < 0 || id > 30) throw VoiceFailure.conflict("PRESET_INVALID");
+        if (!"RUNNING".equals(context.path("state").asText()) && !(id >= 21 && id <= 30 && Set.of("PREVIEW", "PREPARED").contains(context.path("state").asText()))) throw VoiceFailure.conflict("INVALID_STATE");
         boolean capable = false;
         for (JsonNode n : context.path("capabilities")) capable |= "ALGORITHM_PRESET".equals(n.asText());
         if (!capable || !VERSION.equals(context.path("_algorithmCommandProfile").asText())) throw VoiceFailure.conflict("UNSUPPORTED_CAPABILITY");

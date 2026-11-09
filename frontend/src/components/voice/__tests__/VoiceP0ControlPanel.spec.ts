@@ -77,7 +77,7 @@ describe('VoiceP0ControlPanel presentation recovery UI', () => {
     const store = useVoiceControlStore()
     store.contexts = [{ ...context, state: sequence ? 'PREPARED' : 'RUNNING', capabilities: [...context.capabilities, 'ALGORITHM_PRESET'] }]
     store.execution = null
-    const parameters = { presetId: 1, presetVersion: 'escort-20261020' as const }
+    const parameters = { presetId: 1, presetVersion: 'escort-20261027' as const }
     store.proposal = {
       proposalId: '99999999-9999-4999-8999-999999999999', status: 'AWAITING_CONFIRMATION',
       planVersion: 1, planHash: 'a'.repeat(64), requiresConfirmation: true,

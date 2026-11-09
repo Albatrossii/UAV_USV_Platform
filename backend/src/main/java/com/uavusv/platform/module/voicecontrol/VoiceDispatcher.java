@@ -602,7 +602,10 @@ public class VoiceDispatcher {
         if ("SUCCEEDED".equals(status)) {
             String target =
                     switch (e.path("action").asText()) {
-                        case "START", "RESUME", "ALGORITHM_PRESET" -> "RUNNING";
+                        case "START", "RESUME" -> "RUNNING";
+                        case "ALGORITHM_PRESET" -> e.path("_plan").path("parameters").path("presetId").asInt() >= 21
+                            && e.path("_plan").path("parameters").path("presetId").asInt() <= 29
+                            ? Set.of("RUNNING", "PREVIEW", "PREPARED").contains(event.path("runtimeState").asText()) ? event.path("runtimeState").asText() : "" : "RUNNING";
                         case "PAUSE" -> "PAUSED";
                         case "STOP" -> "STOPPED";
                         default -> "";

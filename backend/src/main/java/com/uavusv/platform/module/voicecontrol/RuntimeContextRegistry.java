@@ -173,7 +173,8 @@ public class RuntimeContextRegistry {
         var allowed =
                 switch (action) {
                     case "START" -> Set.of("PREPARED", "PREVIEW");
-                    case "PAUSE", "ALGORITHM_PRESET" -> Set.of("RUNNING");
+                    case "PAUSE" -> Set.of("RUNNING");
+                    case "ALGORITHM_PRESET" -> Set.of("RUNNING", "PREVIEW", "PREPARED");
                     case "RESUME" -> Set.of("PAUSED");
                     case "STOP" -> Set.of("PREPARED", "PREVIEW", "RUNNING", "PAUSED");
                     default -> Set.<String>of();

@@ -2,7 +2,20 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { algorithmPresets, presetMatchesText, repairAlgorithmSpeech } from '../algorithmPresets'
 
 const nouns = ['的船', '的穿', '的喘', '地船', '底川', '敌穿', '滴船', 'd穿', 'D船', 'di喘', 'di chuan', 'ＤＩＣＨＵＡＮ', '敌chuan', '机船']
-const params = (presetId: number) => ({ presetId, presetVersion: 'escort-20261020' })
+const params = (presetId: number) => ({ presetId, presetVersion: 'escort-20261027' })
+
+it('matches flight preparation commands without changing the selected aircraft', () => {
+  for (let unit = 1; unit <= 3; unit++) {
+    for (const [action, word] of ['起飞', '悬停', '降落'].entries()) {
+      const id = 21 + (unit - 1) * 3 + action
+      expect(presetMatchesText(`${unit}号无人机${word}`, params(id))).toBe(true)
+      expect(presetMatchesText(`执行第${id}号指令`, params(id))).toBe(true)
+      expect(presetMatchesText(`不要${unit}号无人机${word}`, params(id))).toBe(false)
+      expect(presetMatchesText(`${unit}号无人机${word}吗？`, params(id))).toBe(false)
+    }
+  }
+  expect(presetMatchesText('编队护航', params(30))).toBe(true)
+})
 
 describe('numbered command target speech slots', () => {
   afterEach(() => { algorithmPresets.value = [] })

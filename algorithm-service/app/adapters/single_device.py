@@ -65,7 +65,7 @@ class SingleDeviceControlAdapter(AlgorithmAdapter):
         self._return_safety = SceneSafetyFilter()
         self._motion_frame: RuntimeFrame | None = None
         self._infrastructure_fleet_validated = False
-        self._start_from_shore = self.config.get("startFromShore") is True
+        self._start_from_shore = self.config.get("startFromShore") is True and not getattr(base, "flight_preparation", False)
         self._safe_release_mode = (
             self.config.get("shoreDeploymentMode") == "SAFE_RELEASE"
         )

@@ -133,7 +133,7 @@ describe('voice recording duration and explicit completion', () => {
     const { wrapper } = setupRecording(text as string, async input => ({
       status: 'CANDIDATE', requestId: input.requestId, normalizedText: normalizedText as string,
       action: 'ALGORITHM_PRESET', intent: 'ALGORITHM_PRESET',
-      parameters: { presetId, presetVersion: 'escort-20261020' },
+      parameters: { presetId, presetVersion: 'escort-20261027' },
       confidence: null, provider: 'local-rules', model: 'rules-v1',
     }))
     await wrapper.setProps({ automationRuntime: simulation })
@@ -156,7 +156,7 @@ describe('voice recording duration and explicit completion', () => {
     const { wrapper } = setupRecording(text as string, async input => ({
       status: 'CANDIDATE', requestId: input.requestId, normalizedText: input.text,
       action: 'ALGORITHM_PRESET', intent: 'ALGORITHM_PRESET',
-      parameters: { presetId, presetVersion: 'escort-20261020' },
+      parameters: { presetId, presetVersion: 'escort-20261027' },
       confidence: null, provider: 'local-rules', model: 'rules-v1',
     }))
     await wrapper.setProps({ automationRuntime: simulation })
@@ -174,7 +174,7 @@ describe('voice recording duration and explicit completion', () => {
       const { wrapper, transcribe } = setupRecording(text, async input => ({
         status: 'CANDIDATE', requestId: input.requestId, normalizedText: input.text,
         action: 'ALGORITHM_PRESET', intent: 'ALGORITHM_PRESET',
-        parameters: { presetId: 13, presetVersion: 'escort-20261020' },
+        parameters: { presetId: 13, presetVersion: 'escort-20261027' },
         confidence: null, provider: 'local-rules', model: 'rules-v1',
       }))
       await wrapper.setProps({ automationRuntime: simulation })
@@ -195,7 +195,7 @@ describe('voice recording duration and explicit completion', () => {
       status: 'CANDIDATE', requestId: input.requestId, normalizedText: input.text,
       action: 'SEQUENCE', intent: 'COMMAND_SEQUENCE',
       steps: [13, 14, 20].map((presetId, index) => ({
-        index, action: 'ALGORITHM_PRESET', parameters: { presetId, presetVersion: 'escort-20261020' },
+        index, action: 'ALGORITHM_PRESET', parameters: { presetId, presetVersion: 'escort-20261027' },
       })),
       confidence: null, provider: 'local-rules', model: 'rules-sequence-v1',
     }))
@@ -222,7 +222,7 @@ describe('voice recording duration and explicit completion', () => {
     const { wrapper } = setupRecording(text, async input => ({
       status: 'CANDIDATE', requestId: input.requestId, normalizedText: input.text,
       action: 'ALGORITHM_PRESET', intent: 'ALGORITHM_PRESET',
-      parameters: { presetId: 20, presetVersion: 'escort-20261020' },
+      parameters: { presetId: 20, presetVersion: 'escort-20261027' },
       confidence: null, provider: 'local-rules', model: 'rules-v1',
     }))
     await wrapper.setProps({ automationRuntime: simulation })
@@ -238,7 +238,7 @@ describe('voice recording duration and explicit completion', () => {
       const { wrapper } = setupRecording(text, async input => ({
         status: 'CANDIDATE', requestId: input.requestId, normalizedText: input.text,
         action: 'ALGORITHM_PRESET', intent: 'ALGORITHM_PRESET',
-        parameters: { presetId: 13, presetVersion: 'escort-20261020' },
+        parameters: { presetId: 13, presetVersion: 'escort-20261027' },
         confidence: null, provider: 'local-rules', model: 'rules-v1',
       }))
       await wrapper.setProps({ automationRuntime: simulation })

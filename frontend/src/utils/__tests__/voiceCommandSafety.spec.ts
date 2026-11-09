@@ -51,8 +51,8 @@ describe('voice command safety policy', () => {
     expect(requiresVoiceConfirmation(preset, simulation)).toBe(false)
     expect(requiresVoiceConfirmation(preset)).toBe(true)
     expect(requiresVoiceConfirmation({ action: 'SEQUENCE', steps: [
-      { index: 0, action: 'ALGORITHM_PRESET', parameters: { presetId: 13, presetVersion: 'escort-20261020' } },
-      { index: 1, action: 'ALGORITHM_PRESET', parameters: { presetId: 20, presetVersion: 'escort-20261020' } },
+      { index: 0, action: 'ALGORITHM_PRESET', parameters: { presetId: 13, presetVersion: 'escort-20261027' } },
+      { index: 1, action: 'ALGORITHM_PRESET', parameters: { presetId: 20, presetVersion: 'escort-20261027' } },
     ] }, simulation)).toBe(false)
   })
   it.each([

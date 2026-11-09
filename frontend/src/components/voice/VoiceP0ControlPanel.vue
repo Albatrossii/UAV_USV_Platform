@@ -671,7 +671,7 @@ async function handleRefinedAutomaticVoiceCandidate(
     && (context.value.sceneReady || isLocalSimulationResume(action))
   if (!sceneAllowsAction()) await refreshAutomaticSceneReadiness(sameRecognisedRuntime)
   const unavailable = action ? refinedActionDisabledReason(action)
-    : context.value?.state !== 'RUNNING' || !context.value.capabilities.includes(presetAction ? 'ALGORITHM_PRESET' : 'DEVICE_COMMAND')
+    : !(context.value?.state === 'RUNNING' || (presetAction && ['PREVIEW', 'PREPARED'].includes(context.value?.state ?? ''))) || !context.value?.capabilities.includes(presetAction ? 'ALGORITHM_PRESET' : 'DEVICE_COMMAND')
       ? '当前运行不接受此指令' : ''
   if (!sceneAllowsAction() || !freshHeartbeat() || unavailable) {
     voiceAutomationStatus.value = `未自动执行：${!sceneAllowsAction() ? '仿真场景尚未就绪' : unavailable || '设备连接暂时中断'}。请检查后重新录音。`
