@@ -34,8 +34,8 @@ if ASR_ENGINE not in ('whisper-small', 'zipformer-streaming', 'command-fastpath'
 BEAM_SIZE = int(os.environ.get('ASR_BEAM_SIZE', '2'))
 if BEAM_SIZE not in (1, 2, 3, 5):
     raise RuntimeError('ASR_BEAM_SIZE must be one of 1, 2, 3, or 5')
-DECODING_PROFILE_REVISION = ('uav-usv-domain-prompt-v1' if BEAM_SIZE == 5
-                             else f'uav-usv-domain-prompt-v1-beam-{BEAM_SIZE}')
+DECODING_PROFILE_REVISION = ('uav-usv-domain-prompt-v2' if BEAM_SIZE == 5
+                             else f'uav-usv-domain-prompt-v2-beam-{BEAM_SIZE}')
 REVISION = f'{MODEL_REVISION}+{DECODING_PROFILE_REVISION}'
 MODEL_SHA256 = '3e305921506d8872816023e4c273e75d2419fb89b24da97b4fe7bce14170d671'
 MODEL_FILES = {
@@ -49,7 +49,8 @@ DOMAIN_INITIAL_PROMPT = (
     '无人机，无人艇，协同搜索，协同航迹，改进蛙跳算法，粒子群优化，全局最优解，'
     '运行时引用，运行代次，展示绑定，编队控制，动态避障，航向角速度，经纬度，遥测，'
     '场景就绪，帧应用回执，幂等请求，命令序列，WebGL，实时因子，峰值内存，九十五分位延迟，'
-    '第一架无人机悬停，第一架无人机返航，第一架无人机归队，第一艘无人艇驻留，第一艘无人艇返航'
+    '一号无人机起飞，一号无人机，一号，起飞，'
+    '一号无人机悬停，一号无人机返航，一号无人机归队，一号无人艇驻留，一号无人艇返航'
 )
 PRODUCTION_TRANSCRIBE_OPTIONS = {
     'language': 'zh',

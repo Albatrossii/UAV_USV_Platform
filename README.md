@@ -70,7 +70,7 @@ com.uavusv.platform
 
 - 登录地址：`http://localhost:5174/login`
 - 初始管理员：`admin`
-- 初始密码：`123456`
+- 初始密码：由接收方在首次启动前通过 `BOOTSTRAP_ADMIN_PASSWORD` 设置
 
 初始管理员仅在数据库中不存在同名用户时创建，密码使用 BCrypt 保存。部署到其他环境时应通过配置覆盖初始账号并在首次登录后修改密码。
 

@@ -44,7 +44,10 @@ const props = withDefaults(defineProps<{
   sceneRequired?: boolean
   frame?: AlgorithmRuntimeFrame | null
 }>(), { refined: false, compact: false, sceneRequired: true })
-const emit = defineEmits<{ presentationMessage: [message: UnityPresentationOutgoing] }>()
+const emit = defineEmits<{
+  presentationMessage: [message: UnityPresentationOutgoing]
+  physicalTakeoffRequest: [payload: { requestId: string; transcript: string }]
+}>()
 const store = useVoiceControlStore()
 const authStore = useAuthStore()
 const {
@@ -1239,7 +1242,12 @@ onBeforeUnmount(() => {
       <p v-else-if="responseUnknown" class="refined-notice" role="alert">上次请求结果尚未确认。请核对结果，不要重复下发指令。</p>
       <p v-else-if="!recoveryAvailable" class="refined-notice" role="alert">无法读取或保存指令恢复信息，已暂停下发。请检查浏览器存储后重新核对。</p>
 
-      <LocalAsrInput v-if="asrOnly" :operator-scope="operatorScope" :disabled="authStore.user?.role !== 'ADMIN' || authStore.loading" />
+      <LocalAsrInput
+        v-if="asrOnly"
+        :operator-scope="operatorScope"
+        :disabled="authStore.user?.role !== 'ADMIN' || authStore.loading"
+        @takeoff-command="emit('physicalTakeoffRequest', $event)"
+      />
       <VoiceIntelligenceInput
         v-else-if="voiceP1PreparationEnabled"
         refined
@@ -1327,7 +1335,7 @@ onBeforeUnmount(() => {
       </dl>
     </article>
     <p class="scope-note">
-      {{ asrOnly ? '当前仅将语音转成文字（本地或阿里云识别）；手工任务控制独立使用，识别结果不执行动作。' : voiceP1PreparationEnabled
+      {{ asrOnly ? '精确指令“一号无人机起飞”会复用系统总览起飞按钮并执行五秒电机测试；其他识别结果不会执行动作。' : voiceP1PreparationEnabled
         ? autoExecuteSimulationVoice
         ? '本地仿真会自动提交通过校验的整队或单设备语音命令；Gateway 实机链路不走此自动流程。'
           : '已启用语音文本输入；本地仿真中的明确单设备命令会自动提交。'
@@ -1340,7 +1348,12 @@ onBeforeUnmount(() => {
     <p v-if="presentationBinding?.bindingId" class="scope-note" :title="presentationBinding.bindingId">展示绑定已建立。</p>
     <p v-if="presentationBridgeEnabled" class="scope-note">展示桥：{{ presentationBridgeDisplay }}</p>
 
-    <LocalAsrInput v-if="asrOnly" :operator-scope="operatorScope" :disabled="authStore.user?.role !== 'ADMIN' || authStore.loading" />
+    <LocalAsrInput
+      v-if="asrOnly"
+      :operator-scope="operatorScope"
+      :disabled="authStore.user?.role !== 'ADMIN' || authStore.loading"
+      @takeoff-command="emit('physicalTakeoffRequest', $event)"
+    />
     <VoiceIntelligenceInput
       v-else-if="voiceP1PreparationEnabled"
       :compact="compact"

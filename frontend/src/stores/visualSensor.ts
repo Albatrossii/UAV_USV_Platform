@@ -176,6 +176,11 @@ function buildDisplayOverview(channel: VisualSensorChannelState): VisualSensorOv
       ...fallbackSensor,
       ...backendSensors.get(fallbackSensor.cameraId),
     }
+    // Live Gateway metadata takes precedence over the Unity rendering statistics.
+    if (sensor.status === 'ONLINE' && base.gatewayConnected
+      && now - (channel.frameReceivedAtMs[sensor.cameraId] ?? 0) <= BACKEND_FRAME_FRESH_MS) {
+      return { ...sensor, focused: sensor.cameraId === channel.unityFocusedCameraId }
+    }
     if (
       directStreamFresh
       && (directStream.displayMode === 'grid' || sensor.cameraId === directStream.focusedCameraId)
@@ -410,6 +415,8 @@ export const useVisualSensorStore = defineStore('visual-sensor', {
       const frame = payload as unknown as UnityVisualSensorFrame
       if (!SENSOR_CATALOG.some((sensor) => sensor.cameraId === frame.cameraId)) return
       if (!frame.jpegBase64 || frame.width <= 0 || frame.height <= 0) return
+      // Do not replace a live ROS image with a synthetic Unity frame.
+      if (scope === 'SYSTEM_OVERVIEW' && this.hasFreshBackendFrame(frame.cameraId, scope)) return
       try {
         const now = Date.now()
         const previous = channel.unityFrames[frame.cameraId]

@@ -20,7 +20,7 @@ app:
     intent-provider: ${APP_VOICEINTELLIGENCE_INTENT_PROVIDER:rules}
     base-url: ${APP_VOICEINTELLIGENCE_BASE_URL:http://127.0.0.1:18082}
     token: ${APP_VOICEINTELLIGENCE_TOKEN:}
-    model-revision: ${APP_VOICEINTELLIGENCE_MODEL_REVISION:536b0662742c02347bc0e980a01041f333bce120+uav-usv-domain-prompt-v1-beam-2}
+    model-revision: ${APP_VOICEINTELLIGENCE_MODEL_REVISION:536b0662742c02347bc0e980a01041f333bce120+uav-usv-domain-prompt-v2-beam-2}
     model-alias: ${APP_VOICEINTELLIGENCE_MODEL_ALIAS:whisper-small-cpu-int8-r1}
     aliyun-app-key: ${APP_VOICEINTELLIGENCE_ALIYUN_APP_KEY:}
     aliyun-token: ${APP_VOICEINTELLIGENCE_ALIYUN_TOKEN:}

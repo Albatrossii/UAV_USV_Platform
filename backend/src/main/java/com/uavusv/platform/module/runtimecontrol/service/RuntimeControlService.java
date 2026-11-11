@@ -22,6 +22,7 @@ import com.uavusv.platform.module.runtimecontrol.entity.SimulationSession;
 import com.uavusv.platform.module.runtimecontrol.entity.SimulationStatus;
 import com.uavusv.platform.module.runtimecontrol.entity.RuntimeScope;
 import com.uavusv.platform.module.runtimecontrol.event.ControlCommandStatusChangedEvent;
+import com.uavusv.platform.module.runtimecontrol.integration.SemanticMotorControlClient;
 import com.uavusv.platform.module.runtimecontrol.repository.ControlCommandRepository;
 import com.uavusv.platform.module.runtimecontrol.repository.SimulationSessionRepository;
 import org.slf4j.Logger;
@@ -88,6 +89,7 @@ public class RuntimeControlService {
     private final DeviceRepository deviceRepository;
     private final MissionRunRepository missionRunRepository;
     private final RuntimeCommandDispatcher commandDispatcher;
+    private final SemanticMotorControlClient semanticMotorControlClient;
     private final ApplicationEventPublisher eventPublisher;
     private final String wslDistribution;
     private final Path rosScript;
@@ -101,6 +103,7 @@ public class RuntimeControlService {
     @Autowired(required = false)
     private AlgorithmRuntimeManager algorithmRuntimeManager;
 
+    @Autowired
     public RuntimeControlService(
             RuntimeStateService runtimeStateService,
             SimulationSessionRepository sessionRepository,
@@ -108,6 +111,7 @@ public class RuntimeControlService {
             DeviceRepository deviceRepository,
             MissionRunRepository missionRunRepository,
             RuntimeCommandDispatcher commandDispatcher,
+            SemanticMotorControlClient semanticMotorControlClient,
             ApplicationEventPublisher eventPublisher,
             @Value("${app.control.wsl-distribution}") String wslDistribution,
             @Value("${app.control.ros-script}") String rosScript,
@@ -125,6 +129,7 @@ public class RuntimeControlService {
         this.deviceRepository = deviceRepository;
         this.missionRunRepository = missionRunRepository;
         this.commandDispatcher = commandDispatcher;
+        this.semanticMotorControlClient = semanticMotorControlClient;
         this.eventPublisher = eventPublisher;
         this.wslDistribution = wslDistribution;
         this.rosScript = Path.of(rosScript);
@@ -135,6 +140,50 @@ public class RuntimeControlService {
         this.commandDispatchMode = commandDispatchMode;
         this.commandAckTimeoutSeconds = Math.max(commandAckTimeoutSeconds, 1);
         this.commandResultTimeoutSeconds = Math.max(commandResultTimeoutSeconds, this.commandAckTimeoutSeconds + 1);
+    }
+
+    /**
+     * Compatibility constructor for focused unit tests that instantiate this service directly.
+     * Production uses the Spring-injected constructor above.
+     */
+    public RuntimeControlService(
+            RuntimeStateService runtimeStateService,
+            SimulationSessionRepository sessionRepository,
+            ControlCommandRepository commandRepository,
+            DeviceRepository deviceRepository,
+            MissionRunRepository missionRunRepository,
+            RuntimeCommandDispatcher commandDispatcher,
+            ApplicationEventPublisher eventPublisher,
+            String wslDistribution,
+            String rosScript,
+            String unityEditor,
+            String unityProject,
+            String rosWebSocketUrl,
+            String integrationToken,
+            String commandDispatchMode,
+            long commandAckTimeoutSeconds,
+            long commandResultTimeoutSeconds
+    ) {
+        this(
+                runtimeStateService,
+                sessionRepository,
+                commandRepository,
+                deviceRepository,
+                missionRunRepository,
+                commandDispatcher,
+                new SemanticMotorControlClient(
+                        false, "", "", new com.fasterxml.jackson.databind.ObjectMapper()),
+                eventPublisher,
+                wslDistribution,
+                rosScript,
+                unityEditor,
+                unityProject,
+                rosWebSocketUrl,
+                integrationToken,
+                commandDispatchMode,
+                commandAckTimeoutSeconds,
+                commandResultTimeoutSeconds
+        );
     }
 
     @EventListener(ApplicationReadyEvent.class)
@@ -353,6 +402,7 @@ public class RuntimeControlService {
         RuntimeScope runtimeScope = request.runtimeScope() != null
                 ? request.runtimeScope()
                 : (request.runId() == null ? RuntimeScope.SYSTEM_OVERVIEW : RuntimeScope.MISSION_CENTER);
+        boolean physicalMotorTest = semanticMotorControlClient.supports(request);
         if (request.runId() != null && runtimeScope != RuntimeScope.MISSION_CENTER) {
             throw new BusinessException(ErrorCode.BAD_REQUEST, "任务执行批次只能向任务中心运行实例下发指令");
         }
@@ -374,7 +424,7 @@ public class RuntimeControlService {
             publishTerminalCommandStatus(rejected);
             return RuntimeCommandResponse.from(rejected);
         }
-        if (request.commandType() == CommandType.UAV_TAKEOFF) {
+        if (request.commandType() == CommandType.UAV_TAKEOFF && !physicalMotorTest) {
             RuntimeStateService.TakeoffReadiness readiness =
                     runtimeStateService.getUavTakeoffReadiness(request.deviceCode());
             if (readiness != null && !readiness.allowed()) {
@@ -422,7 +472,9 @@ public class RuntimeControlService {
         CommandDispatchResult dispatchResult = null;
         String dispatchError = null;
         try {
-            dispatchResult = commandDispatcher.dispatch(command.getCommandKey(), request);
+            dispatchResult = physicalMotorTest
+                    ? semanticMotorControlClient.dispatch(command.getCommandKey(), request)
+                    : commandDispatcher.dispatch(command.getCommandKey(), request);
             log.info("[issueCommand] dispatcher.dispatch ms={} accepted={} acknowledged={} detail={}",
                     System.currentTimeMillis() - stageStartedAt,
                     dispatchResult.accepted(), dispatchResult.acknowledged(), dispatchResult.detail());

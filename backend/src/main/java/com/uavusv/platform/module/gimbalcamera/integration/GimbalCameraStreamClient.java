@@ -41,7 +41,7 @@ public class GimbalCameraStreamClient implements WebSocket.Listener {
     private volatile boolean stopping;
 
     public GimbalCameraStreamClient(ObjectMapper mapper, GimbalCameraFrameService frames,
-            @Value("${app.gimbal-camera.stream-websocket-url:ws://10.16.88.211:8765/ws}") String endpoint) {
+            @Value("${app.gimbal-camera.stream-websocket-url:ws://127.0.0.1:8765/ws}") String endpoint) {
         this.mapper = mapper;
         this.frames = frames;
         this.endpoint = URI.create(endpoint);

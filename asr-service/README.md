@@ -89,7 +89,7 @@ $candidate | Select-Object ProcessId,ExecutablePath,CommandLine
 - 失败：requestId（尚未解析则null）/code/message。业务错误遵循最终稿。
 - 已对齐mxy提交425a96c：非法内部参数HTTP503＋ASR_UNAVAILABLE，鉴权401＋ASR_UNAVAILABLE。Java均按调用配置错误映射503；用户表单错误仍由Java返回400，未新增公共错误。
 - busy返回429 ASR_BUSY，Retry-After:2；该值是重试建议，不承诺任务两秒内结束。Java不得自动重试推理POST。
-- 解码使用冻结领域提示 v1，并保留 Whisper 的低置信度温度回退。不同 requestId 的重复录音可能有小幅输出差异；同一幂等键由 Java 返回已缓存结果，不会再次推理。若改变提示词或解码参数，必须更新完整 `modelRevision` 并重新执行 Q01/Q02。
+- 解码使用冻结领域提示 v2，强化“一号无人机起飞”及“一号”设备编号，并保留 Whisper 的低置信度温度回退。不同 requestId 的重复录音可能有小幅输出差异；同一幂等键由 Java 返回已缓存结果，不会再次推理。若改变提示词或解码参数，必须更新完整 `modelRevision` 并重新执行 Q01/Q02。
 - 实际时长按完整解码并重采样的采样数向上取整；严格拒绝损坏包，不像离线冒烟脚本自动跳过坏包。E1 接受单音频轨、最多2声道、48kHz的 WebM/Opus、Ogg/Opus、MP4/AAC、WAV/PCM 与 MP3；容器、codec 和 MIME 必须一致。
 - Python只做本机单槽保护，不持久化业务幂等；Java负责同键恢复、登录、权限、CSRF和缓存。
 - 最多8个HTTP处理线程、读头10秒、请求体6MiB、解码960000采样点上限。D1无独立进程内存硬配额；原生解码卡死按人工恢复流程处理，不把线程timeout当成强制终止。

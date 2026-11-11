@@ -6,7 +6,7 @@ import unittest
 import json
 import io
 
-from asr_server import (AsrError, CommandFastPathEngine, MAX_AUDIO, MAX_BODY, REVISION,
+from asr_server import (AsrError, CommandFastPathEngine, DOMAIN_INITIAL_PROMPT, MAX_AUDIO, MAX_BODY, REVISION,
                         Runtime, Server, decode_audio, file_sha256, parse_multipart)
 
 TOKEN = 'test-only-not-a-deployment-secret-12345678'
@@ -39,6 +39,13 @@ class HashTests(unittest.TestCase):
         self.assertEqual(
             file_sha256(io.BytesIO(b'abc')),
             'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad')
+
+
+class DomainPromptTests(unittest.TestCase):
+    def test_physical_takeoff_phrase_is_prioritized_without_vessel_quantifier_bias(self):
+        self.assertIn('一号无人机起飞', DOMAIN_INITIAL_PROMPT)
+        self.assertNotIn('第一艘无人机', DOMAIN_INITIAL_PROMPT)
+        self.assertIn('uav-usv-domain-prompt-v2', REVISION)
 
 
 class CommandFastPathTests(unittest.TestCase):

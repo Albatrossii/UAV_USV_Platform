@@ -30,6 +30,23 @@ afterEach(() => {
 })
 
 describe('D1 isolated ASR UI', () => {
+  it('emits the physical takeoff request once for the exact real-ASR phrase', async () => {
+    const { wrapper, transcribe } = setup(vi.fn(async input => transcript(input, '一号无人机起飞。')))
+    await upload(wrapper)
+    expect(wrapper.emitted('takeoffCommand')).toEqual([[
+      { requestId: transcribe.mock.calls[0]![0].requestId, transcript: '一号无人机起飞。' },
+    ]])
+    expect(wrapper.text()).toContain('正在复用系统总览起飞按钮下发')
+  })
+  it.each([
+    ['一号无人机返航', 'local-asr'],
+    ['二号无人机起飞', 'local-asr'],
+    ['一号无人机起飞', 'test-fixture'],
+  ])('does not emit a takeoff request for %s from %s', async (text, provider) => {
+    const { wrapper } = setup(vi.fn(async input => ({ ...transcript(input, text), provider })))
+    await upload(wrapper)
+    expect(wrapper.emitted('takeoffCommand')).toBeUndefined()
+  })
   it('displays 500 codepoints without a parser/candidate or emitted action', async () => {
     const { wrapper, transcribe } = setup(vi.fn(async input => transcript(input, '字'.repeat(500))))
     await upload(wrapper)

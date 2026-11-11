@@ -227,7 +227,7 @@ function setUnityZoom(event: Event) {
 }
 
 const expectedObservationDevices = [
-  { code: 'uav-01', name: '协同无人机 1', type: 'UAV' as const },
+  { code: 'uav-01', name: '真实机载电脑', type: 'UAV' as const },
   { code: 'uav-02', name: '协同无人机 2', type: 'UAV' as const },
   { code: 'uav-03', name: '协同无人机 3', type: 'UAV' as const },
   { code: 'usv-01', name: '协同无人艇 1', type: 'USV' as const },
@@ -256,7 +256,11 @@ const displayedNodes = computed(() =>
 const selectableDevices = computed(() => {
   return expectedObservationDevices.map((expected, index) => {
     const runtime = runtimeNodeByCode.value.get(normalizeDeviceCode(expected.code))
-    if (runtime) return runtime
+    if (runtime) {
+      return expected.code === 'uav-01'
+        ? { ...runtime, name: expected.name }
+        : runtime
+    }
     return {
       id: -(index + 1),
       code: expected.code,
@@ -602,11 +606,45 @@ async function issueSelectedQuickCommand(action: OverviewQuickAction) {
     return
   }
   if (!isSelectedOverviewActionAllowed(action)) return
+  await issueOverviewQuickCommandForDevice(action, device.code)
+}
+
+async function issueOverviewQuickCommandForDevice(
+  action: OverviewQuickAction,
+  deviceCode: string,
+  options: { voiceRequestId?: string } = {},
+) {
   await sendVehicleCommand({
     commandType: action.commandType,
-    deviceCodes: [device.code],
+    deviceCodes: [deviceCode],
     label: action.label,
+  }, {
+    payload: options.voiceRequestId
+      ? { input: 'VOICE', voiceRequestId: options.voiceRequestId }
+      : undefined,
   })
+}
+
+const handledVoiceTakeoffRequests = new Set<string>()
+async function handlePhysicalTakeoffRequest(payload: { requestId: string; transcript: string }) {
+  if (handledVoiceTakeoffRequests.has(payload.requestId)) return
+  handledVoiceTakeoffRequests.add(payload.requestId)
+  if (handledVoiceTakeoffRequests.size > 32) {
+    const oldest = handledVoiceTakeoffRequests.values().next().value
+    if (oldest) handledVoiceTakeoffRequests.delete(oldest)
+  }
+  if (commandBusy.value) {
+    ElMessage.warning('上一条设备指令仍在执行，本次语音起飞未重复下发')
+    return
+  }
+  const device = overviewFleetCards.value.find(item => item.code === 'uav-01' && item.type === 'UAV')
+  if (!device) {
+    ElMessage.error('未找到真实一号无人机，语音起飞未下发')
+    return
+  }
+  const takeoffAction: OverviewQuickAction = { label: '起飞', commandType: 'UAV_TAKEOFF', icon: PlaneTakeoff }
+  ElMessage.info('已识别“一号无人机起飞”，正在执行五秒电机测试')
+  await issueOverviewQuickCommandForDevice(takeoffAction, device.code, { voiceRequestId: payload.requestId })
 }
 
 async function handleOverviewMissionToggle() {
@@ -1004,7 +1042,7 @@ type VehicleBatchResult = {
 
 async function sendVehicleCommand(
   command: VehicleQuickCommand,
-  options: { manageBusy?: boolean; notify?: boolean } = {},
+  options: { manageBusy?: boolean; notify?: boolean; payload?: Record<string, unknown> } = {},
 ): Promise<VehicleBatchResult> {
   const manageBusy = (options.manageBusy ?? true) && !isUsvSafetyStop(command.commandType)
   const notify = options.notify ?? true
@@ -1023,16 +1061,16 @@ async function sendVehicleCommand(
           const result = await issueSingleDeviceCommand({
             commandType: command.commandType,
             deviceCode: key,
-            payload: JSON.stringify({ source: 'SYSTEM_OVERVIEW' }),
+            payload: JSON.stringify({ source: 'SYSTEM_OVERVIEW', ...(options.payload ?? {}) }),
             detail: `${command.label} / ${deviceCode}`,
             runtimeScope: 'SYSTEM_OVERVIEW',
             runtimeInstanceId: unityInstanceId,
           })
-          if (result.status === 'FAILED' || result.status === 'TIMEOUT') {
-            commandFeedback.value = { ...commandFeedback.value, [key]: result.status }
-            return result.status
-          }
-          const rosStatus = await realtimeStore.waitForCommandResult(result.commandKey, 90000)
+          const immediateTerminal = ['SUCCEEDED', 'REJECTED', 'FAILED', 'TIMEOUT', 'CANCELLED', 'EXPIRED']
+            .includes(result.status)
+          const rosStatus = immediateTerminal
+            ? result.status
+            : await realtimeStore.waitForCommandResult(result.commandKey, 90000)
           const status: RuntimeCommandStatus = rosStatus === 'SUCCEEDED' ? 'SUCCEEDED'
             : rosStatus === 'CANCELLED' ? 'CANCELLED'
               : rosStatus === 'TIMEOUT' || rosStatus === 'EXPIRED' ? 'TIMEOUT' : 'FAILED'
@@ -1764,6 +1802,7 @@ watch((): WorkspaceHeaderState => ({
                 :scene-required="false"
                 :runtime-hint="overviewVoiceRuntimeHint"
                 :unity-session="overviewVoiceUnitySession"
+                @physical-takeoff-request="handlePhysicalTakeoffRequest"
               />
             </details>
 
@@ -1880,7 +1919,7 @@ watch((): WorkspaceHeaderState => ({
             >
               <header>
                 <span>当前设备</span>
-                <strong>{{ selectedOverviewDevice.code.toUpperCase() }}</strong>
+                <strong>{{ selectedOverviewDevice.name }} · {{ selectedOverviewDevice.code.toUpperCase() }}</strong>
                 <b :class="(selectedOverviewDevice.status || 'UNKNOWN').toLowerCase()">
                   {{ runtimeStatusLabel(selectedOverviewDevice.status) }}
                 </b>
@@ -1931,7 +1970,7 @@ watch((): WorkspaceHeaderState => ({
             @click="selectDevice(device.code)"
           >
             <header>
-              <strong>{{ device.code.toUpperCase() }}</strong>
+              <strong>{{ device.name }}</strong>
               <b :class="(device.feedback || device.status || 'UNKNOWN').toLowerCase()">
                 {{ device.feedback === 'SUCCEEDED' ? '执行成功' : runtimeStatusLabel(device.status) }}
               </b>

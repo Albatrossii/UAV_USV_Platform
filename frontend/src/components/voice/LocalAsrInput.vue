@@ -8,9 +8,13 @@ const props = withDefaults(defineProps<{
   operatorScope: string; disabled?: boolean
   transcribe?: (input: VoiceAudioInput) => Promise<VoiceTranscript>
 }>(), { disabled: false, transcribe: undefined })
-// Deliberately independent of P0, runtime context, parser and candidate events.
+const emit = defineEmits<{
+  takeoffCommand: [payload: { requestId: string; transcript: string }]
+}>()
+// This isolated input only maps one exact, explicitly enabled physical test
+// phrase. It remains independent of the general P0 parser and candidate flow.
 const text = ref('')
-const message = ref('仅录音转文字，不解析意图、不执行控制。刷新不恢复音频，旧请求可能已处理。')
+const message = ref('等待语音；仅精确指令“一号无人机起飞”会触发五秒电机测试。')
 const result = shallowRef<VoiceTranscript | null>(null)
 const pending = shallowRef<VoiceAudioInput | null>(null)
 const phase = ref<'idle' | 'permission' | 'recording' | 'encoding' | 'waiting'>('idle')
@@ -41,6 +45,19 @@ let requestTimer: number | undefined
 let recognitionTimer: number | undefined
 let recognitionStarted = 0
 const RECOVERY_MS = 600_000
+let emittedTakeoffRequestId = ''
+
+function normalizedCommand(value: string) {
+  return value.normalize('NFKC').replace(/[\s，。！？、,.!?]/g, '')
+}
+
+function emitExactTakeoffCommand(response: VoiceTranscript) {
+  if (!isRealProvider(response.provider)
+      || normalizedCommand(response.text) !== '一号无人机起飞'
+      || emittedTakeoffRequestId === response.requestId) return
+  emittedTakeoffRequestId = response.requestId
+  emit('takeoffCommand', { requestId: response.requestId, transcript: response.text })
+}
 
 function releaseCapture() {
   window.clearInterval(recordTimer)
@@ -110,9 +127,14 @@ async function send() {
     text.value = response.text
     pending.value = null
     window.clearTimeout(expireTimer)
+    const exactTakeoffCommand = isRealProvider(response.provider)
+      && normalizedCommand(response.text) === '一号无人机起飞'
     message.value = isRealProvider(response.provider)
-      ? '识别完成，请核对并编辑文字；不会执行任何任务动作。'
+      ? exactTakeoffCommand
+        ? '已识别精确指令“一号无人机起飞”，正在复用系统总览起飞按钮下发。'
+        : '识别完成；只有精确指令“一号无人机起飞”会触发五秒电机测试，其他识别结果不会执行任何任务动作。'
       : '返回来自测试或未知适配器，不作为真实识别通过证据。'
+    emitExactTakeoffCommand(response)
   } catch (error) {
     if (ticket !== epoch || controller.signal.aborted) return
     const info = voiceRecoveryInfo(error)
@@ -237,9 +259,9 @@ onDeactivated(clear)
 </script>
 
 <template>
-  <section class="local-asr" aria-label="语音识别（仅转文字）">
-    <header><strong>语音识别（仅转文字）</strong><span>{{ adapterLabel }}</span></header>
-    <p>只转文字 · 不需要生成场景 · 不执行控制</p>
+  <section class="local-asr" aria-label="语音识别与电机测试指令">
+    <header><strong>语音识别与电机测试</strong><span>{{ adapterLabel }}</span></header>
+    <p>精确说出“一号无人机起飞”可复用总览起飞按钮；其他内容只转文字。</p>
     <div class="asr-actions">
       <button v-if="phase === 'recording'" @click="stopRecording">停止录音（{{ elapsed }}秒）</button>
       <button v-else :disabled="inputLocked" @click="startRecording">{{ phase === 'permission' ? '等待麦克风授权' : '开始录音' }}</button>
