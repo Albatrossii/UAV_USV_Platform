@@ -2,6 +2,8 @@
   "name": "uav-usv-platform",
   "private": true,
   "scripts": {
+    "dev:san60": "node scripts/san60-dev.mjs",
+    "start:san60": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/start-san60.ps1",
     "dev": "node scripts/dev.mjs",
     "stop": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/stop-dev.ps1",
     "dev:backend": "backend\\mvnw.cmd -f backend\\pom.xml spring-boot:run",

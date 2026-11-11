@@ -38,6 +38,7 @@ declare module 'vue' {
     RadarPpiCanvas: typeof import('./components/sensor/RadarPpiCanvas.vue')['default']
     RouterLink: typeof import('vue-router')['RouterLink']
     RouterView: typeof import('vue-router')['RouterView']
+    San60Plots: typeof import('./components/san60/San60Plots.vue')['default']
     San60SpatialCanvas: typeof import('./components/sensor/San60SpatialCanvas.vue')['default']
     SimulationRuntimeHost: typeof import('./components/unity/SimulationRuntimeHost.vue')['default']
     SimulationUnityWebglPanel: typeof import('./components/unity/SimulationUnityWebglPanel.vue')['default']

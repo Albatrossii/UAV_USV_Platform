@@ -1,5 +1,7 @@
 # SAN60 BAG 离线回放接入
 
+> 这是原「光电视觉」卡片的桥接流程。新增「态势感知」页面请优先使用 [更新后的启动流程](san60-启动流程-更新.md)，仅在旧卡片需要供数时额外运行桥接器。
+
 本流程把 SAN60 Windows 离线部署包的 BAG 回放，通过本地桥接程序送入 UAV_USV_Platform 后端，并在“光电视觉”页面展示二维频谱、定位信息和三维空间测量态势。桥接程序只使用 Python 标准库，不修改 SAN60 部署包。
 
 ## 启动
@@ -41,7 +43,8 @@
    如果后端使用自定义地址或 token，可覆盖参数：
 
    ```powershell
-   python .\scripts\san60_offline_bridge.py --backend-url http://127.0.0.1:8081/api/integration/san60/spectrum --token uav-usv-local-agent
+   $san60Credential = [System.Net.NetworkCredential]::new('', (Read-Host '输入与后端配置一致的本机集成令牌' -AsSecureString))
+   python .\scripts\san60_offline_bridge.py --backend-url http://127.0.0.1:8081/api/integration/san60/spectrum --token $san60Credential.Password
    ```
 
 ## 查看与检查

@@ -9,6 +9,7 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
   Plane,
+  Radio,
   RefreshCw,
   Route,
   UserRound,
@@ -138,6 +139,10 @@ async function logout() {
         <RouterLink class="nav-item" active-class="active" to="/vision" title="光电视觉">
           <Camera :size="18" />
           <span class="console-nav-label">光电视觉</span>
+        </RouterLink>
+        <RouterLink class="nav-item" active-class="active" to="/situational-awareness" title="态势感知">
+          <Radio :size="18" />
+          <span class="console-nav-label">态势感知</span>
         </RouterLink>
         <RouterLink class="nav-item" active-class="active" to="/radar" title="雷达态势">
           <Crosshair :size="18" />

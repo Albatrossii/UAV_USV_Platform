@@ -33,6 +33,8 @@ management:
       show-details: never
 
 app:
+  san60:
+    service-url: ${SAN60_SERVICE_URL:http://127.0.0.1:8775}
   gimbal-camera:
     enabled: ${APP_GIMBAL_CAMERA_ENABLED:false}
     gateway-url: ${APP_GIMBAL_CAMERA_GATEWAY_URL:}

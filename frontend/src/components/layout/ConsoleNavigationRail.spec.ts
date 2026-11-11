@@ -11,6 +11,7 @@ const navigation = [
   ['/', '系统总览'],
   ['/situation', '协同态势'],
   ['/vision', '光电视觉'],
+  ['/situational-awareness', '态势感知'],
   ['/radar', '雷达态势'],
   ['/devices', '设备管理'],
 ] as const

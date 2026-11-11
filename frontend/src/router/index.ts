@@ -7,6 +7,7 @@ const MissionWorkspaceView = () => import('@/views/MissionWorkspaceView.vue')
 const OverviewWorkspaceView = () => import('@/views/OverviewWorkspaceView.vue')
 const RadarSituationView = () => import('@/views/RadarHudView.vue')
 const VisualSensorView = () => import('@/views/OpticalVisionView.vue')
+const SituationalAwarenessView = () => import('@/views/SituationalAwarenessView.vue')
 
 const router = createRouter({
   history: createWebHistory(import.meta.env.BASE_URL),
@@ -33,6 +34,7 @@ const router = createRouter({
       meta: { requiresAuth: true },
     },
     { path: '/vision', name: 'optical-vision', component: VisualSensorView, meta: { requiresAuth: true } },
+    { path: '/situational-awareness', name: 'situational-awareness', component: SituationalAwarenessView, meta: { requiresAuth: true } },
     { path: '/visual-sensors', redirect: '/vision' },
     { path: '/radar', name: 'radar-situation', component: RadarSituationView, meta: { requiresAuth: true } },
     {

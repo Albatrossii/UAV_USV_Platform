@@ -7,6 +7,7 @@ import {
   LogOut,
   PanelLeftClose,
   PanelLeftOpen,
+  Radio,
   Route,
   UserRound,
 } from '@lucide/vue'
@@ -52,6 +53,9 @@ async function logout() {
       </RouterLink>
       <RouterLink class="rail-icon" active-class="active" to="/vision" title="光电视觉" aria-label="光电视觉">
         <Camera :size="18" />
+      </RouterLink>
+      <RouterLink class="rail-icon" active-class="active" to="/situational-awareness" title="态势感知" aria-label="态势感知">
+        <Radio :size="18" />
       </RouterLink>
       <RouterLink class="rail-icon" active-class="active" to="/radar" title="雷达态势" aria-label="雷达态势">
         <Crosshair :size="18" />

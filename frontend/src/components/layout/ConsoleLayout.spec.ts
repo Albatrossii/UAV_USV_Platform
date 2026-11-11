@@ -10,7 +10,7 @@ const SIDEBAR_STORAGE_KEY = 'uav-usv:sidebar-collapsed'
 async function mountLayout(props: Partial<InstanceType<typeof ConsoleLayout>['$props']> = {}) {
   const router = createRouter({
     history: createMemoryHistory(),
-    routes: ['/', '/situation', '/vision', '/radar', '/devices'].map((path) => ({
+    routes: ['/', '/situation', '/vision', '/situational-awareness', '/radar', '/devices'].map((path) => ({
       path,
       component: { template: '<div />' },
     })),
@@ -32,7 +32,7 @@ describe('ConsoleLayout sidebar visibility', () => {
   it('preserves the default sidebar, header, actions and page content on other pages', async () => {
     const wrapper = await mountLayout()
     expect(wrapper.find('.console-sidebar').exists()).toBe(true)
-    expect(wrapper.findAll('.console-navigation a')).toHaveLength(5)
+    expect(wrapper.findAll('.console-navigation a')).toHaveLength(6)
     expect(wrapper.classes()).not.toContain('sidebar-hidden')
     expect(wrapper.classes()).not.toContain('sidebar-collapsed')
     expect(wrapper.classes()).not.toContain('workspace-navigation')
@@ -94,7 +94,7 @@ describe('ConsoleLayout sidebar visibility', () => {
     expect(wrapper.classes()).toContain('sidebar-collapsed')
     expect(wrapper.find('.console-topbar').exists()).toBe(false)
     expect(wrapper.findAll('.console-nav-label').map((item) => item.text())).toEqual([
-      '系统总览', '协同态势', '光电视觉', '雷达态势', '设备管理',
+      '系统总览', '协同态势', '光电视觉', '态势感知', '雷达态势', '设备管理',
     ])
     expect(wrapper.get('.console-sidebar-user').text()).toContain('admin')
     expect(wrapper.get('.console-sidebar-footer button').attributes('aria-label')).toBe('退出登录')
