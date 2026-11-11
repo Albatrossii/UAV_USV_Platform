@@ -3,6 +3,7 @@ param(
   [string]$ConfigPath = '',
   [int]$BackendPort = 0,
   [int]$FrontendPort = 0,
+  [switch]$AsrOnly,
   [switch]$CheckOnly
 )
 
@@ -196,6 +197,14 @@ if ($null -eq $python) {
 }
 
 $mavenWrapper = Join-Path $repo 'backend\mvnw.cmd'
+$mavenCommand = Resolve-Executable (Get-Setting 'MavenPath' 'MAVEN_COMMAND') @('mvn.cmd', 'mvn')
+if ($null -eq $mavenCommand -and ![string]::IsNullOrWhiteSpace($env:USERPROFILE)) {
+  $mavenCache = Join-Path $env:USERPROFILE '.m2\wrapper\dists'
+  if (Test-Path -LiteralPath $mavenCache -PathType Container) {
+    $mavenCommand = Get-ChildItem -LiteralPath $mavenCache -Recurse -Filter 'mvn.cmd' -File |
+      Sort-Object FullName -Descending | Select-Object -First 1 -ExpandProperty FullName
+  }
+}
 $devScript = Join-Path $repo 'scripts\dev.mjs'
 $localExample = Join-Path $repo 'backend\src\main\resources\application-local.example.yml'
 $viteEntry = Join-Path $repo 'frontend\node_modules\vite\bin\vite.js'
@@ -281,9 +290,10 @@ $environment = @{
   'VITE_VOICE_P1_PREPARATION' = 'true'
   'VITE_VOICE_P1_BACKEND' = 'true'
   'VITE_VOICE_P1_MOCK' = 'false'
-  'VITE_VOICE_ASR_ONLY' = 'false'
+  'VITE_VOICE_ASR_ONLY' = $(if ($AsrOnly) { 'true' } else { 'false' })
   'VITE_VOICE_UNITY_PRESENTATION_V1' = 'true'
 }
+if ($mavenCommand) { $environment['MAVEN_COMMAND'] = $mavenCommand }
 
 $previous = Set-ScopedEnvironment $environment
 $transcriptStarted = $false

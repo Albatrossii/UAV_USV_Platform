@@ -79,6 +79,14 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\start-aliyun-demo.
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\start-aliyun-demo.ps1
 ```
 
+使用系统总览的“语音识别与电机测试”入口时，启用仅转写页面模式：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\start-aliyun-demo.ps1 -AsrOnly
+```
+
+此模式仍由 Java 后端调用阿里云识别；电机网关需单独配置。网关关闭时，“一号无人机起飞”会被后端明确拒绝，不会转发到其他控制通道。
+
 如果默认端口已被其他项目占用，可以只对本次启动覆盖端口：
 
 ```powershell

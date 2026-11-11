@@ -74,7 +74,7 @@ const demoControl = await createDemoControl(root, () => stopAll())
 console.log('Managed demo: scripts/demo.ps1 -Action Status / Stop. Ctrl+C also stops owned services.')
 
 const backend = spawn(
-  path.join(root, 'backend', isWindows ? 'mvnw.cmd' : 'mvnw'),
+  process.env.MAVEN_COMMAND || path.join(root, 'backend', isWindows ? 'mvnw.cmd' : 'mvnw'),
   ['-f', path.join(root, 'backend', 'pom.xml'), 'spring-boot:run'],
   {
     cwd: root,
