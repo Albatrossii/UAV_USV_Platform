@@ -45,8 +45,7 @@ public class SemanticMotorControlClient {
     }
 
     public boolean supports(RuntimeCommandRequest request) {
-        return enabled
-                && request.commandType() == CommandType.UAV_TAKEOFF
+        return request.commandType() == CommandType.UAV_TAKEOFF
                 && request.runtimeScope() == RuntimeScope.SYSTEM_OVERVIEW
                 && SYSTEM_OVERVIEW_INSTANCE.equals(request.runtimeInstanceId())
                 && PHYSICAL_DEVICE_CODE.equals(normalize(request.deviceCode()));
@@ -57,6 +56,12 @@ public class SemanticMotorControlClient {
             return CommandDispatchResult.rejected(
                     "MOTOR_CONTROL_SCOPE_MISMATCH",
                     "该指令不属于真实机载电脑的系统总览电机测试范围"
+            );
+        }
+        if (!enabled) {
+            return CommandDispatchResult.rejected(
+                    "MOTOR_CONTROL_DISABLED",
+                    "真实机载电脑电机控制网关未启用"
             );
         }
         if (gatewayUrl.isBlank() || gatewayToken.isBlank()) {

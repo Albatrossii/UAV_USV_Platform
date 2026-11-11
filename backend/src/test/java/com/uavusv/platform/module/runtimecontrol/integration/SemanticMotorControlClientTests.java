@@ -29,6 +29,19 @@ class SemanticMotorControlClientTests {
                 RuntimeScope.SYSTEM_OVERVIEW, "another-instance"))).isFalse();
     }
 
+    @Test
+    void disabledMotorGatewayStillClaimsPhysicalScopeAndRejectsDispatch() throws Exception {
+        SemanticMotorControlClient disabled = new SemanticMotorControlClient(
+                false, "", "", new ObjectMapper());
+        RuntimeCommandRequest request = request(
+                CommandType.UAV_TAKEOFF, "uav-01", RuntimeScope.SYSTEM_OVERVIEW, "overview-unity-01");
+
+        assertThat(disabled.supports(request)).isTrue();
+        var result = disabled.dispatch("test-command", request);
+        assertThat(result.accepted()).isFalse();
+        assertThat(result.errorCode()).isEqualTo("MOTOR_CONTROL_DISABLED");
+    }
+
     private RuntimeCommandRequest request(
             CommandType type, String deviceCode, RuntimeScope scope, String instanceId) {
         return new RuntimeCommandRequest(type, null, deviceCode, null, null, scope, instanceId);
